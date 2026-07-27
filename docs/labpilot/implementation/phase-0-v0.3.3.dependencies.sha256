@@ -1,0 +1,11 @@
+16f2c39bda46881bb2ea13975db15d914a3a420b04b9dd21d45ebe315674a6fa  docs/labpilot/00-master-blueprint-v0.2.md
+7092a034a78e6ea8b9f13533521fbaa6989ad15a0a25686057a75f286e33dbd6  docs/labpilot/01-v1-scope-and-acceptance-v0.2-frozen.md
+2c998e7814a116c0999b21b6cf078dacb0fb6f770c929062480dc8ee98df328a  docs/labpilot/architecture/02-experiment-domain-v0.2-frozen.md
+fcf1996547f73bed1f07e91b34e7c91af871a7641076d43a3ec2d33482552231  docs/labpilot/architecture/03-agent-harness-v0.2-frozen.md
+14c8746cfc68d7f94aeb178573d14b06daefa8b7f117a2cffa2f7368aa1ca4a2  docs/labpilot/architecture/04-context-and-repository-v0.2-frozen.md
+af66e2fedc4edff65c6afeed793b5ca4f296cfecb204fcd86e8c468cd2d9320c  docs/labpilot/architecture/05-tools-policy-and-workspace-v0.2-frozen.md
+dec726bea36cbbb6047f361be6ae4a4f99434405aaf96427efaad4434bd83732  docs/labpilot/architecture/06-workflow-and-executors-v0.2-frozen.md
+1fde1ecbc48250eaa854593b45ef3ee8e314392e716ea5613c7628c2e4b1480e  docs/labpilot/architecture/07-results-validation-and-agentops-v0.2-frozen.md
+80ab1268ebd7064ae9de8b7041aca23e1ff8e3ea317ff9b5d2a19bd5996ffee3  docs/labpilot/implementation/00-architecture-index-and-dependency-map-v0.2-frozen.md
+815a6585d79d0131685cd0212548254b95dee446fd44369a8b26cc202d5efac4  docs/labpilot/implementation/01-master-implementation-roadmap-v0.2.1-frozen.md
+7aa52e9fb03e42fe514941c22a83a4435333032aa051c1078c607291fab64af9  docs/superpowers/plans/2026-07-27-labpilot-phase-0-foundation-v0.3.3-ready-for-execution.md
