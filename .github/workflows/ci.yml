@@ -1,0 +1,48 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      LABPILOT_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/labpilot_ci
+      LABPILOT_TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.8.0"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify frozen dependencies
+        run: ./scripts/verify_architecture_dependencies.sh docs/labpilot/implementation/phase-0-v0.3.3.dependencies.sha256
+      - name: Install
+        run: uv sync --frozen --all-groups
+      - name: Ruff
+        run: uv run ruff check src tests scripts
+      - name: Mypy
+        run: uv run mypy src scripts
+      - name: Unit and architecture tests
+        run: uv run pytest tests/unit tests/architecture -v
+      - name: PostgreSQL integration tests
+        run: uv run pytest tests/integration -v -m integration
+      - name: Dependency guard shell tests
+        run: ./tests/scripts/test_verify_architecture_dependencies.sh
