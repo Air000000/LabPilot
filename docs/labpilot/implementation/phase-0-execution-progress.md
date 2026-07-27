@@ -10,7 +10,7 @@ This file records mutable execution state. It is not part of the frozen dependen
 | 3 | completed | 2026-07-26T07:23:01Z | 2026-07-26T07:29:40Z | cad38a160dd87aac2bb415e9d9125f01e8bde923 | focused pytest 10 passed; PostgreSQL integration pytest 1 passed; unit pytest 18 passed; Ruff and mypy clean; lock current; dependency guard 11/11 | approved |
 | 4 | completed | 2026-07-26T07:51:31Z | 2026-07-26T07:59:43Z | a0dd7da3ff847eeb57fc455f18052006fa730f6a | focused integration 3 passed; unit pytest 18 passed; integration pytest 4 passed; Alembic head 0001_initial; Ruff and mypy clean; lock current; dependency guard 11/11 | approved |
 | 5 | completed | 2026-07-27T04:49:28Z | 2026-07-27T05:01:40Z | 39e0536577c50e6861fe9be601645e0aa1418801 | focused Canonical JSON/hash 26 passed; unit pytest 44 passed; Ruff clean; mypy clean; lock current; dependency guard 11/11 | approved |
-| 6 | pending | — | — | — | — | — |
+| 6 | completed | 2026-07-27T06:33:31Z | 2026-07-27T06:45:39Z | 4b71dbb735919c5aaadef4935602c7be387743fd | payload unit 9 passed; observability integration 9 passed; unit pytest 53 passed; full integration 13 passed; Alembic head 0002_runtime_events_outbox; Ruff clean; mypy clean; lock current; dependency guard 11/11 | pending |
 | 7 | pending | — | — | — | — | — |
 | 8 | pending | — | — | — | — | — |
 | 9 | pending | — | — | — | — | — |
