@@ -16,9 +16,14 @@ async def test_upgrade_head_succeeds_on_an_isolated_empty_database(
     engine = create_engine(sync_url)
     try:
         with engine.connect() as connection:
-            version = connection.scalar(text("SELECT version_num FROM alembic_version"))
-        assert version == "0001_initial"
+            version = connection.scalar(
+                text("SELECT version_num FROM alembic_version")
+            )
+        assert version == "0002_runtime_events_outbox"
     finally:
         engine.dispose()
 
     assert Path("migrations/versions/0001_initial.py").exists()
+    assert Path(
+        "migrations/versions/0002_runtime_events_outbox.py"
+    ).exists()
