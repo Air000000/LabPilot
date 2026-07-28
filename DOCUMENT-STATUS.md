@@ -15,3 +15,9 @@
 - ZIP：包含 Unix `0755` 权限元数据；标准 `unzip` 会恢复执行位。
 - TAR.GZ：作为 Unix 权限保真发布格式。
 - 跨解压器校验命令：`bash scripts/verify_architecture_dependencies.sh <manifest>`。
+
+## WP1
+
+- `02-wp1-domain-context-overall-design-v0.5.md`: Approved Design Input
+- `03-wp1-a-project-repository-implementation-plan-v0.2.md`: Approved Implementation Plan
+- WP1-A implementation: Not started
