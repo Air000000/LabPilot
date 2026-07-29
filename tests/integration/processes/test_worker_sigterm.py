@@ -3,34 +3,108 @@ import json
 import os
 import signal
 import sys
+from urllib.parse import urlsplit
 
 import pytest
 
 _STDERR_LIMIT = 4096
 
 
-async def _read_ready_marker(
-    process: asyncio.subprocess.Process,
-    module_name: str,
-    isolated_database_url: str,
-) -> dict[str, str]:
-    assert process.stdout is not None
-    assert process.stderr is not None
-    line = await asyncio.wait_for(process.stdout.readline(), timeout=10)
-    if line:
-        marker: dict[str, str] = json.loads(line)
-        return marker
+async def _drain_stderr_bounded(
+    stream: asyncio.StreamReader,
+    *,
+    limit: int,
+) -> bytes:
+    captured = bytearray()
+    while True:
+        chunk = await stream.read(64 * 1024)
+        if not chunk:
+            break
+        remaining = limit - len(captured)
+        if remaining > 0:
+            captured.extend(chunk[:remaining])
+    return bytes(captured)
 
-    return_code = await process.wait()
-    stderr = await process.stderr.read(_STDERR_LIMIT)
+
+def _sanitize_stderr(
+    stderr: bytes,
+    isolated_database_url: str,
+) -> str:
     safe_stderr = stderr.decode(errors="replace")
     for database_url in (
         isolated_database_url,
         os.environ.get("LABPILOT_TEST_ADMIN_DATABASE_URL", ""),
     ):
-        if database_url:
-            safe_stderr = safe_stderr.replace(database_url, "<redacted>")
-    safe_stderr = safe_stderr[:_STDERR_LIMIT]
+        if not database_url:
+            continue
+        safe_stderr = safe_stderr.replace(database_url, "<redacted>")
+        password = urlsplit(database_url).password
+        if password:
+            safe_stderr = safe_stderr.replace(password, "<redacted>")
+    return safe_stderr[:_STDERR_LIMIT]
+
+
+async def _cleanup_process(
+    process: asyncio.subprocess.Process,
+    stderr_task: asyncio.Task[bytes],
+) -> None:
+    if process.returncode is None:
+        process.kill()
+    try:
+        await asyncio.wait_for(process.wait(), timeout=5)
+    except TimeoutError:
+        stderr_task.cancel()
+        try:
+            await stderr_task
+        except asyncio.CancelledError:
+            pass
+        raise
+    await stderr_task
+
+
+async def _stop_and_collect_stderr(
+    process: asyncio.subprocess.Process,
+    stderr_task: asyncio.Task[bytes],
+) -> bytes:
+    await _cleanup_process(process, stderr_task)
+    return stderr_task.result()
+
+
+async def _read_ready_marker(
+    process: asyncio.subprocess.Process,
+    module_name: str,
+    isolated_database_url: str,
+    stderr_task: asyncio.Task[bytes],
+) -> dict[str, str]:
+    assert process.stdout is not None
+    try:
+        line = await asyncio.wait_for(process.stdout.readline(), timeout=10)
+    except TimeoutError:
+        stderr = await _stop_and_collect_stderr(process, stderr_task)
+        safe_stderr = _sanitize_stderr(stderr, isolated_database_url)
+        pytest.fail(
+            f"{module_name} timed out waiting for ready marker; "
+            f"child return code: {process.returncode}; "
+            f"bounded stderr: {safe_stderr}"
+        )
+
+    if line:
+        marker: dict[str, str] = json.loads(line)
+        return marker
+
+    try:
+        return_code = await asyncio.wait_for(process.wait(), timeout=5)
+        stderr = await stderr_task
+    except TimeoutError:
+        stderr = await _stop_and_collect_stderr(process, stderr_task)
+        safe_stderr = _sanitize_stderr(stderr, isolated_database_url)
+        pytest.fail(
+            f"{module_name} closed stdout but did not exit; "
+            f"child return code: {process.returncode}; "
+            f"bounded stderr: {safe_stderr}"
+        )
+
+    safe_stderr = _sanitize_stderr(stderr, isolated_database_url)
     pytest.fail(
         f"{module_name} exited before ready marker; "
         f"child return code: {return_code}; "
@@ -38,9 +112,40 @@ async def _read_ready_marker(
     )
 
 
+async def _wait_for_clean_exit(
+    process: asyncio.subprocess.Process,
+    module_name: str,
+    isolated_database_url: str,
+    stderr_task: asyncio.Task[bytes],
+) -> None:
+    try:
+        return_code = await asyncio.wait_for(process.wait(), timeout=5)
+        stderr = await stderr_task
+    except TimeoutError:
+        stderr = await _stop_and_collect_stderr(process, stderr_task)
+        safe_stderr = _sanitize_stderr(stderr, isolated_database_url)
+        pytest.fail(
+            f"{module_name} timed out while exiting; "
+            f"child return code: {process.returncode}; "
+            f"bounded stderr: {safe_stderr}"
+        )
+
+    safe_stderr = _sanitize_stderr(stderr, isolated_database_url)
+    if return_code != 0:
+        pytest.fail(
+            f"{module_name} exited with child return code: {return_code}; "
+            f"bounded stderr: {safe_stderr}"
+        )
+    if "Traceback" in safe_stderr:
+        pytest.fail(
+            f"{module_name} exited with child return code: {return_code}; "
+            f"stderr contains Traceback; bounded stderr: {safe_stderr}"
+        )
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_worker_early_exit_diagnostic_is_bounded_and_redacted(
+async def test_worker_large_stderr_is_drained_and_diagnostic_is_bounded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     isolated_database_url = (
@@ -50,35 +155,39 @@ async def test_worker_early_exit_diagnostic_is_bounded_and_redacted(
         "postgresql+asyncpg://admin:admin-password@127.0.0.1:5432/postgres"
     )
     monkeypatch.setenv("LABPILOT_TEST_ADMIN_DATABASE_URL", admin_url)
-    environment = os.environ.copy()
-    environment["LABPILOT_TEST_EARLY_EXIT_STDERR"] = (
-        f"isolated={isolated_database_url}\nadmin={admin_url}\n"
-        + "x" * 5000
-    )
     process = await asyncio.create_subprocess_exec(
         sys.executable,
         "-c",
         (
-            "import os, sys; "
-            "sys.stderr.write("
-            "os.environ['LABPILOT_TEST_EARLY_EXIT_STDERR']"
-            "); raise SystemExit(7)"
+            "import sys\n"
+            f"sys.stderr.write('isolated={isolated_database_url}\\n')\n"
+            f"sys.stderr.write('admin={admin_url}\\n')\n"
+            "chunk = b'x' * (64 * 1024)\n"
+            "for _ in range(128):\n"
+            "    sys.stderr.buffer.write(chunk)\n"
+            "sys.stderr.flush()\n"
+            "raise SystemExit(7)\n"
         ),
-        env=environment,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
+    assert process.stderr is not None
+    stderr_task = asyncio.create_task(
+        _drain_stderr_bounded(process.stderr, limit=_STDERR_LIMIT)
+    )
     try:
         with pytest.raises(pytest.fail.Exception) as failure:
-            await _read_ready_marker(
-                process,
-                "diagnostic.worker",
-                isolated_database_url,
+            await asyncio.wait_for(
+                _read_ready_marker(
+                    process,
+                    "diagnostic.worker",
+                    isolated_database_url,
+                    stderr_task,
+                ),
+                timeout=5,
             )
     finally:
-        if process.returncode is None:
-            process.kill()
-            await process.wait()
+        await _cleanup_process(process, stderr_task)
 
     message = str(failure.value)
     assert "diagnostic.worker" in message
@@ -89,6 +198,71 @@ async def test_worker_early_exit_diagnostic_is_bounded_and_redacted(
     assert "worker-password" not in message
     assert "admin-password" not in message
     assert len(message.partition("bounded stderr: ")[2]) <= 4096
+    assert "x" * 4097 not in message
+    assert process.returncode == 7
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_worker_zero_exit_rejects_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    isolated_database_url = (
+        "postgresql+asyncpg://worker:worker-password@127.0.0.1:5432/isolated"
+    )
+    admin_url = (
+        "postgresql+asyncpg://admin:admin-password@127.0.0.1:5432/postgres"
+    )
+    monkeypatch.setenv("LABPILOT_TEST_ADMIN_DATABASE_URL", admin_url)
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        (
+            "import json, sys\n"
+            "print(json.dumps("
+            "{'event': 'process_shell.ready', 'process': 'diagnostic'}"
+            "), flush=True)\n"
+            f"sys.stderr.write('Traceback: {isolated_database_url}\\n')\n"
+            f"sys.stderr.write('admin={admin_url}\\n')\n"
+        ),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    assert process.stderr is not None
+    stderr_task = asyncio.create_task(
+        _drain_stderr_bounded(process.stderr, limit=_STDERR_LIMIT)
+    )
+    try:
+        marker = await _read_ready_marker(
+            process,
+            "traceback.worker",
+            isolated_database_url,
+            stderr_task,
+        )
+        assert marker == {
+            "event": "process_shell.ready",
+            "process": "diagnostic",
+        }
+        with pytest.raises(
+            pytest.fail.Exception,
+            match="stderr contains Traceback",
+        ) as failure:
+            await _wait_for_clean_exit(
+                process,
+                "traceback.worker",
+                isolated_database_url,
+                stderr_task,
+            )
+    finally:
+        await _cleanup_process(process, stderr_task)
+
+    message = str(failure.value)
+    assert isolated_database_url not in message
+    assert admin_url not in message
+    assert "worker-password" not in message
+    assert "admin-password" not in message
+    assert len(message.partition("bounded stderr: ")[2]) <= _STDERR_LIMIT
+    assert process.returncode == 0
 
 
 @pytest.mark.integration
@@ -125,16 +299,25 @@ async def test_worker_process_exits_zero_on_sigterm(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
+    assert process.stderr is not None
+    stderr_task = asyncio.create_task(
+        _drain_stderr_bounded(process.stderr, limit=_STDERR_LIMIT)
+    )
     try:
         marker = await _read_ready_marker(
-            process, module_name, isolated_database_url
+            process,
+            module_name,
+            isolated_database_url,
+            stderr_task,
         )
         assert marker["event"] == "process_shell.ready"
         assert marker["process"] in {"coordinator", "projection"}
         process.send_signal(signal.SIGTERM)
-        return_code = await asyncio.wait_for(process.wait(), timeout=5)
-        assert return_code == 0
+        await _wait_for_clean_exit(
+            process,
+            module_name,
+            isolated_database_url,
+            stderr_task,
+        )
     finally:
-        if process.returncode is None:
-            process.kill()
-            await process.wait()
+        await _cleanup_process(process, stderr_task)
