@@ -29,7 +29,15 @@ def test_settings_load_server_actor_from_exact_environment_variables(
     assert settings.local_actor_id == "air"
 
 
-def test_settings_require_server_actor_values() -> None:
+def test_settings_require_server_actor_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(
+        "LABPILOT_INSTALLATION_IDENTITY",
+        raising=False,
+    )
+    monkeypatch.delenv("LABPILOT_LOCAL_ACTOR_ID", raising=False)
+
     with pytest.raises(ValidationError) as captured:
         Settings(
             database_url="postgresql+asyncpg://user:pass@db:5432/labpilot",
