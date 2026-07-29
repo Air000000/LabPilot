@@ -23,6 +23,7 @@ from labpilot.experiments.project_repository import ProjectRepository
 from labpilot.experiments.project_types import (
     ArchiveProject,
     CreateProject,
+    ProjectDetails,
     project_identity,
 )
 from labpilot.observability.events import append_runtime_event
@@ -75,6 +76,30 @@ class ProjectApplicationService:
     def __init__(self, session_context_factory: SessionContextFactory) -> None:
         self._session_context_factory = session_context_factory
         self._repository = ProjectRepository()
+
+    async def get_project(
+        self,
+        *,
+        project_id: UUID,
+    ) -> ProjectDetails:
+        async with self._session_context_factory() as session:
+            row = await self._repository.get(session, project_id)
+            if row is None:
+                raise ProjectNotFound(project_id)
+            return ProjectDetails(
+                project_id=row.project_id,
+                project_identity=row.project_identity,
+                name=row.name,
+                description=row.description,
+                status=row.status,
+                primary_repository_registration_id=(
+                    row.primary_repository_registration_id
+                ),
+                artifact_root_ref=row.artifact_root_ref,
+                created_at=row.created_at,
+                updated_at=row.updated_at,
+                row_version=row.row_version,
+            )
 
     async def create_project(
         self,

@@ -2,14 +2,24 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from tests.integration.db_helpers import upgrade_database_to_head
 
+from labpilot.api.actor import ServerConfiguredActorProvider
 from labpilot.api.app import create_app
+from labpilot.api.dependencies import ApplicationServices
 from labpilot.db.readiness import DatabaseReadinessProbe
 from labpilot.db.session import Database
+from labpilot.experiments.project_service import ProjectApplicationService
 
 
 async def get_readiness(database: Database) -> tuple[int, dict[str, object]]:
     app = create_app(
-        readiness_probe=DatabaseReadinessProbe(database.engine, "alembic.ini")
+        readiness_probe=DatabaseReadinessProbe(database.engine, "alembic.ini"),
+        services=ApplicationServices(
+            projects=ProjectApplicationService(database.session),
+        ),
+        actor_provider=ServerConfiguredActorProvider(
+            installation_identity="test-installation",
+            actor_id="test-actor",
+        ),
     )
     async with AsyncClient(
         transport=ASGITransport(app=app),

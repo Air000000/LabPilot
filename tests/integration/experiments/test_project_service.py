@@ -18,7 +18,7 @@ from labpilot.experiments.project_service import (
     ProjectStateConflict,
     ProjectVersionConflict,
 )
-from labpilot.experiments.project_types import ArchiveProject, CreateProject
+from labpilot.experiments.project_types import ArchiveProject, CreateProject, ProjectDetails
 from labpilot.observability.models import (
     AggregateEventCursorRow,
     OutboxRecordRow,
@@ -386,3 +386,63 @@ async def test_archive_project_unknown_id_raises_not_found_without_side_effects(
         assert await _row_count(database, RuntimeEventRow) == 0
         assert await _row_count(database, OutboxRecordRow) == 0
         assert await _row_count(database, CommandReceiptRow) == 0
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_get_project_returns_immutable_details_without_side_effects(
+    isolated_database_url: str,
+) -> None:
+    async with _project_database(isolated_database_url) as (database, service):
+        created = await service.create_project(
+            context=_context(),
+            idempotency_key="create-before-get",
+            command=_create_command(),
+        )
+        project_id = UUID(created.envelope.primary_result_id)
+        async with database.session() as session:
+            row = await session.get(ProjectRow, project_id)
+            assert row is not None
+            expected = ProjectDetails(
+                project_id=row.project_id,
+                project_identity=row.project_identity,
+                name="Causal Diffusion",
+                description="Counterfactual image experiments",
+                status="active",
+                primary_repository_registration_id=None,
+                artifact_root_ref="artifact-root:projects/causal-diffusion",
+                created_at=row.created_at,
+                updated_at=row.updated_at,
+                row_version=1,
+            )
+        counts_before = (
+            await _row_count(database, CommandReceiptRow),
+            await _row_count(database, RuntimeEventRow),
+            await _row_count(database, OutboxRecordRow),
+        )
+
+        details = await service.get_project(project_id=project_id)
+
+        assert details == expected
+        assert (
+            await _row_count(database, CommandReceiptRow),
+            await _row_count(database, RuntimeEventRow),
+            await _row_count(database, OutboxRecordRow),
+        ) == counts_before
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_get_project_unknown_id_raises_not_found(
+    isolated_database_url: str,
+) -> None:
+    async with _project_database(isolated_database_url) as (database, service):
+        with pytest.raises(ProjectNotFound):
+            await service.get_project(
+                project_id=UUID("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
+            )
+
+        assert await _row_count(database, ProjectRow) == 0
+        assert await _row_count(database, CommandReceiptRow) == 0
+        assert await _row_count(database, RuntimeEventRow) == 0
+        assert await _row_count(database, OutboxRecordRow) == 0

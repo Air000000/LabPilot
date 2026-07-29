@@ -3,7 +3,11 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from labpilot.api.actor import ActorProvider
+from labpilot.api.dependencies import ApplicationServices
+from labpilot.api.errors import register_error_handlers
 from labpilot.api.routers.health import router as health_router
+from labpilot.api.routers.projects import router as projects_router
 from labpilot.common.readiness import ReadinessProbe, UnconfiguredReadinessProbe
 
 ShutdownCallback = Callable[[], Awaitable[None]]
@@ -13,6 +17,8 @@ def create_app(
     *,
     readiness_probe: ReadinessProbe | None = None,
     shutdown_callbacks: tuple[ShutdownCallback, ...] = (),
+    services: ApplicationServices,
+    actor_provider: ActorProvider,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -43,5 +49,9 @@ def create_app(
 
     app = FastAPI(title="LabPilot", version="0.1.0", lifespan=lifespan)
     app.state.readiness_probe = readiness_probe or UnconfiguredReadinessProbe()
+    app.state.application_services = services
+    app.state.actor_provider = actor_provider
+    register_error_handlers(app)
     app.include_router(health_router)
+    app.include_router(projects_router)
     return app

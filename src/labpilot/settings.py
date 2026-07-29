@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     environment: Literal["development", "test", "production"] = "development"
     database_url: str = Field(min_length=1)
     log_level: str = "INFO"
+    installation_identity: str = Field(min_length=1, max_length=200)
+    local_actor_id: str = Field(min_length=1, max_length=200)
 
     @field_validator("database_url")
     @classmethod

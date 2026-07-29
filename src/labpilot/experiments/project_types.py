@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import datetime
 from uuid import UUID
 
 from labpilot.common.hashing import namespaced_sha256
@@ -48,6 +49,20 @@ class ArchiveProject:
     def __post_init__(self) -> None:
         if self.expected_row_version <= 0:
             raise ValueError("expected_row_version must be positive")
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectDetails:
+    project_id: UUID
+    project_identity: str
+    name: str
+    description: str | None
+    status: str
+    primary_repository_registration_id: UUID | None
+    artifact_root_ref: str
+    created_at: datetime
+    updated_at: datetime
+    row_version: int
 
 
 def project_identity(project_id: UUID) -> str:
