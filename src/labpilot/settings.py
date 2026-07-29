@@ -26,6 +26,17 @@ class Settings(BaseSettings):
             raise ValueError("database_url must use postgresql+asyncpg")
         return value
 
+    @field_validator("local_actor_id")
+    @classmethod
+    def validate_local_actor_id_utf8_bytes(cls, value: str) -> str:
+        try:
+            size = len(value.encode("utf-8"))
+        except UnicodeEncodeError as exc:
+            raise ValueError("local_actor_id must be valid UTF-8") from exc
+        if size > 200:
+            raise ValueError("local_actor_id exceeds 200 UTF-8 bytes")
+        return value
+
 
 @lru_cache
 def get_settings() -> Settings:

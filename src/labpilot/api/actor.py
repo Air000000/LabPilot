@@ -20,7 +20,10 @@ class ServerConfiguredActorProvider:
         actor_id: str,
     ) -> None:
         self._installation_identity = installation_identity
-        self._actor_id = actor_id
+        self._actor = CommandActor(
+            actor_type="local_user",
+            actor_id=actor_id,
+        )
 
     async def get_command_context(
         self,
@@ -29,9 +32,6 @@ class ServerConfiguredActorProvider:
         del request
         return CommandContext(
             installation_identity=self._installation_identity,
-            actor=CommandActor(
-                actor_type="local_user",
-                actor_id=self._actor_id,
-            ),
+            actor=self._actor,
             interaction_correlation_id=str(uuid4()),
         )

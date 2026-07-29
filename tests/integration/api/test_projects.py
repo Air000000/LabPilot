@@ -138,7 +138,17 @@ async def test_server_actor_provider_ignores_spoofed_headers() -> None:
     assert first.installation_identity == "installation-1"
     assert first.actor.actor_type == "local_user"
     assert first.actor.actor_id == "air"
+    assert first.actor is second.actor
     assert first.interaction_correlation_id != second.interaction_correlation_id
+
+
+@pytest.mark.integration
+def test_server_actor_provider_rejects_invalid_actor_at_construction() -> None:
+    with pytest.raises(ValueError):
+        ServerConfiguredActorProvider(
+            installation_identity="installation-1",
+            actor_id="界" * 67,
+        )
 
 
 @pytest.mark.integration
@@ -238,7 +248,7 @@ async def test_create_replay_conflict_spoof_resistance_and_actor_scope_isolation
         bob_app = _app(
             database,
             actor_provider=_actor_provider(
-                installation_identity="installation-2",
+                installation_identity="installation-1",
                 actor_id="bob",
             ),
         )
@@ -253,6 +263,7 @@ async def test_create_replay_conflict_spoof_resistance_and_actor_scope_isolation
             )
 
         assert isolated.status_code == 201
+        assert isolated.json()["replayed"] is False
         assert isolated.json()["project_id"] != first.json()["project_id"]
         assert await _row_count(database, ProjectRow) == 2
         assert await _row_count(database, RuntimeEventRow) == 2
@@ -404,6 +415,51 @@ class _InvalidProjectService:
         )
 
 
+class _UnexpectedValueErrorProjectService:
+    async def create_project(self, **_: object) -> IdempotentCommandOutcome:
+        raise ValueError("internal serialization bug")
+
+    async def archive_project(self, **_: object) -> IdempotentCommandOutcome:
+        raise ValueError("internal serialization bug")
+
+
+class _CountingProjectService:
+    def __init__(self) -> None:
+        self.create_calls = 0
+        self.archive_calls = 0
+        self.idempotency_keys: list[str] = []
+
+    async def create_project(self, **values: object) -> IdempotentCommandOutcome:
+        self.create_calls += 1
+        self.idempotency_keys.append(cast(str, values["idempotency_key"]))
+        return IdempotentCommandOutcome(
+            envelope=CommandResultEnvelope(
+                outcome_kind="project_created",
+                primary_result_type="project",
+                primary_result_id="dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+                primary_result_identity="project:counting-service",
+                related_result_refs=(),
+                committed_state="active",
+            ),
+            replayed=False,
+        )
+
+    async def archive_project(self, **values: object) -> IdempotentCommandOutcome:
+        self.archive_calls += 1
+        self.idempotency_keys.append(cast(str, values["idempotency_key"]))
+        return IdempotentCommandOutcome(
+            envelope=CommandResultEnvelope(
+                outcome_kind="project_archived",
+                primary_result_type="project",
+                primary_result_id="dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+                primary_result_identity="project:counting-service",
+                related_result_refs=(),
+                committed_state="archived",
+            ),
+            replayed=False,
+        )
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_service_unavailable_and_internal_invariant_are_safe_and_structured(
@@ -449,3 +505,122 @@ async def test_service_unavailable_and_internal_invariant_are_safe_and_structure
         assert "invariant-secret" not in invariant.text
         assert "invalid-internal-identity" not in invariant.text
         assert "traceback" not in invariant.text.lower()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_unexpected_service_value_error_is_safe_internal_error(
+    isolated_database_url: str,
+) -> None:
+    service = cast(
+        ProjectApplicationService,
+        _UnexpectedValueErrorProjectService(),
+    )
+    async with _database_and_client(
+        isolated_database_url,
+        project_service=service,
+        raise_app_exceptions=False,
+    ) as (_, _, client):
+        create_response = await client.post(
+            "/projects",
+            headers={"Idempotency-Key": "create-value-error-secret"},
+            json=_create_payload(),
+        )
+        archive_response = await client.post(
+            "/projects/cccccccc-cccc-4ccc-8ccc-cccccccccccc/archive",
+            headers={"Idempotency-Key": "archive-value-error-secret"},
+            json={"expected_row_version": 1},
+        )
+
+    for response in (create_response, archive_response):
+        _assert_error(response, 500, "internal_invariant_error")
+        assert response.json()["details"] == {}
+        assert set(response.json()) == ERROR_FIELDS
+
+    combined_response = create_response.text + archive_response.text
+    assert "internal serialization bug" not in combined_response
+    assert "traceback" not in combined_response.lower()
+    assert "create-value-error-secret" not in combined_response
+    assert "archive-value-error-secret" not in combined_response
+    assert "installation-1" not in combined_response
+    assert "air" not in combined_response
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_non_ascii_idempotency_key_is_rejected_before_service(
+    isolated_database_url: str,
+) -> None:
+    service = _CountingProjectService()
+    async with _database_and_client(
+        isolated_database_url,
+        project_service=cast(ProjectApplicationService, service),
+    ) as (_, _, client):
+        raw_header = b"\xe7\x95\x8c"
+        headers = [(b"idempotency-key", raw_header)]
+        create_response = await client.post(
+            "/projects",
+            headers=headers,
+            json=_create_payload(),
+        )
+        archive_response = await client.post(
+            "/projects/cccccccc-cccc-4ccc-8ccc-cccccccccccc/archive",
+            headers=headers,
+            json={"expected_row_version": 1},
+        )
+
+    for response in (create_response, archive_response):
+        _assert_error(response, 422, "request_validation_error")
+        assert response.json()["details"] == {}
+
+    transport_value = raw_header.decode("latin-1")
+    assert transport_value not in create_response.text
+    assert transport_value not in archive_response.text
+    assert service.create_calls == 0
+    assert service.archive_calls == 0
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_idempotency_key_ascii_byte_boundaries(
+    isolated_database_url: str,
+) -> None:
+    valid_service = _CountingProjectService()
+    valid_key = b"a" * 200
+    async with _database_and_client(
+        isolated_database_url,
+        project_service=cast(ProjectApplicationService, valid_service),
+    ) as (_, _, client):
+        valid_response = await client.post(
+            "/projects",
+            headers=[(b"idempotency-key", valid_key)],
+            json=_create_payload(),
+        )
+
+    assert valid_response.status_code == 201
+    assert valid_service.create_calls == 1
+    assert valid_service.archive_calls == 0
+    assert valid_service.idempotency_keys == [valid_key.decode("ascii")]
+
+    invalid_service = _CountingProjectService()
+    invalid_key = b"a" * 201
+    async with _database_and_client(
+        isolated_database_url,
+        project_service=cast(ProjectApplicationService, invalid_service),
+    ) as (_, _, client):
+        invalid_create = await client.post(
+            "/projects",
+            headers=[(b"idempotency-key", invalid_key)],
+            json=_create_payload(),
+        )
+        invalid_archive = await client.post(
+            "/projects/cccccccc-cccc-4ccc-8ccc-cccccccccccc/archive",
+            headers=[(b"idempotency-key", invalid_key)],
+            json={"expected_row_version": 1},
+        )
+
+    _assert_error(invalid_create, 422, "request_validation_error")
+    _assert_error(invalid_archive, 422, "request_validation_error")
+    assert invalid_service.create_calls == 0
+    assert invalid_service.archive_calls == 0
+    assert invalid_service.idempotency_keys == []

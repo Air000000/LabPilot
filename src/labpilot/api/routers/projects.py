@@ -34,6 +34,20 @@ IdempotencyKey = Annotated[
 ]
 
 
+def _validate_idempotency_key_transport(value: str) -> str:
+    if not value:
+        raise RequestDomainValidationError("invalid Idempotency-Key")
+    try:
+        raw_value = value.encode("latin-1")
+    except UnicodeEncodeError as exc:
+        raise RequestDomainValidationError("invalid Idempotency-Key") from exc
+    if len(raw_value) > 200 or any(
+        byte < 0x20 or byte > 0x7E for byte in raw_value
+    ):
+        raise RequestDomainValidationError("invalid Idempotency-Key")
+    return value
+
+
 def _command_response(
     outcome: IdempotentCommandOutcome,
     *,
@@ -75,18 +89,20 @@ async def create_project(
         Depends(get_project_service),
     ],
 ) -> ProjectCommandResponse:
+    idempotency_key = _validate_idempotency_key_transport(idempotency_key)
     try:
-        outcome = await service.create_project(
-            context=context,
-            idempotency_key=idempotency_key,
-            command=CreateProject(
-                name=body.name,
-                description=body.description,
-                artifact_root_ref=body.artifact_root_ref,
-            ),
+        command = CreateProject(
+            name=body.name,
+            description=body.description,
+            artifact_root_ref=body.artifact_root_ref,
         )
     except ValueError as exc:
         raise RequestDomainValidationError("invalid Project request") from exc
+    outcome = await service.create_project(
+        context=context,
+        idempotency_key=idempotency_key,
+        command=command,
+    )
     response.status_code = 200 if outcome.replayed else 201
     return _command_response(outcome, committed_state="active")
 
@@ -105,17 +121,19 @@ async def archive_project(
         Depends(get_project_service),
     ],
 ) -> ProjectCommandResponse:
+    idempotency_key = _validate_idempotency_key_transport(idempotency_key)
     try:
-        outcome = await service.archive_project(
-            context=context,
-            idempotency_key=idempotency_key,
-            command=ArchiveProject(
-                project_id=project_id,
-                expected_row_version=body.expected_row_version,
-            ),
+        command = ArchiveProject(
+            project_id=project_id,
+            expected_row_version=body.expected_row_version,
         )
     except ValueError as exc:
         raise RequestDomainValidationError("invalid Project request") from exc
+    outcome = await service.archive_project(
+        context=context,
+        idempotency_key=idempotency_key,
+        command=command,
+    )
     return _command_response(outcome, committed_state="archived")
 
 
