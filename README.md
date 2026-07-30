@@ -121,3 +121,13 @@ bash scripts/verify_architecture_dependencies.sh \
 - WP0 详细计划已完成，可进入真实 Git 仓库实施；
 - WP1–WP6 的代码级详细计划将在前置工作包落地后逐阶段生成；
 - 本包不包含应用代码，也不表示 WP0 已经实施完成。
+
+## 8. 本地 Repository 观察边界
+
+Compose 只把 `${LABPILOT_REPOSITORY_HOST_ROOT:-.}` 挂载到 API 容器的
+`/repositories`，并使用只读挂载。允许根由服务端
+`LABPILOT_REPOSITORY_ALLOWED_ROOTS` 配置；content-addressed 数据写入独立的
+`labpilot_content` volume。
+
+Repository Git 操作仅用于有界、只读观察，不使用 shell，不执行网络访问，也不执行
+fetch、pull、clone、checkout、reset、push 或其他会修改 Repository 的命令。

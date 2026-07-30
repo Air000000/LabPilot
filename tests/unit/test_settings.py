@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -9,6 +11,8 @@ def test_settings_require_a_postgresql_async_url() -> None:
         database_url="postgresql+asyncpg://user:pass@db:5432/labpilot",
         installation_identity="installation-1",
         local_actor_id="air",
+        repository_allowed_roots=(Path("/repositories"),),
+        repository_content_store_root=Path("/content"),
     )
     assert settings.database_url.startswith("postgresql+asyncpg://")
 
@@ -22,6 +26,11 @@ def test_settings_load_server_actor_from_exact_environment_variables(
     )
     monkeypatch.setenv("LABPILOT_INSTALLATION_IDENTITY", "installation-1")
     monkeypatch.setenv("LABPILOT_LOCAL_ACTOR_ID", "air")
+    monkeypatch.setenv(
+        "LABPILOT_REPOSITORY_ALLOWED_ROOTS",
+        '["/repositories", "/worktrees"]',
+    )
+    monkeypatch.setenv("LABPILOT_REPOSITORY_CONTENT_STORE_ROOT", "/content")
 
     settings = Settings(_env_file=None)
 
@@ -38,15 +47,18 @@ def test_settings_require_server_actor_values(
     )
     monkeypatch.delenv("LABPILOT_LOCAL_ACTOR_ID", raising=False)
 
+    monkeypatch.setenv("LABPILOT_REPOSITORY_ALLOWED_ROOTS", '["/repositories"]')
+    monkeypatch.setenv("LABPILOT_REPOSITORY_CONTENT_STORE_ROOT", "/content")
     with pytest.raises(ValidationError) as captured:
         Settings(
             database_url="postgresql+asyncpg://user:pass@db:5432/labpilot",
             _env_file=None,
         )
 
-    assert {
-        error["loc"] for error in captured.value.errors(include_url=False)
-    } == {("installation_identity",), ("local_actor_id",)}
+    assert {error["loc"] for error in captured.value.errors(include_url=False)} == {
+        ("installation_identity",),
+        ("local_actor_id",),
+    }
 
 
 @pytest.mark.parametrize("field", ["installation_identity", "local_actor_id"])
@@ -59,6 +71,8 @@ def test_settings_reject_invalid_server_actor_values(
         "database_url": "postgresql+asyncpg://user:pass@db:5432/labpilot",
         "installation_identity": "installation-1",
         "local_actor_id": "air",
+        "repository_allowed_roots": (Path("/repositories"),),
+        "repository_content_store_root": Path("/content"),
         field: value,
     }
 
@@ -72,6 +86,8 @@ def test_settings_reject_local_actor_id_over_200_utf8_bytes() -> None:
             database_url="postgresql+asyncpg://user:pass@db:5432/labpilot",
             installation_identity="installation-1",
             local_actor_id="界" * 67,
+            repository_allowed_roots=(Path("/repositories"),),
+            repository_content_store_root=Path("/content"),
         )
 
 
@@ -82,8 +98,105 @@ def test_settings_accept_local_actor_id_at_utf8_byte_boundary() -> None:
         database_url="postgresql+asyncpg://user:pass@db:5432/labpilot",
         installation_identity="installation-1",
         local_actor_id=actor_id,
+        repository_allowed_roots=(Path("/repositories"),),
+        repository_content_store_root=Path("/content"),
     )
 
     assert settings.local_actor_id == actor_id
     assert len(settings.local_actor_id) == 66
     assert len(settings.local_actor_id.encode("utf-8")) == 198
+
+
+def test_settings_parse_repository_roots_from_json_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "LABPILOT_DATABASE_URL",
+        "postgresql+asyncpg://user:pass@db:5432/labpilot",
+    )
+    monkeypatch.setenv("LABPILOT_INSTALLATION_IDENTITY", "installation-1")
+    monkeypatch.setenv("LABPILOT_LOCAL_ACTOR_ID", "air")
+    monkeypatch.setenv(
+        "LABPILOT_REPOSITORY_ALLOWED_ROOTS",
+        '["/repositories", "/worktrees"]',
+    )
+    monkeypatch.setenv("LABPILOT_REPOSITORY_CONTENT_STORE_ROOT", "/content")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.repository_allowed_roots == (
+        Path("/repositories"),
+        Path("/worktrees"),
+    )
+    assert isinstance(settings.repository_allowed_roots, tuple)
+    assert settings.repository_content_store_root == Path("/content")
+
+
+def test_settings_allow_empty_repository_roots_in_test_environment() -> None:
+    settings = Settings(
+        environment="test",
+        database_url="postgresql+asyncpg://user:pass@db:5432/labpilot",
+        installation_identity="installation-1",
+        local_actor_id="air",
+        repository_allowed_roots=(),
+        repository_content_store_root=Path("/path/need/not/exist"),
+    )
+
+    assert settings.repository_allowed_roots == ()
+
+
+@pytest.mark.parametrize("environment", ["development", "production"])
+def test_settings_reject_empty_repository_roots_outside_tests(environment: str) -> None:
+    with pytest.raises(ValidationError, match="repository_allowed_roots"):
+        Settings(
+            environment=environment,
+            database_url="postgresql+asyncpg://user:pass@db:5432/labpilot",
+            installation_identity="installation-1",
+            local_actor_id="air",
+            repository_allowed_roots=(),
+            repository_content_store_root=Path("/content"),
+        )
+
+
+def test_settings_keep_repository_paths_unresolved_and_frozen() -> None:
+    relative_store = Path("missing/../content")
+    settings = Settings(
+        environment="test",
+        database_url="postgresql+asyncpg://user:pass@db:5432/labpilot",
+        installation_identity="installation-1",
+        local_actor_id="air",
+        repository_allowed_roots=(Path("/missing/root"),),
+        repository_content_store_root=relative_store,
+    )
+
+    assert settings.repository_allowed_roots == (Path("/missing/root"),)
+    assert settings.repository_content_store_root == relative_store
+    with pytest.raises(ValidationError):
+        settings.repository_git_timeout_seconds = 20  # type: ignore[misc]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("repository_git_timeout_seconds", 0),
+        ("repository_git_timeout_seconds", 121),
+        ("repository_snapshot_max_entries", 0),
+        ("repository_snapshot_max_file_bytes", 0),
+        ("repository_snapshot_max_total_bytes", 0),
+        ("repository_inspection_max_files", 0),
+        ("repository_inspection_max_total_bytes", 0),
+    ],
+)
+def test_settings_reject_invalid_repository_limits(field: str, value: int) -> None:
+    values = {
+        "environment": "test",
+        "database_url": "postgresql+asyncpg://user:pass@db:5432/labpilot",
+        "installation_identity": "installation-1",
+        "local_actor_id": "air",
+        "repository_allowed_roots": (),
+        "repository_content_store_root": Path("/content"),
+        field: value,
+    }
+
+    with pytest.raises(ValidationError):
+        Settings(**values)

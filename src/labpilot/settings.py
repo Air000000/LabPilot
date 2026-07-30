@@ -1,7 +1,8 @@
 from functools import lru_cache
-from typing import Literal
+from pathlib import Path
+from typing import Literal, Self
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -18,6 +19,14 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     installation_identity: str = Field(min_length=1, max_length=200)
     local_actor_id: str = Field(min_length=1, max_length=200)
+    repository_allowed_roots: tuple[Path, ...]
+    repository_content_store_root: Path
+    repository_git_timeout_seconds: int = Field(default=15, ge=1, le=120)
+    repository_snapshot_max_entries: int = Field(default=10_000, ge=1)
+    repository_snapshot_max_file_bytes: int = Field(default=16 * 1024 * 1024, ge=1)
+    repository_snapshot_max_total_bytes: int = Field(default=256 * 1024 * 1024, ge=1)
+    repository_inspection_max_files: int = Field(default=50_000, ge=1)
+    repository_inspection_max_total_bytes: int = Field(default=512 * 1024 * 1024, ge=1)
 
     @field_validator("database_url")
     @classmethod
@@ -36,6 +45,14 @@ class Settings(BaseSettings):
         if size > 200:
             raise ValueError("local_actor_id exceeds 200 UTF-8 bytes")
         return value
+
+    @model_validator(mode="after")
+    def validate_repository_allowed_roots(self) -> Self:
+        if self.environment != "test" and not self.repository_allowed_roots:
+            raise ValueError(
+                "repository_allowed_roots must not be empty outside the test environment"
+            )
+        return self
 
 
 @lru_cache
