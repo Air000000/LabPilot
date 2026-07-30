@@ -3,27 +3,46 @@ import json
 import os
 import signal
 import sys
+from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 import pytest
 
 _STDERR_LIMIT = 4096
+_TRACEBACK_NEEDLE = b"Traceback"
+
+
+@dataclass(frozen=True, slots=True)
+class _StderrCapture:
+    retained: bytes
+    traceback_seen: bool
 
 
 async def _drain_stderr_bounded(
     stream: asyncio.StreamReader,
     *,
     limit: int,
-) -> bytes:
+) -> _StderrCapture:
+    if limit <= 0:
+        raise ValueError("limit must be positive")
     captured = bytearray()
+    tail = b""
+    traceback_seen = False
     while True:
         chunk = await stream.read(64 * 1024)
         if not chunk:
             break
+        scan_window = tail + chunk
+        if _TRACEBACK_NEEDLE in scan_window:
+            traceback_seen = True
+        tail = scan_window[-(len(_TRACEBACK_NEEDLE) - 1) :]
         remaining = limit - len(captured)
         if remaining > 0:
             captured.extend(chunk[:remaining])
-    return bytes(captured)
+    return _StderrCapture(
+        retained=bytes(captured),
+        traceback_seen=traceback_seen,
+    )
 
 
 def _sanitize_stderr(
@@ -46,7 +65,7 @@ def _sanitize_stderr(
 
 async def _cleanup_process(
     process: asyncio.subprocess.Process,
-    stderr_task: asyncio.Task[bytes],
+    stderr_task: asyncio.Task[_StderrCapture],
 ) -> None:
     if process.returncode is None:
         process.kill()
@@ -64,8 +83,8 @@ async def _cleanup_process(
 
 async def _stop_and_collect_stderr(
     process: asyncio.subprocess.Process,
-    stderr_task: asyncio.Task[bytes],
-) -> bytes:
+    stderr_task: asyncio.Task[_StderrCapture],
+) -> _StderrCapture:
     await _cleanup_process(process, stderr_task)
     return stderr_task.result()
 
@@ -74,14 +93,16 @@ async def _read_ready_marker(
     process: asyncio.subprocess.Process,
     module_name: str,
     isolated_database_url: str,
-    stderr_task: asyncio.Task[bytes],
+    stderr_task: asyncio.Task[_StderrCapture],
 ) -> dict[str, str]:
     assert process.stdout is not None
     try:
         line = await asyncio.wait_for(process.stdout.readline(), timeout=10)
     except TimeoutError:
-        stderr = await _stop_and_collect_stderr(process, stderr_task)
-        safe_stderr = _sanitize_stderr(stderr, isolated_database_url)
+        capture = await _stop_and_collect_stderr(process, stderr_task)
+        safe_stderr = _sanitize_stderr(
+            capture.retained, isolated_database_url
+        )
         pytest.fail(
             f"{module_name} timed out waiting for ready marker; "
             f"child return code: {process.returncode}; "
@@ -94,17 +115,21 @@ async def _read_ready_marker(
 
     try:
         return_code = await asyncio.wait_for(process.wait(), timeout=5)
-        stderr = await stderr_task
+        capture = await stderr_task
     except TimeoutError:
-        stderr = await _stop_and_collect_stderr(process, stderr_task)
-        safe_stderr = _sanitize_stderr(stderr, isolated_database_url)
+        capture = await _stop_and_collect_stderr(process, stderr_task)
+        safe_stderr = _sanitize_stderr(
+            capture.retained, isolated_database_url
+        )
         pytest.fail(
             f"{module_name} closed stdout but did not exit; "
             f"child return code: {process.returncode}; "
             f"bounded stderr: {safe_stderr}"
         )
 
-    safe_stderr = _sanitize_stderr(stderr, isolated_database_url)
+    safe_stderr = _sanitize_stderr(
+        capture.retained, isolated_database_url
+    )
     pytest.fail(
         f"{module_name} exited before ready marker; "
         f"child return code: {return_code}; "
@@ -116,31 +141,64 @@ async def _wait_for_clean_exit(
     process: asyncio.subprocess.Process,
     module_name: str,
     isolated_database_url: str,
-    stderr_task: asyncio.Task[bytes],
+    stderr_task: asyncio.Task[_StderrCapture],
 ) -> None:
     try:
         return_code = await asyncio.wait_for(process.wait(), timeout=5)
-        stderr = await stderr_task
+        capture = await stderr_task
     except TimeoutError:
-        stderr = await _stop_and_collect_stderr(process, stderr_task)
-        safe_stderr = _sanitize_stderr(stderr, isolated_database_url)
+        capture = await _stop_and_collect_stderr(process, stderr_task)
+        safe_stderr = _sanitize_stderr(
+            capture.retained, isolated_database_url
+        )
         pytest.fail(
             f"{module_name} timed out while exiting; "
             f"child return code: {process.returncode}; "
             f"bounded stderr: {safe_stderr}"
         )
 
-    safe_stderr = _sanitize_stderr(stderr, isolated_database_url)
+    safe_stderr = _sanitize_stderr(
+        capture.retained, isolated_database_url
+    )
     if return_code != 0:
         pytest.fail(
             f"{module_name} exited with child return code: {return_code}; "
             f"bounded stderr: {safe_stderr}"
         )
-    if "Traceback" in safe_stderr:
+    if capture.traceback_seen:
         pytest.fail(
             f"{module_name} exited with child return code: {return_code}; "
             f"stderr contains Traceback; bounded stderr: {safe_stderr}"
         )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_stderr_drain_detects_traceback_across_chunks() -> None:
+    stream = asyncio.StreamReader()
+    stream.feed_data(b"x" * 5000 + b"Trace")
+    drain_task = asyncio.create_task(
+        _drain_stderr_bounded(stream, limit=_STDERR_LIMIT)
+    )
+    await asyncio.sleep(0)
+    stream.feed_data(b"back (most recent call last):")
+    stream.feed_eof()
+
+    capture = await drain_task
+
+    assert capture.traceback_seen
+    assert len(capture.retained) <= _STDERR_LIMIT
+    assert b"Traceback" not in capture.retained
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_stderr_drain_requires_positive_limit() -> None:
+    stream = asyncio.StreamReader()
+    stream.feed_eof()
+
+    with pytest.raises(ValueError, match="positive"):
+        await _drain_stderr_bounded(stream, limit=0)
 
 
 @pytest.mark.integration
@@ -204,7 +262,7 @@ async def test_worker_large_stderr_is_drained_and_diagnostic_is_bounded(
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_worker_zero_exit_rejects_traceback(
+async def test_worker_zero_exit_rejects_traceback_after_retained_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     isolated_database_url = (
@@ -222,6 +280,7 @@ async def test_worker_zero_exit_rejects_traceback(
             "print(json.dumps("
             "{'event': 'process_shell.ready', 'process': 'diagnostic'}"
             "), flush=True)\n"
+            "sys.stderr.write('x' * 8192)\n"
             f"sys.stderr.write('Traceback: {isolated_database_url}\\n')\n"
             f"sys.stderr.write('admin={admin_url}\\n')\n"
         ),
