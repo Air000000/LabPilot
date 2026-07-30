@@ -101,6 +101,12 @@ async def test_git_runner_uses_argv_fixed_environment_and_no_shell(
         "core.untrackedCache=false",
         "-c",
         f"core.worktree={repository}",
+        "-c",
+        "core.excludesFile=/dev/null",
+        "-c",
+        "core.attributesFile=/dev/null",
+        "-c",
+        "core.hooksPath=/dev/null",
         "rev-parse",
         "--show-toplevel",
     )
@@ -316,7 +322,7 @@ async def test_probe_cannot_follow_repository_local_core_worktree_escape(
 
 
 @pytest.mark.asyncio
-async def test_probe_ignores_repository_local_config_includes_for_origin(
+async def test_probe_rejects_repository_local_config_includes_for_origin(
     tmp_path: Path,
 ) -> None:
     repository = _init_repository(tmp_path / "repository")
@@ -330,9 +336,122 @@ async def test_probe_ignores_repository_local_config_includes_for_origin(
     )
     _git(repository, "config", "include.path", str(included_config))
 
-    probe = await GitAdapter(git_executable=GIT, timeout_seconds=2).probe(repository)
+    with pytest.raises(RepositorySnapshotInspectionBundleUnsupportedEntry) as captured:
+        await GitAdapter(git_executable=GIT, timeout_seconds=2).probe(repository)
 
-    assert probe.remote_origin_sanitized is None
+    assert captured.value.reason_code == "repository_git_config_include_unsupported"
+
+
+@pytest.mark.asyncio
+async def test_probe_rejects_gitdir_file_pointing_outside(tmp_path: Path) -> None:
+    outside = _init_repository(tmp_path / "outside")
+    (outside / "outside.txt").write_text("outside\n", encoding="utf-8")
+    _commit_all(outside, "outside")
+    outside_head = _git(outside, "rev-parse", "HEAD").stdout.strip().decode("ascii")
+    repository = tmp_path / "allowed"
+    repository.mkdir()
+    (repository / ".git").write_text(
+        f"gitdir: {outside / '.git'}\n",
+        encoding="utf-8",
+    )
+
+    try:
+        probe = await GitAdapter(git_executable=GIT, timeout_seconds=2).probe(repository)
+    except RepositorySnapshotInspectionBundleUnsupportedEntry as exc:
+        assert exc.reason_code == "repository_git_dir_escape"
+    else:
+        assert probe.head_commit != outside_head
+
+
+@pytest.mark.asyncio
+async def test_probe_rejects_gitdir_symlink_pointing_outside(tmp_path: Path) -> None:
+    outside = _init_repository(tmp_path / "outside")
+    (outside / "outside.txt").write_text("outside\n", encoding="utf-8")
+    _commit_all(outside, "outside")
+    outside_head = _git(outside, "rev-parse", "HEAD").stdout.strip().decode("ascii")
+    repository = tmp_path / "allowed"
+    repository.mkdir()
+    (repository / ".git").symlink_to(outside / ".git", target_is_directory=True)
+
+    try:
+        probe = await GitAdapter(git_executable=GIT, timeout_seconds=2).probe(repository)
+    except RepositorySnapshotInspectionBundleUnsupportedEntry as exc:
+        assert exc.reason_code == "repository_git_dir_escape"
+    else:
+        assert probe.head_commit != outside_head
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["probe", "ls-tree", "cat-file"])
+async def test_observation_rejects_external_object_alternates(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    repository = _init_repository(tmp_path / "repository")
+    outside = _init_repository(tmp_path / "outside")
+    (outside / "outside.txt").write_text("outside\n", encoding="utf-8")
+    _commit_all(outside, "outside")
+    outside_head = _git(outside, "rev-parse", "HEAD").stdout.strip().decode("ascii")
+    outside_blob = (
+        _git(outside, "rev-parse", "HEAD:outside.txt").stdout.strip().decode("ascii")
+    )
+    alternates = repository / ".git" / "objects" / "info" / "alternates"
+    alternates.parent.mkdir(parents=True, exist_ok=True)
+    alternates.write_text(
+        f"{outside / '.git' / 'objects'}\n",
+        encoding="utf-8",
+    )
+    _git(repository, "update-ref", "refs/heads/main", outside_head)
+    adapter = GitAdapter(git_executable=GIT, timeout_seconds=2)
+
+    with pytest.raises(RepositorySnapshotInspectionBundleUnsupportedEntry) as captured:
+        if operation == "probe":
+            await adapter.probe(repository)
+        elif operation == "ls-tree":
+            await adapter.ls_tree(
+                repository,
+                outside_head,
+                max_entries=10,
+                max_output_bytes=4096,
+            )
+        else:
+            await adapter.cat_file_batch(
+                repository,
+                (outside_blob,),
+                max_object_bytes=64,
+                max_total_bytes=64,
+            )
+
+    assert captured.value.reason_code == "repository_git_alternates_unsupported"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("conditional", [False, True])
+async def test_probe_rejects_local_config_includes_that_hide_untracked_files(
+    tmp_path: Path,
+    conditional: bool,
+) -> None:
+    repository = _init_repository(tmp_path / "repository")
+    (repository / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+    _commit_all(repository)
+    hidden = repository / "hidden.txt"
+    hidden.write_text("hidden\n", encoding="utf-8")
+    excludes = tmp_path / "external-ignore"
+    excludes.write_text("hidden.txt\n", encoding="utf-8")
+    included_config = tmp_path / "included.gitconfig"
+    included_config.write_text(
+        f"[core]\n    excludesFile = {excludes}\n",
+        encoding="utf-8",
+    )
+    key = f"includeIf.gitdir:{repository}/.path" if conditional else "include.path"
+    _git(repository, "config", key, str(included_config))
+
+    try:
+        probe = await GitAdapter(git_executable=GIT, timeout_seconds=2).probe(repository)
+    except RepositorySnapshotInspectionBundleUnsupportedEntry as exc:
+        assert exc.reason_code == "repository_git_config_include_unsupported"
+    else:
+        assert any(entry.relative_path == "hidden.txt" for entry in probe.status_entries)
 
 
 @pytest.mark.asyncio
@@ -586,19 +705,24 @@ async def test_cat_file_batch_reads_exact_blob_bytes_in_request_order(
         b"second\nbytes",
         b"first\x00bytes",
     )
-    assert captured == [
-        (
-            str(GIT),
-            "-c",
-            "core.fsmonitor=false",
-            "-c",
-            "core.untrackedCache=false",
-            "-c",
-            f"core.worktree={repository}",
-            "cat-file",
-            "--batch",
-        )
-    ]
+    safe_prefix = (
+        str(GIT),
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.untrackedCache=false",
+        "-c",
+        f"core.worktree={repository}",
+        "-c",
+        "core.excludesFile=/dev/null",
+        "-c",
+        "core.attributesFile=/dev/null",
+        "-c",
+        "core.hooksPath=/dev/null",
+    )
+    assert captured
+    assert all(arguments[: len(safe_prefix)] == safe_prefix for arguments in captured)
+    assert captured[-1] == (*safe_prefix, "cat-file", "--batch")
 
 
 @pytest.mark.asyncio

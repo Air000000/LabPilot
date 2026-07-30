@@ -89,7 +89,7 @@ class GitAdapter:
         self._max_status_entries = max_status_entries
 
     async def probe(self, repository_root: Path) -> RepositoryProbe:
-        canonical_root = repository_root.resolve(strict=True)
+        canonical_root = await self._validate_repository_layout(repository_root)
         try:
             top_level = _decode_line(
                 (
@@ -226,10 +226,11 @@ class GitAdapter:
     ) -> tuple[GitTreeEntry, ...]:
         if max_entries < 1 or max_output_bytes < 1:
             raise ValueError("Git tree limits must be positive")
+        canonical_root = await self._validate_repository_layout(repository_root)
         commit_oid = _validate_object_oid(commit)
         payload = (
             await self._run_git(
-                repository_root,
+                canonical_root,
                 ("ls-tree", "-rz", "--full-tree", commit_oid),
                 max_stdout_bytes=max_output_bytes,
             )
@@ -246,12 +247,12 @@ class GitAdapter:
     ) -> tuple[GitObject, ...]:
         if max_object_bytes < 1 or max_total_bytes < 1:
             raise ValueError("Git object limits must be positive")
+        canonical_root = await self._validate_repository_layout(repository_root)
         if len(object_oids) > 50_000:
             raise _unsupported("cat_file_batch_entry_limit_exceeded")
         validated_oids = tuple(_validate_object_oid(value) for value in object_oids)
         if not validated_oids:
             return ()
-        canonical_root = repository_root.resolve(strict=True)
         arguments = _safe_git_arguments(
             canonical_root,
             ("cat-file", "--batch"),
@@ -329,6 +330,94 @@ class GitAdapter:
                 _sanitize_stderr(stderr),
             )
         return objects
+
+    async def _validate_repository_layout(self, repository_root: Path) -> Path:
+        canonical_root = repository_root.resolve(strict=True)
+        git_dir = canonical_root / ".git"
+        try:
+            git_dir_mode = git_dir.lstat().st_mode
+        except OSError as exc:
+            raise _unsupported("repository_git_dir_escape") from exc
+        if stat.S_ISLNK(git_dir_mode) or not stat.S_ISDIR(git_dir_mode):
+            raise _unsupported("repository_git_dir_escape")
+
+        unsupported_paths = (
+            (git_dir / "commondir", "repository_git_commondir_unsupported"),
+            (
+                git_dir / "objects" / "info" / "alternates",
+                "repository_git_alternates_unsupported",
+            ),
+            (
+                git_dir / "objects" / "info" / "http-alternates",
+                "repository_git_alternates_unsupported",
+            ),
+        )
+        for path, reason_code in unsupported_paths:
+            try:
+                path.lstat()
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                raise _unsupported(reason_code) from exc
+            raise _unsupported(reason_code)
+
+        try:
+            config_names = (
+                await self._run_git(
+                    canonical_root,
+                    (
+                        "config",
+                        "--local",
+                        "--no-includes",
+                        "--name-only",
+                        "--get-regexp",
+                        ".*",
+                    ),
+                )
+            ).stdout
+        except RepositoryGitCommandFailed as exc:
+            if exc.returncode != 1:
+                raise
+        else:
+            try:
+                names = (line.decode("utf-8") for line in config_names.splitlines())
+                for name in names:
+                    folded_name = name.casefold()
+                    if folded_name == "include.path" or (
+                        folded_name.startswith("includeif.")
+                        and folded_name.endswith(".path")
+                    ):
+                        raise _unsupported("repository_git_config_include_unsupported")
+            except UnicodeDecodeError as exc:
+                raise _unsupported("repository_git_config_include_unsupported") from exc
+
+        metadata_paths = (
+            (
+                ("rev-parse", "--absolute-git-dir"),
+                "repository_git_dir_escape",
+            ),
+            (
+                ("rev-parse", "--path-format=absolute", "--git-common-dir"),
+                "repository_git_common_dir_escape",
+            ),
+            (
+                ("rev-parse", "--path-format=absolute", "--git-path", "objects"),
+                "repository_git_object_dir_escape",
+            ),
+        )
+        for arguments, reason_code in metadata_paths:
+            raw_path = (await self._run_git(canonical_root, arguments)).stdout
+            observed_path = Path(_decode_line(raw_path, reason_code=reason_code))
+            if not observed_path.is_absolute():
+                raise _unsupported(reason_code)
+            try:
+                observed_path = observed_path.resolve(strict=True)
+            except (OSError, RuntimeError) as exc:
+                raise _unsupported(reason_code) from exc
+            if not observed_path.is_relative_to(canonical_root):
+                raise _unsupported(reason_code)
+
+        return canonical_root
 
     async def _run_git(
         self,
@@ -453,6 +542,12 @@ def _safe_git_arguments(
         "core.untrackedCache=false",
         "-c",
         f"core.worktree={repository_root}",
+        "-c",
+        "core.excludesFile=/dev/null",
+        "-c",
+        "core.attributesFile=/dev/null",
+        "-c",
+        "core.hooksPath=/dev/null",
         *arguments,
     )
 
