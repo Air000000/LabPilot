@@ -89,20 +89,23 @@ class GitAdapter:
         self._max_status_entries = max_status_entries
 
     async def probe(self, repository_root: Path) -> RepositoryProbe:
+        canonical_root = repository_root.resolve(strict=True)
         try:
             top_level = _decode_line(
                 (
                     await self._run_git(
-                        repository_root,
+                        canonical_root,
                         ("rev-parse", "--show-toplevel"),
                     )
                 ).stdout,
                 reason_code="invalid_repository_root",
             )
         except RepositoryGitCommandFailed as exc:
-            raise RepositoryNotGit(repository_root) from exc
+            raise RepositoryNotGit(canonical_root) from exc
 
-        canonical_root = Path(top_level).resolve(strict=True)
+        observed_root = Path(top_level).resolve(strict=True)
+        if observed_root != canonical_root:
+            raise _unsupported("repository_root_mismatch")
         try:
             head_commit = _parse_oid(
                 (
@@ -160,7 +163,13 @@ class GitAdapter:
                     (
                         await self._run_git(
                             canonical_root,
-                            ("config", "--get", "remote.origin.url"),
+                            (
+                                "config",
+                                "--local",
+                                "--no-includes",
+                                "--get",
+                                "remote.origin.url",
+                            ),
                         )
                     ).stdout,
                     reason_code="invalid_remote_origin",
@@ -242,11 +251,15 @@ class GitAdapter:
         validated_oids = tuple(_validate_object_oid(value) for value in object_oids)
         if not validated_oids:
             return ()
+        canonical_root = repository_root.resolve(strict=True)
+        arguments = _safe_git_arguments(
+            canonical_root,
+            ("cat-file", "--batch"),
+        )
         process = await asyncio.create_subprocess_exec(
             str(self._git_executable),
-            "cat-file",
-            "--batch",
-            cwd=str(repository_root),
+            *arguments,
+            cwd=str(canonical_root),
             env=_SAFE_GIT_ENVIRONMENT,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
@@ -325,10 +338,12 @@ class GitAdapter:
         max_stdout_bytes: int | None = None,
     ) -> _GitCommandResult:
         command_name = arguments[0]
+        canonical_root = repository_root.resolve(strict=True)
+        safe_arguments = _safe_git_arguments(canonical_root, arguments)
         process = await asyncio.create_subprocess_exec(
             str(self._git_executable),
-            *arguments,
-            cwd=str(repository_root),
+            *safe_arguments,
+            cwd=str(canonical_root),
             env=_SAFE_GIT_ENVIRONMENT,
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
@@ -425,6 +440,21 @@ class GitAdapter:
             if not task.done():
                 task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+
+
+def _safe_git_arguments(
+    repository_root: Path,
+    arguments: tuple[str, ...],
+) -> tuple[str, ...]:
+    return (
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.untrackedCache=false",
+        "-c",
+        f"core.worktree={repository_root}",
+        *arguments,
+    )
 
 
 async def _write_cat_file_input(

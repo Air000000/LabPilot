@@ -93,7 +93,17 @@ async def test_git_runner_uses_argv_fixed_environment_and_no_shell(
     )
 
     assert Path(result.stdout.rstrip().decode("utf-8")) == repository
-    assert captured["args"] == (str(GIT), "rev-parse", "--show-toplevel")
+    assert captured["args"] == (
+        str(GIT),
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.untrackedCache=false",
+        "-c",
+        f"core.worktree={repository}",
+        "rev-parse",
+        "--show-toplevel",
+    )
     kwargs = captured["kwargs"]
     assert isinstance(kwargs, dict)
     assert "shell" not in kwargs
@@ -253,6 +263,76 @@ async def test_probe_observes_ordinary_status_and_file_metadata(tmp_path: Path) 
     assert entries["untracked-link"].file_type == "symlink"
     assert entries["untracked-link"].file_mode == "120000"
     assert not (repository / ".git" / "index.lock").exists()
+
+
+@pytest.mark.asyncio
+async def test_probe_disables_repository_local_fsmonitor_command(tmp_path: Path) -> None:
+    repository = _init_repository(tmp_path / "repository")
+    (repository / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+    _commit_all(repository)
+    marker = tmp_path / "fsmonitor-executed"
+    fsmonitor = tmp_path / "fsmonitor"
+    fsmonitor.write_text(
+        "#!/usr/bin/python3\n"
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('executed', encoding='utf-8')\n"
+        "print('0')\n",
+        encoding="utf-8",
+    )
+    fsmonitor.chmod(0o755)
+    _git(repository, "config", "core.fsmonitor", str(fsmonitor))
+
+    probe = await GitAdapter(git_executable=GIT, timeout_seconds=2).probe(repository)
+
+    assert probe.canonical_root_path == str(repository.resolve())
+    assert not marker.exists()
+
+
+@pytest.mark.asyncio
+async def test_probe_cannot_follow_repository_local_core_worktree_escape(
+    tmp_path: Path,
+) -> None:
+    allowed_root = tmp_path / "allowed"
+    allowed_root.mkdir()
+    repository = _init_repository(allowed_root / "repository")
+    (repository / "inside.txt").write_text("inside\n", encoding="utf-8")
+    _commit_all(repository, "inside")
+    inside_head = _git(repository, "rev-parse", "HEAD").stdout.strip().decode("ascii")
+    outside = _init_repository(tmp_path / "outside")
+    (outside / "outside.txt").write_text("outside\n", encoding="utf-8")
+    _commit_all(outside, "outside")
+    outside_head = _git(outside, "rev-parse", "HEAD").stdout.strip().decode("ascii")
+    assert inside_head != outside_head
+    _git(repository, "config", "core.worktree", str(outside))
+
+    try:
+        probe = await GitAdapter(git_executable=GIT, timeout_seconds=2).probe(repository)
+    except RepositorySnapshotInspectionBundleUnsupportedEntry as exc:
+        assert exc.reason_code == "repository_root_mismatch"
+    else:
+        assert probe.canonical_root_path == str(repository.resolve())
+        assert probe.head_commit == inside_head
+        assert probe.head_commit != outside_head
+
+
+@pytest.mark.asyncio
+async def test_probe_ignores_repository_local_config_includes_for_origin(
+    tmp_path: Path,
+) -> None:
+    repository = _init_repository(tmp_path / "repository")
+    (repository / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+    _commit_all(repository)
+    included_config = tmp_path / "included.gitconfig"
+    included_config.write_text(
+        '[remote "origin"]\n'
+        "    url = https://user:secret@example.com/external/repo.git\n",
+        encoding="utf-8",
+    )
+    _git(repository, "config", "include.path", str(included_config))
+
+    probe = await GitAdapter(git_executable=GIT, timeout_seconds=2).probe(repository)
+
+    assert probe.remote_origin_sanitized is None
 
 
 @pytest.mark.asyncio
@@ -472,7 +552,10 @@ async def test_ls_tree_rejects_invalid_revision_and_entry_limit(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
-async def test_cat_file_batch_reads_exact_blob_bytes_in_request_order(tmp_path: Path) -> None:
+async def test_cat_file_batch_reads_exact_blob_bytes_in_request_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     repository = _init_repository(tmp_path / "repository")
     first = repository / "first.bin"
     second = repository / "second.bin"
@@ -482,6 +565,14 @@ async def test_cat_file_batch_reads_exact_blob_bytes_in_request_order(tmp_path: 
     first_oid = _git(repository, "rev-parse", "HEAD:first.bin").stdout.strip().decode("ascii")
     second_oid = _git(repository, "rev-parse", "HEAD:second.bin").stdout.strip().decode("ascii")
 
+    original = asyncio.create_subprocess_exec
+    captured: list[tuple[object, ...]] = []
+
+    async def capture(*args: object, **kwargs: object) -> asyncio.subprocess.Process:
+        captured.append(args)
+        return await original(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", capture)
     objects = await GitAdapter(git_executable=GIT, timeout_seconds=2).cat_file_batch(
         repository,
         (second_oid, first_oid),
@@ -495,6 +586,19 @@ async def test_cat_file_batch_reads_exact_blob_bytes_in_request_order(tmp_path: 
         b"second\nbytes",
         b"first\x00bytes",
     )
+    assert captured == [
+        (
+            str(GIT),
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.untrackedCache=false",
+            "-c",
+            f"core.worktree={repository}",
+            "cat-file",
+            "--batch",
+        )
+    ]
 
 
 @pytest.mark.asyncio
