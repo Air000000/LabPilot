@@ -30,6 +30,7 @@ from labpilot.context.repository_types import (
 OBSERVATION_PROFILE_VERSION = "wp1-a-git-observation:v1"
 _SAFE_GIT_ENVIRONMENT = {
     "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_NO_REPLACE_OBJECTS": "1",
     "GIT_OPTIONAL_LOCKS": "0",
     "GIT_TERMINAL_PROMPT": "0",
     "HOME": "/nonexistent",
@@ -45,6 +46,7 @@ _OID_PATTERN = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
 _RENAME_SCORE_PATTERN = re.compile(r"[RC][0-9]{1,3}")
 _ALLOWED_MODES = {"000000", "100644", "100755", "120000", "160000"}
 _ALLOWED_STATUS = {".", "M", "A", "D", "T"}
+_MAX_GIT_METADATA_ENTRIES = 100_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -340,6 +342,7 @@ class GitAdapter:
             raise _unsupported("repository_git_dir_escape") from exc
         if stat.S_ISLNK(git_dir_mode) or not stat.S_ISDIR(git_dir_mode):
             raise _unsupported("repository_git_dir_escape")
+        _validate_git_metadata_tree(git_dir)
 
         unsupported_paths = (
             (git_dir / "commondir", "repository_git_commondir_unsupported"),
@@ -529,6 +532,36 @@ class GitAdapter:
             if not task.done():
                 task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+
+
+def _validate_git_metadata_tree(git_dir: Path) -> None:
+    directories = [git_dir]
+    entry_count = 0
+    while directories:
+        directory = directories.pop()
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    entry_count += 1
+                    if entry_count > _MAX_GIT_METADATA_ENTRIES:
+                        raise _unsupported(
+                            "repository_git_metadata_entry_limit_exceeded"
+                        )
+                    entry_mode = entry.stat(follow_symlinks=False).st_mode
+                    if stat.S_ISLNK(entry_mode):
+                        raise _unsupported(
+                            "repository_git_metadata_symlink_unsupported"
+                        )
+                    if stat.S_ISDIR(entry_mode):
+                        directories.append(Path(entry.path))
+                    elif not stat.S_ISREG(entry_mode):
+                        raise _unsupported(
+                            "repository_git_metadata_special_file_unsupported"
+                        )
+        except OSError as exc:
+            raise _unsupported(
+                "repository_git_metadata_special_file_unsupported"
+            ) from exc
 
 
 def _safe_git_arguments(

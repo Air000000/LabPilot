@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import labpilot.context.git_adapter as git_adapter_module
 from labpilot.context.git_adapter import GitAdapter, _parse_porcelain_v2
 from labpilot.context.repository_types import (
     RepositoryGitCommandFailed,
@@ -75,6 +76,7 @@ async def test_git_runner_uses_argv_fixed_environment_and_no_shell(
     monkeypatch.setenv("GIT_DIR", "/attacker/git-dir")
     monkeypatch.setenv("GIT_WORK_TREE", "/attacker/work-tree")
     monkeypatch.setenv("GIT_ASKPASS", "/attacker/askpass")
+    monkeypatch.setenv("GIT_NO_REPLACE_OBJECTS", "0")
     monkeypatch.setenv("HTTPS_PROXY", "http://attacker.invalid")
     original = asyncio.create_subprocess_exec
     captured: dict[str, object] = {}
@@ -117,6 +119,7 @@ async def test_git_runner_uses_argv_fixed_environment_and_no_shell(
     environment = kwargs["env"]
     assert environment == {
         "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_NO_REPLACE_OBJECTS": "1",
         "GIT_OPTIONAL_LOCKS": "0",
         "GIT_TERMINAL_PROMPT": "0",
         "HOME": "/nonexistent",
@@ -295,7 +298,7 @@ async def test_probe_disables_repository_local_fsmonitor_command(tmp_path: Path)
 
 
 @pytest.mark.asyncio
-async def test_probe_cannot_follow_repository_local_core_worktree_escape(
+async def test_probe_rejects_repository_local_core_worktree_escape(
     tmp_path: Path,
 ) -> None:
     allowed_root = tmp_path / "allowed"
@@ -303,22 +306,15 @@ async def test_probe_cannot_follow_repository_local_core_worktree_escape(
     repository = _init_repository(allowed_root / "repository")
     (repository / "inside.txt").write_text("inside\n", encoding="utf-8")
     _commit_all(repository, "inside")
-    inside_head = _git(repository, "rev-parse", "HEAD").stdout.strip().decode("ascii")
     outside = _init_repository(tmp_path / "outside")
     (outside / "outside.txt").write_text("outside\n", encoding="utf-8")
     _commit_all(outside, "outside")
-    outside_head = _git(outside, "rev-parse", "HEAD").stdout.strip().decode("ascii")
-    assert inside_head != outside_head
     _git(repository, "config", "core.worktree", str(outside))
 
-    try:
-        probe = await GitAdapter(git_executable=GIT, timeout_seconds=2).probe(repository)
-    except RepositorySnapshotInspectionBundleUnsupportedEntry as exc:
-        assert exc.reason_code == "repository_root_mismatch"
-    else:
-        assert probe.canonical_root_path == str(repository.resolve())
-        assert probe.head_commit == inside_head
-        assert probe.head_commit != outside_head
+    with pytest.raises(RepositorySnapshotInspectionBundleUnsupportedEntry) as captured:
+        await GitAdapter(git_executable=GIT, timeout_seconds=2).probe(repository)
+
+    assert captured.value.reason_code == "repository_root_mismatch"
 
 
 @pytest.mark.asyncio
@@ -347,7 +343,6 @@ async def test_probe_rejects_gitdir_file_pointing_outside(tmp_path: Path) -> Non
     outside = _init_repository(tmp_path / "outside")
     (outside / "outside.txt").write_text("outside\n", encoding="utf-8")
     _commit_all(outside, "outside")
-    outside_head = _git(outside, "rev-parse", "HEAD").stdout.strip().decode("ascii")
     repository = tmp_path / "allowed"
     repository.mkdir()
     (repository / ".git").write_text(
@@ -355,12 +350,10 @@ async def test_probe_rejects_gitdir_file_pointing_outside(tmp_path: Path) -> Non
         encoding="utf-8",
     )
 
-    try:
-        probe = await GitAdapter(git_executable=GIT, timeout_seconds=2).probe(repository)
-    except RepositorySnapshotInspectionBundleUnsupportedEntry as exc:
-        assert exc.reason_code == "repository_git_dir_escape"
-    else:
-        assert probe.head_commit != outside_head
+    with pytest.raises(RepositorySnapshotInspectionBundleUnsupportedEntry) as captured:
+        await GitAdapter(git_executable=GIT, timeout_seconds=2).probe(repository)
+
+    assert captured.value.reason_code == "repository_git_dir_escape"
 
 
 @pytest.mark.asyncio
@@ -368,17 +361,14 @@ async def test_probe_rejects_gitdir_symlink_pointing_outside(tmp_path: Path) -> 
     outside = _init_repository(tmp_path / "outside")
     (outside / "outside.txt").write_text("outside\n", encoding="utf-8")
     _commit_all(outside, "outside")
-    outside_head = _git(outside, "rev-parse", "HEAD").stdout.strip().decode("ascii")
     repository = tmp_path / "allowed"
     repository.mkdir()
     (repository / ".git").symlink_to(outside / ".git", target_is_directory=True)
 
-    try:
-        probe = await GitAdapter(git_executable=GIT, timeout_seconds=2).probe(repository)
-    except RepositorySnapshotInspectionBundleUnsupportedEntry as exc:
-        assert exc.reason_code == "repository_git_dir_escape"
-    else:
-        assert probe.head_commit != outside_head
+    with pytest.raises(RepositorySnapshotInspectionBundleUnsupportedEntry) as captured:
+        await GitAdapter(git_executable=GIT, timeout_seconds=2).probe(repository)
+
+    assert captured.value.reason_code == "repository_git_dir_escape"
 
 
 @pytest.mark.asyncio
@@ -446,12 +436,197 @@ async def test_probe_rejects_local_config_includes_that_hide_untracked_files(
     key = f"includeIf.gitdir:{repository}/.path" if conditional else "include.path"
     _git(repository, "config", key, str(included_config))
 
-    try:
-        probe = await GitAdapter(git_executable=GIT, timeout_seconds=2).probe(repository)
-    except RepositorySnapshotInspectionBundleUnsupportedEntry as exc:
-        assert exc.reason_code == "repository_git_config_include_unsupported"
-    else:
-        assert any(entry.relative_path == "hidden.txt" for entry in probe.status_entries)
+    with pytest.raises(RepositorySnapshotInspectionBundleUnsupportedEntry) as captured:
+        await GitAdapter(git_executable=GIT, timeout_seconds=2).probe(repository)
+
+    assert captured.value.reason_code == "repository_git_config_include_unsupported"
+
+
+@pytest.mark.asyncio
+async def test_cat_file_batch_ignores_replacement_blob(tmp_path: Path) -> None:
+    repository = _init_repository(tmp_path / "repository")
+    original_content = b"original blob\n"
+    replacement_content = b"replacement blob\n"
+    original_path = repository / "original.bin"
+    replacement_path = repository / "replacement.bin"
+    original_path.write_bytes(original_content)
+    replacement_path.write_bytes(replacement_content)
+    original_oid = (
+        _git(repository, "hash-object", "-w", str(original_path))
+        .stdout.strip()
+        .decode("ascii")
+    )
+    replacement_oid = (
+        _git(repository, "hash-object", "-w", str(replacement_path))
+        .stdout.strip()
+        .decode("ascii")
+    )
+    _git(repository, "replace", original_oid, replacement_oid)
+
+    (observed,) = await GitAdapter(
+        git_executable=GIT,
+        timeout_seconds=2,
+    ).cat_file_batch(
+        repository,
+        (original_oid,),
+        max_object_bytes=64,
+        max_total_bytes=64,
+    )
+
+    assert observed.oid == original_oid
+    assert observed.content == original_content
+    assert observed.content != replacement_content
+
+
+@pytest.mark.asyncio
+async def test_probe_and_ls_tree_ignore_replacement_commit(tmp_path: Path) -> None:
+    repository = _init_repository(tmp_path / "repository")
+    original_path = repository / "original.txt"
+    original_path.write_text("original\n", encoding="utf-8")
+    _commit_all(repository, "original")
+    original_commit = _git(repository, "rev-parse", "HEAD").stdout.strip().decode("ascii")
+    original_tree = (
+        _git(repository, "rev-parse", "HEAD^{tree}").stdout.strip().decode("ascii")
+    )
+
+    original_path.unlink()
+    (repository / "replacement.txt").write_text("replacement\n", encoding="utf-8")
+    _commit_all(repository, "replacement")
+    replacement_commit = (
+        _git(repository, "rev-parse", "HEAD").stdout.strip().decode("ascii")
+    )
+    _git(repository, "replace", original_commit, replacement_commit)
+    _git(repository, "update-ref", "refs/heads/main", original_commit)
+    adapter = GitAdapter(git_executable=GIT, timeout_seconds=2)
+
+    probe = await adapter.probe(repository)
+    entries = await adapter.ls_tree(
+        repository,
+        original_commit,
+        max_entries=10,
+        max_output_bytes=4096,
+    )
+
+    assert probe.head_commit == original_commit
+    assert probe.tracked_tree_identity == original_tree
+    assert tuple(entry.relative_path for entry in entries) == ("original.txt",)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        Path("config"),
+        Path("index"),
+        Path("HEAD"),
+        Path("packed-refs"),
+        Path("info/exclude"),
+        Path("info/attributes"),
+    ],
+)
+async def test_probe_rejects_symlinked_git_control_file(
+    tmp_path: Path,
+    relative_path: Path,
+) -> None:
+    repository = _init_repository(tmp_path / "repository")
+    (repository / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+    _commit_all(repository)
+    control_path = repository / ".git" / relative_path
+    outside_path = tmp_path / f"outside-{relative_path.as_posix().replace('/', '-')}"
+    outside_path.write_bytes(control_path.read_bytes() if control_path.exists() else b"")
+    control_path.parent.mkdir(parents=True, exist_ok=True)
+    control_path.unlink(missing_ok=True)
+    control_path.symlink_to(outside_path)
+
+    with pytest.raises(RepositorySnapshotInspectionBundleUnsupportedEntry) as captured:
+        await GitAdapter(git_executable=GIT, timeout_seconds=2).probe(repository)
+
+    assert captured.value.reason_code == "repository_git_metadata_symlink_unsupported"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["probe", "ls-tree", "cat-file"])
+async def test_observation_rejects_nested_object_directory_symlink(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    repository = _init_repository(tmp_path / "repository")
+    outside = _init_repository(tmp_path / "outside")
+    (outside / "outside.txt").write_text("outside\n", encoding="utf-8")
+    _commit_all(outside, "outside")
+    outside_commit = _git(outside, "rev-parse", "HEAD").stdout.strip().decode("ascii")
+    outside_tree = (
+        _git(outside, "rev-parse", "HEAD^{tree}").stdout.strip().decode("ascii")
+    )
+    outside_blob = (
+        _git(outside, "rev-parse", "HEAD:outside.txt").stdout.strip().decode("ascii")
+    )
+    for oid in {outside_commit, outside_tree, outside_blob}:
+        destination = repository / ".git" / "objects" / oid[:2]
+        if not destination.exists():
+            destination.symlink_to(
+                outside / ".git" / "objects" / oid[:2],
+                target_is_directory=True,
+            )
+    (repository / ".git" / "refs" / "heads" / "main").write_text(
+        f"{outside_commit}\n",
+        encoding="ascii",
+    )
+    adapter = GitAdapter(git_executable=GIT, timeout_seconds=2)
+
+    with pytest.raises(RepositorySnapshotInspectionBundleUnsupportedEntry) as captured:
+        if operation == "probe":
+            await adapter.probe(repository)
+        elif operation == "ls-tree":
+            await adapter.ls_tree(
+                repository,
+                outside_commit,
+                max_entries=10,
+                max_output_bytes=4096,
+            )
+        else:
+            await adapter.cat_file_batch(
+                repository,
+                (outside_blob,),
+                max_object_bytes=64,
+                max_total_bytes=64,
+            )
+
+    assert captured.value.reason_code == "repository_git_metadata_symlink_unsupported"
+
+
+@pytest.mark.asyncio
+async def test_probe_rejects_git_metadata_entry_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = _init_repository(tmp_path / "repository")
+    (repository / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+    _commit_all(repository)
+    monkeypatch.setattr(
+        git_adapter_module,
+        "_MAX_GIT_METADATA_ENTRIES",
+        1,
+        raising=False,
+    )
+
+    with pytest.raises(RepositorySnapshotInspectionBundleUnsupportedEntry) as captured:
+        await GitAdapter(git_executable=GIT, timeout_seconds=2).probe(repository)
+
+    assert captured.value.reason_code == "repository_git_metadata_entry_limit_exceeded"
+
+
+@pytest.mark.asyncio
+async def test_probe_rejects_git_metadata_special_file(tmp_path: Path) -> None:
+    repository = _init_repository(tmp_path / "repository")
+    (repository / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+    _commit_all(repository)
+    os.mkfifo(repository / ".git" / "metadata-fifo")
+
+    with pytest.raises(RepositorySnapshotInspectionBundleUnsupportedEntry) as captured:
+        await GitAdapter(git_executable=GIT, timeout_seconds=2).probe(repository)
+
+    assert captured.value.reason_code == "repository_git_metadata_special_file_unsupported"
 
 
 @pytest.mark.asyncio
