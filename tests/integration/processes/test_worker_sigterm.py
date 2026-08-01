@@ -4,6 +4,7 @@ import os
 import signal
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import urlsplit
 
 import pytest
@@ -336,8 +337,16 @@ async def test_worker_zero_exit_rejects_traceback_after_retained_limit(
 async def test_worker_process_exits_zero_on_sigterm(
     module_name: str,
     isolated_database_url: str,
+    tmp_path: Path,
 ) -> None:
-    environment = os.environ.copy()
+    content_store_root = tmp_path / "repository-content"
+    content_store_root.mkdir()
+
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith("LABPILOT_")
+    }
     environment.update(
         {
             "LABPILOT_ENVIRONMENT": "test",
@@ -348,12 +357,17 @@ async def test_worker_process_exits_zero_on_sigterm(
             "LABPILOT_LOCAL_ACTOR_ID": (
                 "integration-test-worker"
             ),
+            "LABPILOT_REPOSITORY_ALLOWED_ROOTS": "[]",
+            "LABPILOT_REPOSITORY_CONTENT_STORE_ROOT": str(
+                content_store_root
+            ),
         }
     )
     process = await asyncio.create_subprocess_exec(
         sys.executable,
         "-m",
         module_name,
+        cwd=tmp_path,
         env=environment,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
