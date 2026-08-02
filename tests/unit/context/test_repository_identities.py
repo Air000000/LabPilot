@@ -717,3 +717,177 @@ def test_excluded_mutable_fields_do_not_change_identity() -> None:
     expected = identity()
     source.update(project_id="b", captured_at="second")
     assert identity() == expected
+
+
+def test_manifest_and_bundle_paths_do_not_inherit_inspection_path_budget() -> None:
+    repository_path = "repository/" + "x" * 4096
+    original_repository_path = "original/" + "y" * 4096
+    manifest_entry = RepositoryManifestEntryV1(
+        repository_path,
+        original_repository_path,
+        "tracked_overlay",
+        "regular",
+        "100644",
+        OID_1,
+        OID_2,
+        SHA_A,
+        12,
+        "verified",
+    )
+    assert len(dirty_worktree_manifest_hash((manifest_entry,))) == 64
+    entry_identity = repository_inspection_bundle_entry_identity(
+        repository_path=repository_path,
+        original_repository_path=original_repository_path,
+        entry_kind="tracked_overlay",
+        file_type="regular",
+        file_mode="100644",
+        head_blob_oid=OID_1,
+        index_blob_oid=OID_2,
+        content_hash=SHA_A,
+        size_bytes=12,
+        content_identity_status="verified",
+    )
+    item = BundleEntryManifestItemV1(
+        repository_path,
+        "tracked_overlay",
+        "regular",
+        entry_identity,
+    )
+    assert len(repository_inspection_bundle_entries_manifest_hash((item,))) == 64
+
+
+def test_inspection_paths_keep_the_4096_byte_budget() -> None:
+    repository_path = "x" * 4097
+    calls = (
+        lambda: entrypoint(repository_path),
+        lambda: repository_evidence_identity(
+            repository_snapshot_identity=SNAPSHOT_HASH,
+            repository_path=repository_path,
+            evidence_kind="file_presence",
+            line_start=None,
+            line_end=None,
+            structural_locator=None,
+            symbol_name=None,
+            file_mode="100644",
+            content_hash=SHA_A,
+            excerpt_hash=None,
+            declared_or_inferred="declared",
+            inspector_identity=InspectorIdentity("file_inventory", "v1"),
+        ),
+        lambda: UnresolvedCandidateValueV1("repository_path", repository_path),
+    )
+    for call in calls:
+        with pytest.raises(PersistedTextInvalid) as captured:
+            call()
+        assert captured.value.reason_code == "utf8_limit"
+
+
+def test_submodule_deletion_with_at_least_one_git_oid_is_valid() -> None:
+    deletion = RepositoryManifestEntryV1(
+        "vendor/lib",
+        None,
+        "deletion",
+        "submodule",
+        "160000",
+        OID_1,
+        None,
+        None,
+        0,
+        "not_applicable",
+    )
+    assert len(dirty_worktree_manifest_hash((deletion,))) == 64
+    assert len(
+        repository_inspection_bundle_entry_identity(
+            repository_path="vendor/lib",
+            original_repository_path=None,
+            entry_kind="deletion",
+            file_type="submodule",
+            file_mode="160000",
+            head_blob_oid=OID_1,
+            index_blob_oid=None,
+            content_hash=None,
+            size_bytes=0,
+            content_identity_status="not_applicable",
+        )
+    ) == 64
+
+
+def test_unsupported_dependency_binds_question_and_typed_repository_path() -> None:
+    source = UnresolvedCandidateValueV1("source_literal", "gitlink dependency")
+    matching = UnresolvedCandidateValueV1("repository_path", "vendor/lib")
+    mismatched = UnresolvedCandidateValueV1("repository_path", "vendor/other")
+    with pytest.raises(RepositoryIdentityInputInvalid):
+        UnresolvedQuestionV1(
+            "unsupported_source_dependency", None, None, (matching,), (EVIDENCE_HASH,)
+        )
+    for values in ((source,), (mismatched, source)):
+        with pytest.raises(RepositoryIdentityInputInvalid):
+            UnresolvedQuestionV1(
+                "unsupported_source_dependency",
+                "vendor/lib",
+                None,
+                values,
+                (EVIDENCE_HASH,),
+            )
+    assert UnresolvedQuestionV1(
+        "unsupported_source_dependency",
+        "vendor/lib",
+        None,
+        (matching, source),
+        (EVIDENCE_HASH,),
+    )
+
+
+def _large_unresolved_questions(
+    values_per_question: int,
+) -> tuple[UnresolvedQuestionV1, ...]:
+    questions = []
+    for question_index in range(128):
+        values = []
+        for value_index in range(values_per_question):
+            prefix = f"{question_index:03}:{value_index:02}:"
+            values.append(
+                UnresolvedCandidateValueV1(
+                    "source_literal",
+                    prefix + "x" * (8192 - len(prefix)),
+                )
+            )
+        questions.append(
+            UnresolvedQuestionV1(
+                "unsupported_static_construct",
+                None,
+                f"question:{question_index:03}",
+                tuple(values),
+                (EVIDENCE_HASH,),
+            )
+        )
+    return tuple(questions)
+
+
+def _large_ambiguous_result(values_per_question: int) -> str:
+    return repository_inspection_result_hash(
+        inspection_request_identity=REQUEST_HASH,
+        result_status="ambiguous",
+        candidate_entrypoints=(),
+        configuration_candidates=(),
+        metric_candidates=(),
+        artifact_candidates=(),
+        dataset_reference_candidates=(),
+        environment_candidates=(),
+        detected_commands=(),
+        unresolved_questions=_large_unresolved_questions(values_per_question),
+        completed_inspector_identities=inspectors(),
+        result_schema_version=1,
+    )
+
+
+def test_result_translates_encoder_output_budget_to_resource_limit() -> None:
+    with pytest.raises(InspectionResourceLimitExceeded) as captured:
+        _large_ambiguous_result(8)
+    assert captured.value.reason_code == "max_result_canonical_bytes"
+
+
+def test_result_keeps_profile_byte_budget_below_encoder_limit() -> None:
+    with pytest.raises(InspectionResourceLimitExceeded) as captured:
+        _large_ambiguous_result(4)
+    assert captured.value.reason_code == "max_result_canonical_bytes"

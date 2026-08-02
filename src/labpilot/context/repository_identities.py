@@ -5,7 +5,11 @@ from hashlib import sha256
 from typing import Any, Literal, cast
 from uuid import UUID
 
-from labpilot.common.canonical_json import CanonicalValue, canonical_json_bytes
+from labpilot.common.canonical_json import (
+    CanonicalizationError,
+    CanonicalValue,
+    canonical_json_bytes,
+)
 from labpilot.common.hashing import namespaced_sha256, namespaced_sha256_bytes
 
 type Sha256Hex = str
@@ -120,13 +124,17 @@ def _persisted(
     )
 
 
-def _relative(value: str, field: str = "repository_path") -> str:
+def _manifest_relative(value: str, field: str = "repository_path") -> str:
     try:
-        validated = validate_repository_relative_path(value)
+        return validate_repository_relative_path(value)
     except PersistedTextInvalid as exc:
         if exc.field == "relative_path" and field != "relative_path":
             raise PersistedTextInvalid(field, exc.reason_code) from exc
         raise
+
+
+def _relative(value: str, field: str = "repository_path") -> str:
+    validated = _manifest_relative(value, field)
     if len(validated.encode("utf-8")) > 4096:
         raise PersistedTextInvalid(field, "utf8_limit")
     return validated
@@ -227,9 +235,9 @@ def _validate_entry(
     *,
     bundle: bool,
 ) -> None:
-    _relative(path, "repository_path" if bundle else "relative_path")
+    _manifest_relative(path, "repository_path" if bundle else "relative_path")
     if original_path is not None:
-        _relative(
+        _manifest_relative(
             original_path,
             "original_repository_path" if bundle else "original_relative_path",
         )
@@ -266,7 +274,7 @@ def _validate_entry(
     ):
         raise RepositoryIdentityInputInvalid("mode_change_fields")
     if file_type == "submodule" and (
-        kind != "tracked_overlay"
+        kind not in {"tracked_overlay", "deletion"}
         or content_hash is not None
         or status != "not_applicable"
         or size != 0
@@ -608,6 +616,11 @@ class UnresolvedQuestionV1:
             raise RepositoryIdentityInputInvalid("candidate_value_kind")
         if len(set(keys)) != len(keys):
             raise RepositoryIdentityInputInvalid("duplicate_candidate_value")
+        if self.question_code == "unsupported_source_dependency" and (
+            self.repository_path is None
+            or ("repository_path", self.repository_path) not in keys
+        ):
+            raise RepositoryIdentityInputInvalid("unsupported_source_dependency_path")
         _evidence_set(self.evidence_identities)
 
 
@@ -619,7 +632,7 @@ class BundleEntryManifestItemV1:
     entry_identity: Sha256Hex
 
     def __post_init__(self) -> None:
-        _relative(self.repository_path)
+        _manifest_relative(self.repository_path)
         _enum(
             self.entry_kind,
             {"tracked_overlay", "untracked_file", "deletion", "mode_change"},
@@ -1334,7 +1347,12 @@ def repository_inspection_result_hash(
         ],
         "result_schema_version": result_schema_version,
     }
-    encoded = canonical_json_bytes(cast(CanonicalValue, payload))
+    try:
+        encoded = canonical_json_bytes(cast(CanonicalValue, payload))
+    except CanonicalizationError as exc:
+        if str(exc) != "canonical output exceeds max_output_bytes":
+            raise
+        raise InspectionResourceLimitExceeded("max_result_canonical_bytes") from exc
     if len(encoded) > _DEFAULT_LIMITS.max_result_canonical_bytes:
         raise InspectionResourceLimitExceeded("max_result_canonical_bytes")
     return namespaced_sha256_bytes("labpilot-repository-inspection-result:v1", encoded)
