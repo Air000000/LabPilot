@@ -8,3 +8,4 @@ docs/labpilot/architecture/08-agent-abstention-and-progress-control-v0.2.md: OK
 docs/labpilot/implementation/01-master-implementation-roadmap-v0.2.3-frozen.md: OK
 docs/labpilot/implementation/02-wp1-domain-context-overall-design-v0.5.md: OK
 docs/labpilot/implementation/03-wp1-a-project-repository-implementation-plan-v0.2.md: OK
+docs/labpilot/implementation/04-wp1-a-task6-canonical-identity-contract-v0.3.1.md: OK

@@ -20,4 +20,6 @@
 
 - `02-wp1-domain-context-overall-design-v0.5.md`: Approved Design Input
 - `03-wp1-a-project-repository-implementation-plan-v0.2.md`: Approved Implementation Plan
-- WP1-A implementation: Not started
+- `04-wp1-a-task6-canonical-identity-contract-v0.3.1.md`: Approved Implementation Contract
+- WP1-A Task 6 implementation: Not started
+- WP1-A Task 7: Not started
