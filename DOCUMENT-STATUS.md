@@ -21,5 +21,7 @@
 - `02-wp1-domain-context-overall-design-v0.5.md`: Approved Design Input
 - `03-wp1-a-project-repository-implementation-plan-v0.2.md`: Approved Implementation Plan
 - `04-wp1-a-task6-canonical-identity-contract-v0.3.1.md`: Approved Implementation Contract
-- WP1-A Task 6 implementation: Not started
+- WP1-A Task 0–6: Completed / independently reviewed / pushed / CI passed
 - WP1-A Task 7: Not started
+- Current WP1-A branch: `feature/wp1-domain-context`
+- Task 6 accepted implementation commit: `97e7e1ae0dee827103b3682692b1518df9ef3603`
