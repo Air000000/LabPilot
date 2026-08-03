@@ -7,6 +7,8 @@ from sqlalchemy import (
     BigInteger,
     CheckConstraint,
     DateTime,
+    ForeignKeyConstraint,
+    Index,
     PrimaryKeyConstraint,
     String,
     Text,
@@ -22,6 +24,20 @@ from labpilot.db.base import Base
 class ProjectRow(Base):
     __tablename__ = "projects"
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["project_id", "primary_repository_registration_id"],
+            [
+                "repository_registrations.project_id",
+                "repository_registrations.repository_registration_id",
+            ],
+            name="fk_projects_primary_repository_registration",
+        ),
+        Index(
+            "uq_projects_primary_repository_registration",
+            "primary_repository_registration_id",
+            unique=True,
+            postgresql_where=text("primary_repository_registration_id IS NOT NULL"),
+        ),
         PrimaryKeyConstraint("project_id", name="pk_projects"),
         UniqueConstraint("project_identity", name="uq_project_identity"),
         CheckConstraint(
