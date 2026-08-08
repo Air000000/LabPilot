@@ -694,7 +694,9 @@ abort the command attempt
 
 A previously committed, semantically reusable `EvidenceClosureAssessment` may be referenced read-only by its exact identity on a later valid attempt. The non-completed attempt must not create a replacement assessment merely to record that the Verifier failed to complete.
 
-The owning runtime may record a technical failure/audit observation only through its existing independent failure-reporting mechanism or a separate short technical-audit transaction. Such a record is not a successful command Receipt and must not imply Proposal verification or materialization success.
+This supplement defines and requires no new technical-audit persistence. If a pre-existing generic Runtime or technical-failure/audit mechanism is already defined elsewhere in LabPilot and is applicable under its own existing contract, that mechanism may record the failure using only its existing persisted object/event family and authority rules.
+
+This supplement MUST NOT introduce an Evidence Closure-specific aggregate, persisted object type, table, technical-failure record family, RuntimeEvent/event family, Outbox path, or Receipt for this purpose. If no applicable pre-existing generic mechanism exists, the non-completed Verifier attempt writes no technical audit record. Any such generic technical record is not a successful command Receipt and must not imply Proposal verification or materialization success.
 
 Retry semantics are:
 
@@ -783,7 +785,7 @@ rollback
 -> compare canonical payload
 ```
 
-If the payload differs, the original command fails. Any technical audit record is written only through an independent short transaction defined by the owning persistence plan; no successful command Receipt is created for the failed deterministic comparison.
+If the payload differs, the original command fails. A `DeterminismViolation` does not authorize any new Evidence Closure-specific audit persistence. If an already-existing generic Runtime/technical-audit mechanism applies under its own existing contract, it may record the technical failure using only that mechanism's existing schema/event family. Otherwise no technical audit record is written. In all cases, no successful command Receipt is created for the failed deterministic comparison.
 
 ### 10.5 Materialization identity
 
@@ -857,7 +859,16 @@ The architecture-level result matrix is exact at the persistence boundary:
 
 For the two zero-write conflict rows and the non-completed-Verifier row, an already committed semantically reusable assessment/result may be loaded or referenced read-only by exact identity. The failed attempt must not rewrite it, emit a new success event, or create a successful Receipt merely to record the failure.
 
-Any technical audit/failure record needed for a verifier non-completion, determinism violation, or CAS conflict uses an existing failure-reporting path or an independent short technical-audit transaction. It is outside the successful domain-command write set and must not be interpreted as a successful Receipt.
+Technical failure/audit recording is outside the Evidence Closure persistence model defined by this supplement. This supplement neither defines nor requires a new technical-audit record.
+
+For verifier non-completion, `DeterminismViolation`, or CAS conflict:
+
+- an already-existing generic Runtime/technical-audit mechanism MAY be reused only when it is applicable under its own existing contract;
+- it MUST use only that mechanism's already-defined persisted object/event family and authority semantics;
+- this supplement MUST NOT introduce an Evidence Closure-specific aggregate, object type, table, event family, Outbox path, or command Receipt for technical audit;
+- if no applicable pre-existing mechanism exists, no technical audit record is written.
+
+Any such generic technical record remains outside the successful domain-command write set and cannot be interpreted as a successful Receipt or formal Closure/Verification result.
 
 ### 11.5 Concurrency and deterministic winner comparison
 
@@ -1014,6 +1025,7 @@ Before this document may be promoted from `Review Candidate` to `Approved Planni
 [ ] Closure / Proposal Verifier separation
 [ ] ProposalVerificationAssessment only for completed-but-failed verification
 [ ] explicit zero-write semantics for non-completed Verifier attempts
+[ ] technical audit may only reuse an applicable pre-existing generic Runtime mechanism; otherwise no audit record is written
 [ ] evaluation-key / result-identity separation
 [ ] semantic reuse and DeterminismViolation behavior
 [ ] basic CAS for every persisted verdict
