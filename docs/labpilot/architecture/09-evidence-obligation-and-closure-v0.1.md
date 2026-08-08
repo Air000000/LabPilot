@@ -3,7 +3,7 @@
 ```text
 Document type: Architecture Supplement
 Version: v0.1
-Status: Review Candidate
+Status: Approved Planning Input
 Date: 2026-08-08
 
 Applies to:
