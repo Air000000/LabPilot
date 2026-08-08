@@ -31,7 +31,7 @@ async def test_upgrade_head_succeeds_on_an_isolated_empty_database(
             version = connection.scalar(
                 text("SELECT version_num FROM alembic_version")
             )
-        assert version == "0005_repository_registrations"
+        assert version == "0006_repository_snapshots"
     finally:
         engine.dispose()
 
@@ -39,6 +39,8 @@ async def test_upgrade_head_succeeds_on_an_isolated_empty_database(
     assert Path("migrations/versions/0002_runtime_events_outbox.py").exists()
     assert Path("migrations/versions/0003_command_receipts.py").exists()
     assert Path("migrations/versions/0004_projects.py").exists()
+    assert Path("migrations/versions/0005_repository_registrations.py").exists()
+    assert Path("migrations/versions/0006_repository_snapshots.py").exists()
 
 
 @pytest.mark.integration
@@ -148,7 +150,7 @@ async def test_task3_migration_upgrade_downgrade_upgrade_round_trip(
         with engine.connect() as connection:
             assert connection.scalar(
                 text("SELECT version_num FROM alembic_version")
-            ) == "0005_repository_registrations"
+            ) == "0006_repository_snapshots"
             assert connection.scalar(
                 text("SELECT to_regclass('public.projects')")
             ) == "projects"
@@ -166,7 +168,7 @@ async def test_task3_migration_upgrade_downgrade_upgrade_round_trip(
         with engine.connect() as connection:
             assert connection.scalar(
                 text("SELECT version_num FROM alembic_version")
-            ) == "0005_repository_registrations"
+            ) == "0006_repository_snapshots"
             assert connection.scalar(
                 text("SELECT to_regclass('public.projects')")
             ) == "projects"
@@ -391,5 +393,62 @@ async def test_repository_registration_schema_enforces_task7_constraints(
                     text("DELETE FROM projects WHERE project_id = :project_id"),
                     {"project_id": project_one},
                 )
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.integration
+@pytest.mark.destructive
+async def test_task9_migration_upgrade_downgrade_upgrade_round_trip(
+    isolated_database_url: str,
+) -> None:
+    sync_url = isolated_database_url.replace("+asyncpg", "+psycopg")
+    config = _alembic_config(isolated_database_url)
+    engine = create_engine(sync_url)
+    tables = (
+        "repository_snapshots",
+        "repository_snapshot_inspection_bundles",
+        "repository_snapshot_inspection_bundle_entries",
+        "repository_snapshot_freshness",
+    )
+    try:
+        command.upgrade(config, "0006_repository_snapshots")
+        with engine.connect() as connection:
+            assert connection.scalar(
+                text("SELECT version_num FROM alembic_version")
+            ) == "0006_repository_snapshots"
+            for table in tables:
+                assert connection.scalar(
+                    text("SELECT to_regclass(:table)"),
+                    {"table": f"public.{table}"},
+                ) == table
+
+        command.downgrade(config, "0005_repository_registrations")
+        with engine.connect() as connection:
+            assert connection.scalar(
+                text("SELECT version_num FROM alembic_version")
+            ) == "0005_repository_registrations"
+            assert connection.scalar(
+                text("SELECT to_regclass('public.repository_registrations')")
+            ) == "repository_registrations"
+            assert connection.scalar(
+                text("SELECT to_regclass('public.projects')")
+            ) == "projects"
+            for table in tables:
+                assert connection.scalar(
+                    text("SELECT to_regclass(:table)"),
+                    {"table": f"public.{table}"},
+                ) is None
+
+        command.upgrade(config, "0006_repository_snapshots")
+        with engine.connect() as connection:
+            assert connection.scalar(
+                text("SELECT version_num FROM alembic_version")
+            ) == "0006_repository_snapshots"
+            for table in tables:
+                assert connection.scalar(
+                    text("SELECT to_regclass(:table)"),
+                    {"table": f"public.{table}"},
+                ) == table
     finally:
         engine.dispose()
