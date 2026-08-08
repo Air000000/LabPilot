@@ -22,7 +22,8 @@
 - `03-wp1-a-project-repository-implementation-plan-v0.2.md`: Approved Implementation Plan
 - `04-wp1-a-task6-canonical-identity-contract-v0.3.1.md`: Approved Implementation Contract
 - `09-evidence-obligation-and-closure-v0.1.md`: Approved Planning Input; applies to future WP1-C/WP2 planning and does not alter the WP1-A v0.2 execution baseline
-- WP1-A Task 0–8: Completed / independently reviewed / pushed / CI passed
-- WP1-A Task 9: Not started
+- WP1-A Task 0–9: Completed / independently reviewed / pushed / CI passed
+- WP1-A Task 10: Not started
 - Current WP1-A branch: `feature/wp1-domain-context`
 - Task 8 accepted implementation commit: `ab3e773ee957b02f257df3f60f3ea3492626bcfa`
+- Task 9 accepted implementation commit: `949d22a676141cc279086775135610726b518c31`
