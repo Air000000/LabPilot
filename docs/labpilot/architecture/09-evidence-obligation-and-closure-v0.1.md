@@ -659,7 +659,7 @@ build ProposalVerificationInputManifest
 
 ### 9.2 Verifier completed but failed
 
-When the Verifier fully executes but does not pass:
+When the Verifier fully executes and produces a canonical result that does not pass:
 
 ```text
 basic CAS
@@ -674,13 +674,42 @@ basic CAS
 
 This is the only case in which the new `ProposalVerificationAssessment` persisted object is created.
 
-### 9.3 Verifier passed
+### 9.3 Verifier did not complete
 
-When the Verifier passes:
+A Verifier attempt is non-completed when no canonical verification result is produced. Examples include a verifier execution exception, runtime cancellation, or a verifier-input decoding/availability failure discovered after pre-execution validation but before a canonical result exists.
+
+These are technical/execution outcomes, not formal Proposal-verification verdicts. The failed attempt must:
+
+```text
+abort the command attempt
+-> persist no new EvidenceClosureAssessment
+-> persist no ProposalVerificationAssessment
+-> persist no ProposalRevision
+-> persist no formal materialization manifests
+-> persist no VerifierResult
+-> emit no success domain Event
+-> emit no success Outbox entry
+-> create no successful command Receipt
+```
+
+A previously committed, semantically reusable `EvidenceClosureAssessment` may be referenced read-only by its exact identity on a later valid attempt. The non-completed attempt must not create a replacement assessment merely to record that the Verifier failed to complete.
+
+The owning runtime may record a technical failure/audit observation only through its existing independent failure-reporting mechanism or a separate short technical-audit transaction. Such a record is not a successful command Receipt and must not imply Proposal verification or materialization success.
+
+Retry semantics are:
+
+1. `verification_execution_failed`: bounded retry is permitted only when the Verifier is side-effect-free, the immutable verification inputs and `verification_evaluation_key` are unchanged, and the existing Runtime retry policy permits the retry.
+2. `verification_cancelled`: no automatic retry; a later caller may submit a new attempt if the same immutable inputs remain valid.
+3. `verification_input_unavailable` or `verification_input_corrupt`: non-retriable for the same evaluation input. The authoritative input must be repaired/replaced and the resulting identity/CAS state re-evaluated before another attempt.
+4. If unavailable/corrupt authoritative input is detected by basic CAS rather than during Verifier execution, the basic-CAS conflict rule in Section 11 applies instead.
+
+### 9.4 Verifier passed
+
+When the Verifier produces a canonical passing result:
 
 ```text
 formal CAS / freshness validation
--> atomically create or persist as defined by the owning WP1-C plan:
+-> atomically create or persist:
    EvidenceClosureAssessment
    ProposalRevision
    ProposalRequirementManifest
@@ -692,9 +721,9 @@ formal CAS / freshness validation
    Receipt
 ```
 
-Every artifact in the successful transaction must correspond to the same `candidate_proposal_identity` and `obligation_set_identity` where applicable.
+Every artifact in the successful transaction must correspond to the same `candidate_proposal_identity` and `obligation_set_identity` where applicable. Nothing from this successful-materialization write set is committed before formal CAS passes.
 
-### 9.4 Closure and Verification are not interchangeable
+### 9.5 Closure and Verification are not interchangeable
 
 Closure may be `complete` while the Proposal Verifier fails for a Proposal-specific formal reason. Conversely, a candidate must not invoke the Verifier as a shortcut around incomplete, ambiguous, or blocked evidence closure.
 
@@ -783,6 +812,8 @@ If any check fails:
 -> do not persist the candidate Assessment
 ```
 
+A basic-CAS conflict also produces no success domain Event, no success Outbox entry, and no successful command Receipt for that failed attempt. Existing committed reusable artifacts may be referenced read-only by exact identity but are not rewritten by the conflicting attempt.
+
 ### 11.2 Formal CAS applies only to materialization
 
 Successful Proposal materialization performs the basic CAS plus formal freshness and binding checks, including as applicable:
@@ -801,7 +832,9 @@ Execution bindings valid
 Budget bindings valid
 ```
 
-The owning WP1-C plan freezes the exact set and error taxonomy before implementation.
+The formal CAS is the final commit gate for the materialization path. Candidate `EvidenceClosureAssessment`, `VerifierResult`, `ProposalRevision`, formal manifests, Event, Outbox, and successful Receipt for that attempt remain uncommitted until the formal CAS passes.
+
+The owning WP1-C plan freezes the exact check set and typed conflict taxonomy before implementation, but it may not change the zero-new-domain-write rule for formal-CAS failure.
 
 ### 11.3 External work stays outside the write transaction
 
@@ -811,17 +844,20 @@ The write transaction consumes immutable identities/results and performs only sh
 
 ### 11.4 Result matrix
 
-The architecture-level result matrix is:
+The architecture-level result matrix is exact at the persistence boundary:
 
-| Closure | Verifier | CAS result | Persisted result | ProposalRevision |
-|---|---|---|---|---|
-| `incomplete` / `ambiguous` / `blocked` | not run | basic CAS pass | `EvidenceClosureAssessment` + command event/outbox/receipt | no |
-| any | not run or completed | basic CAS conflict | no candidate assessment | no |
-| `complete` | completed, failed | basic CAS pass | `EvidenceClosureAssessment` + `ProposalVerificationAssessment` + event/outbox/receipt | no |
-| `complete` | passed | formal CAS pass | Closure assessment + ProposalRevision + formal manifests + VerifierResult + event/outbox/receipt | yes |
-| `complete` | passed | formal CAS conflict/freshness failure | no ProposalRevision; owning command reports conflict | no |
+| Closure | Verifier | CAS result | Persisted by this attempt | Command result | ProposalRevision |
+|---|---|---|---|---|---|
+| `incomplete` / `ambiguous` / `blocked` | not run | basic CAS pass | `EvidenceClosureAssessment` + success domain Event + Outbox + successful Receipt | committed non-materialization result | no |
+| any | not run / completed / passed | basic CAS conflict | no new candidate assessment, verification assessment, domain Event, Outbox, or successful Receipt | typed conflict | no |
+| `complete` | did not complete; no canonical result | persistence CAS not reached | no new `EvidenceClosureAssessment`, `ProposalVerificationAssessment`, `VerifierResult`, domain Event, Outbox, or successful Receipt | typed verifier non-completion error | no |
+| `complete` | completed, failed | basic CAS pass | `EvidenceClosureAssessment` + `ProposalVerificationAssessment` + success domain Event + Outbox + successful Receipt | committed verification-failed result | no |
+| `complete` | passed | formal CAS pass | `EvidenceClosureAssessment` + ProposalRevision + formal manifests + VerifierResult + success domain Event + Outbox + successful Receipt | committed materialization result | yes |
+| `complete` | passed | formal CAS conflict / freshness failure | no new `EvidenceClosureAssessment`, `ProposalVerificationAssessment`, ProposalRevision, formal manifests, VerifierResult, domain Event, Outbox, or successful Receipt | typed formal-CAS/freshness conflict | no |
 
-The owning implementation plan must refine whether a formal-CAS failure after a previously persisted reusable Closure result references that prior result or performs a new basic assessment write. It must not weaken the rule that no stale candidate is materialized.
+For the two zero-write conflict rows and the non-completed-Verifier row, an already committed semantically reusable assessment/result may be loaded or referenced read-only by exact identity. The failed attempt must not rewrite it, emit a new success event, or create a successful Receipt merely to record the failure.
+
+Any technical audit/failure record needed for a verifier non-completion, determinism violation, or CAS conflict uses an existing failure-reporting path or an independent short technical-audit transaction. It is outside the successful domain-command write set and must not be interpreted as a successful Receipt.
 
 ### 11.5 Concurrency and deterministic winner comparison
 
@@ -977,10 +1013,12 @@ Before this document may be promoted from `Review Candidate` to `Approved Planni
 [ ] deterministic Closure Evaluator
 [ ] Closure / Proposal Verifier separation
 [ ] ProposalVerificationAssessment only for completed-but-failed verification
+[ ] explicit zero-write semantics for non-completed Verifier attempts
 [ ] evaluation-key / result-identity separation
 [ ] semantic reuse and DeterminismViolation behavior
-[ ] basic CAS for every verdict
-[ ] formal CAS for successful materialization
+[ ] basic CAS for every persisted verdict
+[ ] formal CAS as the final successful-materialization commit gate
+[ ] zero-new-domain-write semantics for formal-CAS/freshness conflict
 [ ] loser rollback / reload / canonical comparison
 [ ] ExternalEvidenceObservation protocol only
 [ ] no ordinary-human override of hard Closure failure
