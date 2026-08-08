@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+from uuid import UUID
 
 RepositoryChangeKind = Literal[
     "tracked_overlay",
@@ -225,3 +226,23 @@ class RepositoryProbe:
     remote_origin_sanitized: str | None
     default_branch: str | None
     observation_profile_version: str
+
+
+@dataclass(frozen=True, slots=True)
+class RegisterLocalRepository:
+    project_id: UUID
+    user_path: Path
+    expected_project_row_version: int
+
+
+@dataclass(frozen=True, slots=True)
+class CheckRepositoryAvailability:
+    repository_registration_id: UUID
+    expected_row_version: int
+
+
+@dataclass(frozen=True, slots=True)
+class RevokeRepositoryRegistration:
+    repository_registration_id: UUID
+    expected_row_version: int
+    expected_project_row_version: int
