@@ -286,3 +286,4 @@ class RepositorySnapshotFreshnessRow(Base):
     current_probe_identity: Mapped[str | None] = mapped_column(String(64), nullable=True)
     probe_version: Mapped[str] = mapped_column(String(100), nullable=False)
     checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    row_version: Mapped[int] = mapped_column(BigInteger, nullable=False)
