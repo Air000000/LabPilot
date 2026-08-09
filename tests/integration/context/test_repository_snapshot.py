@@ -1,7 +1,9 @@
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import CheckConstraint, create_engine, text
 from sqlalchemy.exc import IntegrityError
 from tests.integration.db_helpers import upgrade_database_to_head
+
+from labpilot.context.models import RepositorySnapshotInspectionBundleEntryRow
 
 
 def _snapshot_values(
@@ -65,6 +67,134 @@ def _seed_registration(connection, project_id: str, registration_id: str, root: 
             "root": root * 64,
         },
     )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    (
+        "entry_kind",
+        "file_type",
+        "file_mode",
+        "content_ref",
+        "content_hash",
+        "size_bytes",
+        "must_succeed",
+    ),
+    (
+        ("tracked_overlay", "submodule", "160000", None, None, 0, True),
+        ("tracked_overlay", "submodule", "160000", "content/ref", "a" * 64, 1, False),
+        ("untracked_file", "submodule", "160000", "content/ref", "a" * 64, 1, False),
+        ("tracked_overlay", "regular", "100644", "content/ref", "a" * 64, 1, True),
+        ("tracked_overlay", "symlink", "120000", "content/ref", "a" * 64, 1, True),
+        ("untracked_file", "regular", "100644", "content/ref", "a" * 64, 1, True),
+        ("untracked_file", "symlink", "120000", "content/ref", "a" * 64, 1, True),
+        ("tracked_overlay", "regular", "100644", None, None, 0, False),
+        ("tracked_overlay", "symlink", "120000", None, None, 0, False),
+        ("untracked_file", "regular", "100644", None, None, 0, False),
+        ("untracked_file", "symlink", "120000", None, None, 0, False),
+    ),
+)
+async def test_bundle_entry_content_semantics_match_frozen_gitlink_contract(
+    isolated_database_url: str,
+    entry_kind: str,
+    file_type: str,
+    file_mode: str,
+    content_ref: str | None,
+    content_hash: str | None,
+    size_bytes: int,
+    must_succeed: bool,
+) -> None:
+    sync_url = isolated_database_url.replace("+asyncpg", "+psycopg")
+    upgrade_database_to_head(isolated_database_url)
+    engine = create_engine(sync_url)
+    try:
+        with engine.begin() as connection:
+            project_id = "10000000-0000-4000-8000-000000000001"
+            registration_id = "20000000-0000-4000-8000-000000000001"
+            snapshot_id = "30000000-0000-4000-8000-000000000001"
+            bundle_id = "40000000-0000-4000-8000-000000000001"
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO projects(
+                        project_id, project_identity, name, status, artifact_root_ref
+                    ) VALUES (:project_id, :identity, 'Project', 'active', 'artifact-root')
+                    """
+                ),
+                {"project_id": project_id, "identity": "p" * 64},
+            )
+            _seed_registration(connection, project_id, registration_id, "r")
+            _insert_snapshot(connection, _snapshot_values(snapshot_id, registration_id))
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO repository_snapshot_inspection_bundles(
+                        inspection_bundle_id, repository_snapshot_id, base_commit_sha,
+                        bundle_schema_version, capture_tool_version, entries_manifest_hash,
+                        inspection_bundle_identity, created_at
+                    ) VALUES (
+                        :bundle_id, :snapshot_id, :identity, 1, 'v1', :identity,
+                        :identity, now()
+                    )
+                    """
+                ),
+                {"bundle_id": bundle_id, "snapshot_id": snapshot_id, "identity": "b" * 64},
+            )
+            statement = text(
+                """
+                INSERT INTO repository_snapshot_inspection_bundle_entries(
+                    inspection_bundle_entry_id, inspection_bundle_id, repository_path,
+                    original_repository_path, entry_kind, file_type, file_mode, head_blob_oid,
+                    index_blob_oid, content_ref, content_hash, size_bytes, stable_ordinal,
+                    entry_identity
+                ) VALUES (
+                    '50000000-0000-4000-8000-000000000001', :bundle_id, 'entry', NULL,
+                    :entry_kind, :file_type, :file_mode, :head_oid, :index_oid, :content_ref,
+                    :content_hash, :size_bytes, 0, :entry_identity
+                )
+                """
+            )
+            values = {
+                "bundle_id": bundle_id,
+                "entry_kind": entry_kind,
+                "file_type": file_type,
+                "file_mode": file_mode,
+                "head_oid": None if entry_kind == "untracked_file" else "c" * 40,
+                "index_oid": None if entry_kind == "untracked_file" else "d" * 40,
+                "content_ref": content_ref,
+                "content_hash": content_hash,
+                "size_bytes": size_bytes,
+                "entry_identity": "e" * 64,
+            }
+            if must_succeed:
+                connection.execute(statement, values)
+            else:
+                with pytest.raises(IntegrityError), connection.begin_nested():
+                    connection.execute(statement, values)
+    finally:
+        engine.dispose()
+
+
+def test_bundle_entry_orm_content_constraint_matches_frozen_gitlink_contract() -> None:
+    constraint = next(
+        item
+        for item in RepositorySnapshotInspectionBundleEntryRow.__table__.constraints
+        if isinstance(item, CheckConstraint)
+        and item.name == "ck_snapshot_bundle_entries_content_semantics"
+    )
+    actual = " ".join(str(constraint.sqltext).split())
+    expected = " ".join(
+        """
+        (entry_kind IN ('deletion', 'mode_change') AND
+        content_ref IS NULL AND content_hash IS NULL) OR
+        (entry_kind = 'tracked_overlay' AND file_type = 'submodule' AND
+        content_ref IS NULL AND content_hash IS NULL) OR
+        (entry_kind IN ('tracked_overlay', 'untracked_file') AND
+        file_type IN ('regular', 'symlink') AND
+        content_ref IS NOT NULL AND content_hash IS NOT NULL)
+        """.split()
+    )
+    assert actual == expected
 
 
 @pytest.mark.integration

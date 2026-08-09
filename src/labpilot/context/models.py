@@ -232,7 +232,10 @@ class RepositorySnapshotInspectionBundleEntryRow(Base):
         CheckConstraint(
             "(entry_kind IN ('deletion', 'mode_change') AND "
             "content_ref IS NULL AND content_hash IS NULL) OR "
+            "(entry_kind = 'tracked_overlay' AND file_type = 'submodule' AND "
+            "content_ref IS NULL AND content_hash IS NULL) OR "
             "(entry_kind IN ('tracked_overlay', 'untracked_file') AND "
+            "file_type IN ('regular', 'symlink') AND "
             "content_ref IS NOT NULL AND content_hash IS NOT NULL)",
             name="ck_snapshot_bundle_entries_content_semantics",
         ),
