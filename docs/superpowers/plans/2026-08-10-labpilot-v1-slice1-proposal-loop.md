@@ -1219,6 +1219,7 @@ Do not run the full Slice CI gate solely for this task.
 
 **Files:**
 - Create: `src/labpilot/context/repository_source.py`
+- Create: `src/labpilot/experiments/proposal_ports.py`
 - Create: `src/labpilot/context/proposal_repository_adapter.py`
 - Modify: `src/labpilot/context/repository_repository.py`
 - Create: `tests/unit/context/test_repository_source.py`
@@ -1229,7 +1230,7 @@ Do not run the full Slice CI gate solely for this task.
 
 **Interfaces:**
 - Consumes: existing `GitAdapter`, `ContentAddressedStore`, Snapshot/Bundle rows.
-- Produces: exact §2.1 Repository facade and §2.2 Proposal repository fact adapter.
+- Produces: exact §2.1 Repository facade, exact §2.2 experiments-owned Repository Fact Port, and the Proposal repository fact adapter.
 
 - [ ] **Step 1: Write facade unit tests against fake Git/CAS/repository collaborators**
 
@@ -1347,9 +1348,27 @@ probe.status_entries == ()
 
 Return typed readiness instead of mutating Snapshot/Freshness.
 
-- [ ] **Step 9: Implement the experiments adapter**
+- [ ] **Step 9: Create the experiments-owned fact port and implement the context adapter**
 
-`context/proposal_repository_adapter.py` imports `experiments.proposal_ports` and maps the context return types into `ApprovalSourceState` / `ProposalPathFact`. This direction is allowed; the reverse import is forbidden.
+Create `src/labpilot/experiments/proposal_ports.py` **exactly as frozen in §2.2**. Do not add Proposal domain types from §2.3 or any Task 3 behavior.
+
+Then implement `context/proposal_repository_adapter.py`.
+
+`context/proposal_repository_adapter.py` imports `experiments.proposal_ports` and maps the context return types into `ProposalSnapshotState`, `ApprovalSourceState`, and `ProposalPathFact`.
+
+This dependency direction is allowed:
+
+```text
+context -> experiments.proposal_ports
+```
+
+The reverse remains forbidden:
+
+```text
+experiments -> context
+```
+
+The port file is intentionally created in Task 2 because the Task 2 adapter must compile and type-check against it. Task 3 consumes this already-created port; it does not redefine it.
 
 - [ ] **Step 10: Run focused regression**
 
@@ -1371,7 +1390,8 @@ Review scope is only the Task 2 diff plus direct regressions in accepted Git/Sna
 After APPROVE:
 
 ```bash
-git add src/labpilot/context/repository_source.py \
+git add src/labpilot/experiments/proposal_ports.py \
+  src/labpilot/context/repository_source.py \
   src/labpilot/context/proposal_repository_adapter.py \
   src/labpilot/context/repository_repository.py \
   tests/unit/context/test_repository_source.py \
@@ -1390,7 +1410,6 @@ git commit -m "feat: add repository source facade"
 
 **Files:**
 - Create: `src/labpilot/experiments/proposal_types.py`
-- Create: `src/labpilot/experiments/proposal_ports.py`
 - Create: `src/labpilot/experiments/proposal_models.py`
 - Create: `src/labpilot/experiments/proposal_repository.py`
 - Create: `src/labpilot/experiments/proposal_verifier.py`
@@ -1406,7 +1425,7 @@ git commit -m "feat: add repository source facade"
 - Regression: `tests/integration/experiments/test_project_service.py`
 
 **Interfaces:**
-- Consumes: §2.2 repository fact Protocol only; no `experiments -> context` import.
+- Consumes: existing §2.2 `ProposalRepositoryFactPort` created by Task 2; no `experiments -> context` import.
 - Produces: Proposal domain interfaces in §2.3–2.5 and migration `0007`.
 
 - [ ] **Step 1: Write value-object/hash unit tests**
