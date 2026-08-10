@@ -617,8 +617,7 @@ class UnresolvedQuestionV1:
         if len(set(keys)) != len(keys):
             raise RepositoryIdentityInputInvalid("duplicate_candidate_value")
         if self.question_code == "unsupported_source_dependency" and (
-            self.repository_path is None
-            or ("repository_path", self.repository_path) not in keys
+            self.repository_path is None or ("repository_path", self.repository_path) not in keys
         ):
             raise RepositoryIdentityInputInvalid("unsupported_source_dependency_path")
         _evidence_set(self.evidence_identities)
@@ -739,9 +738,9 @@ def repository_registration_identity(
     )
 
 
-def _manifest_hash(
+def _manifest_payload(
     entries: Sequence[RepositoryManifestEntryV1], *, dirty: bool, version: int
-) -> str:
+) -> dict[str, object]:
     _version(version, "manifest_schema_version")
     copied = list(entries)
     if not copied:
@@ -764,13 +763,34 @@ def _manifest_hash(
             entry.file_type.encode(),
         ),
     )
+    return {
+        "entries": [_entry_object(entry) for entry in ordered],
+        "manifest_schema_version": version,
+    }
+
+
+def _manifest_hash(
+    entries: Sequence[RepositoryManifestEntryV1], *, dirty: bool, version: int
+) -> str:
     namespace = "labpilot-dirty-worktree-manifest:v1" if dirty else "labpilot-untracked-manifest:v1"
-    return _hash(
-        namespace,
-        {
-            "entries": [_entry_object(entry) for entry in ordered],
-            "manifest_schema_version": version,
-        },
+    return _hash(namespace, _manifest_payload(entries, dirty=dirty, version=version))
+
+
+def repository_manifest_canonical_bytes(
+    entries: Sequence[RepositoryManifestEntryV1],
+    *,
+    kind: Literal["dirty", "untracked"],
+    manifest_schema_version: Literal[1] = 1,
+) -> bytes:
+    return canonical_json_bytes(
+        cast(
+            CanonicalValue,
+            _manifest_payload(
+                entries,
+                dirty=kind == "dirty",
+                version=manifest_schema_version,
+            ),
+        )
     )
 
 

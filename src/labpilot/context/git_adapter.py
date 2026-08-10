@@ -5,14 +5,22 @@ import stat
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 from urllib.parse import urlsplit, urlunsplit
+from uuid import UUID
 
+from labpilot.context.content_store import ContentAddressedStore
+from labpilot.context.repository_identities import (
+    RepositoryManifestEntryV1,
+    repository_manifest_canonical_bytes,
+)
 from labpilot.context.repository_types import (
+    CapturedBundleEntry,
     GitObject,
     GitStatusEntry,
     GitTreeEntry,
     RepositoryChangeKind,
+    RepositoryFileMode,
     RepositoryFileType,
     RepositoryGitCommandFailed,
     RepositoryGitCommandTimeout,
@@ -24,7 +32,10 @@ from labpilot.context.repository_types import (
     RepositoryHeadUnavailable,
     RepositoryNotGit,
     RepositoryProbe,
+    RepositorySnapshotCaptureConflict,
     RepositorySnapshotInspectionBundleUnsupportedEntry,
+    RepositorySnapshotObservation,
+    StableStatToken,
 )
 
 OBSERVATION_PROFILE_VERSION = "wp1-a-git-observation:v1"
@@ -46,13 +57,33 @@ _OID_PATTERN = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
 _RENAME_SCORE_PATTERN = re.compile(r"[RC][0-9]{1,3}")
 _ALLOWED_MODES = {"000000", "100644", "100755", "120000", "160000"}
 _ALLOWED_STATUS = {".", "M", "A", "D", "T"}
+type _GitStatusMode = Literal["000000", "100644", "100755", "120000", "160000"]
 _MAX_GIT_METADATA_ENTRIES = 100_000
+_LFS_POINTER_MAX_BYTES = 1024
+_LFS_OID_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
+_LFS_EXTENSION_KEY_PATTERN = re.compile(r"ext-(0|[1-9][0-9]*)-([A-Za-z0-9_]+)")
+_MAX_SIGNED_INT64 = 9223372036854775807
 
 
 @dataclass(frozen=True, slots=True)
 class _GitCommandResult:
     stdout: bytes
     stderr: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class _AnchoredRepositoryRoot:
+    canonical_path: Path
+    descriptor: int
+    device: int
+    inode: int
+
+    @property
+    def fd_path(self) -> Path:
+        return Path(f"/proc/self/fd/{self.descriptor}")
+
+
+type _RepositoryRoot = Path | _AnchoredRepositoryRoot
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,14 +121,22 @@ class GitAdapter:
         self._max_stderr_bytes = max_stderr_bytes
         self._max_status_entries = max_status_entries
 
-    async def probe(self, repository_root: Path) -> RepositoryProbe:
-        canonical_root = await self._validate_repository_layout(repository_root)
+    async def probe(self, repository_root: _RepositoryRoot) -> RepositoryProbe:
+        if isinstance(repository_root, Path):
+            root = await asyncio.to_thread(_anchor_repository_root, repository_root)
+            try:
+                return await self.probe(root)
+            finally:
+                os.close(root.descriptor)
+        root = repository_root
+        await self._validate_repository_layout(root)
+        canonical_root = root.canonical_path
         try:
-            top_level = _decode_line(
+            inside_worktree = _decode_line(
                 (
                     await self._run_git(
-                        canonical_root,
-                        ("rev-parse", "--show-toplevel"),
+                        root,
+                        ("rev-parse", "--is-inside-work-tree"),
                     )
                 ).stdout,
                 reason_code="invalid_repository_root",
@@ -105,14 +144,13 @@ class GitAdapter:
         except RepositoryGitCommandFailed as exc:
             raise RepositoryNotGit(canonical_root) from exc
 
-        observed_root = Path(top_level).resolve(strict=True)
-        if observed_root != canonical_root:
+        if inside_worktree != "true":
             raise _unsupported("repository_root_mismatch")
         try:
             head_commit = _parse_oid(
                 (
                     await self._run_git(
-                        canonical_root,
+                        root,
                         ("rev-parse", "--verify", "HEAD"),
                     )
                 ).stdout.strip()
@@ -124,7 +162,7 @@ class GitAdapter:
             branch = _decode_line(
                 (
                     await self._run_git(
-                        canonical_root,
+                        root,
                         ("symbolic-ref", "--quiet", "--short", "HEAD"),
                     )
                 ).stdout,
@@ -138,14 +176,14 @@ class GitAdapter:
         tracked_tree = _parse_oid(
             (
                 await self._run_git(
-                    canonical_root,
+                    root,
                     ("rev-parse", "HEAD^{tree}"),
                 )
             ).stdout.strip()
         )
         status = (
             await self._run_git(
-                canonical_root,
+                root,
                 (
                     "--no-optional-locks",
                     "-c",
@@ -159,12 +197,29 @@ class GitAdapter:
                 ),
             )
         ).stdout
+        worktree_content_changes = _parse_numstat_content_changes(
+            (
+                await self._run_git(
+                    root,
+                    (
+                        "--no-optional-locks",
+                        "diff",
+                        "--no-ext-diff",
+                        "--no-renames",
+                        "--numstat",
+                        "-z",
+                        "--",
+                    ),
+                )
+            ).stdout,
+            max_entries=self._max_status_entries,
+        )
         try:
             remote_origin = _sanitize_remote_url(
                 _decode_line(
                     (
                         await self._run_git(
-                            canonical_root,
+                            root,
                             (
                                 "config",
                                 "--local",
@@ -186,7 +241,7 @@ class GitAdapter:
             origin_head = _decode_line(
                 (
                     await self._run_git(
-                        canonical_root,
+                        root,
                         ("symbolic-ref", "refs/remotes/origin/HEAD"),
                     )
                 ).stdout,
@@ -210,8 +265,9 @@ class GitAdapter:
             tracked_tree_identity=tracked_tree,
             status_entries=_parse_porcelain_v2(
                 status,
-                canonical_root,
+                root.descriptor,
                 max_entries=self._max_status_entries,
+                worktree_content_changes=worktree_content_changes,
             ),
             remote_origin_sanitized=remote_origin,
             default_branch=default_branch,
@@ -220,7 +276,7 @@ class GitAdapter:
 
     async def ls_tree(
         self,
-        repository_root: Path,
+        repository_root: _RepositoryRoot,
         commit: str,
         *,
         max_entries: int,
@@ -228,11 +284,23 @@ class GitAdapter:
     ) -> tuple[GitTreeEntry, ...]:
         if max_entries < 1 or max_output_bytes < 1:
             raise ValueError("Git tree limits must be positive")
-        canonical_root = await self._validate_repository_layout(repository_root)
+        if isinstance(repository_root, Path):
+            root = await asyncio.to_thread(_anchor_repository_root, repository_root)
+            try:
+                return await self.ls_tree(
+                    root,
+                    commit,
+                    max_entries=max_entries,
+                    max_output_bytes=max_output_bytes,
+                )
+            finally:
+                os.close(root.descriptor)
+        root = repository_root
+        await self._validate_repository_layout(root)
         commit_oid = _validate_object_oid(commit)
         payload = (
             await self._run_git(
-                canonical_root,
+                root,
                 ("ls-tree", "-rz", "--full-tree", commit_oid),
                 max_stdout_bytes=max_output_bytes,
             )
@@ -241,7 +309,7 @@ class GitAdapter:
 
     async def cat_file_batch(
         self,
-        repository_root: Path,
+        repository_root: _RepositoryRoot,
         object_oids: tuple[str, ...],
         *,
         max_object_bytes: int,
@@ -249,21 +317,34 @@ class GitAdapter:
     ) -> tuple[GitObject, ...]:
         if max_object_bytes < 1 or max_total_bytes < 1:
             raise ValueError("Git object limits must be positive")
-        canonical_root = await self._validate_repository_layout(repository_root)
+        if isinstance(repository_root, Path):
+            root = await asyncio.to_thread(_anchor_repository_root, repository_root)
+            try:
+                return await self.cat_file_batch(
+                    root,
+                    object_oids,
+                    max_object_bytes=max_object_bytes,
+                    max_total_bytes=max_total_bytes,
+                )
+            finally:
+                os.close(root.descriptor)
+        root = repository_root
+        await self._validate_repository_layout(root)
         if len(object_oids) > 50_000:
             raise _unsupported("cat_file_batch_entry_limit_exceeded")
         validated_oids = tuple(_validate_object_oid(value) for value in object_oids)
         if not validated_oids:
             return ()
         arguments = _safe_git_arguments(
-            canonical_root,
+            root.fd_path,
             ("cat-file", "--batch"),
         )
         process = await asyncio.create_subprocess_exec(
             str(self._git_executable),
             *arguments,
-            cwd=str(canonical_root),
+            cwd=str(root.fd_path),
             env=_SAFE_GIT_ENVIRONMENT,
+            pass_fds=(root.descriptor,),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -333,41 +414,35 @@ class GitAdapter:
             )
         return objects
 
-    async def _validate_repository_layout(self, repository_root: Path) -> Path:
-        canonical_root = repository_root.resolve(strict=True)
-        git_dir = canonical_root / ".git"
+    async def _validate_repository_layout(self, root: _AnchoredRepositoryRoot) -> None:
         try:
-            git_dir_mode = git_dir.lstat().st_mode
+            git_descriptor = os.open(
+                ".git",
+                os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                dir_fd=root.descriptor,
+            )
         except OSError as exc:
             raise _unsupported("repository_git_dir_escape") from exc
-        if stat.S_ISLNK(git_dir_mode) or not stat.S_ISDIR(git_dir_mode):
-            raise _unsupported("repository_git_dir_escape")
-        _validate_git_metadata_tree(git_dir)
-
-        unsupported_paths = (
-            (git_dir / "commondir", "repository_git_commondir_unsupported"),
-            (
-                git_dir / "objects" / "info" / "alternates",
-                "repository_git_alternates_unsupported",
-            ),
-            (
-                git_dir / "objects" / "info" / "http-alternates",
-                "repository_git_alternates_unsupported",
-            ),
-        )
-        for path, reason_code in unsupported_paths:
-            try:
-                path.lstat()
-            except FileNotFoundError:
-                continue
-            except OSError as exc:
-                raise _unsupported(reason_code) from exc
-            raise _unsupported(reason_code)
+        try:
+            _validate_git_metadata_tree(git_descriptor)
+            unsupported_paths = (
+                (("commondir",), "repository_git_commondir_unsupported"),
+                (("objects", "info", "alternates"), "repository_git_alternates_unsupported"),
+                (
+                    ("objects", "info", "http-alternates"),
+                    "repository_git_alternates_unsupported",
+                ),
+            )
+            for components, reason_code in unsupported_paths:
+                if _git_metadata_path_exists(git_descriptor, components, reason_code):
+                    raise _unsupported(reason_code)
+        finally:
+            os.close(git_descriptor)
 
         try:
             config_names = (
                 await self._run_git(
-                    canonical_root,
+                    root,
                     (
                         "config",
                         "--local",
@@ -387,8 +462,7 @@ class GitAdapter:
                 for name in names:
                     folded_name = name.casefold()
                     if folded_name == "include.path" or (
-                        folded_name.startswith("includeif.")
-                        and folded_name.endswith(".path")
+                        folded_name.startswith("includeif.") and folded_name.endswith(".path")
                     ):
                         raise _unsupported("repository_git_config_include_unsupported")
             except UnicodeDecodeError as exc:
@@ -396,47 +470,52 @@ class GitAdapter:
 
         metadata_paths = (
             (
-                ("rev-parse", "--absolute-git-dir"),
+                ("rev-parse", "--path-format=relative", "--git-dir"),
                 "repository_git_dir_escape",
+                ".git",
             ),
             (
-                ("rev-parse", "--path-format=absolute", "--git-common-dir"),
+                ("rev-parse", "--path-format=relative", "--git-common-dir"),
                 "repository_git_common_dir_escape",
+                ".git",
             ),
             (
-                ("rev-parse", "--path-format=absolute", "--git-path", "objects"),
+                ("rev-parse", "--path-format=relative", "--git-path", "objects"),
                 "repository_git_object_dir_escape",
+                ".git/objects",
             ),
         )
-        for arguments, reason_code in metadata_paths:
-            raw_path = (await self._run_git(canonical_root, arguments)).stdout
-            observed_path = Path(_decode_line(raw_path, reason_code=reason_code))
-            if not observed_path.is_absolute():
+        for arguments, reason_code, expected in metadata_paths:
+            raw_path = (await self._run_git(root, arguments)).stdout
+            if _decode_line(raw_path, reason_code=reason_code) != expected:
                 raise _unsupported(reason_code)
-            try:
-                observed_path = observed_path.resolve(strict=True)
-            except (OSError, RuntimeError) as exc:
-                raise _unsupported(reason_code) from exc
-            if not observed_path.is_relative_to(canonical_root):
-                raise _unsupported(reason_code)
-
-        return canonical_root
 
     async def _run_git(
         self,
-        repository_root: Path,
+        repository_root: _RepositoryRoot,
         arguments: tuple[str, ...],
         *,
         max_stdout_bytes: int | None = None,
     ) -> _GitCommandResult:
+        if isinstance(repository_root, Path):
+            root = await asyncio.to_thread(_anchor_repository_root, repository_root)
+            try:
+                return await self._run_git(
+                    root,
+                    arguments,
+                    max_stdout_bytes=max_stdout_bytes,
+                )
+            finally:
+                os.close(root.descriptor)
+        root = repository_root
         command_name = arguments[0]
-        canonical_root = repository_root.resolve(strict=True)
-        safe_arguments = _safe_git_arguments(canonical_root, arguments)
+        safe_arguments = _safe_git_arguments(root.fd_path, arguments)
         process = await asyncio.create_subprocess_exec(
             str(self._git_executable),
             *safe_arguments,
-            cwd=str(canonical_root),
+            cwd=str(root.fd_path),
             env=_SAFE_GIT_ENVIRONMENT,
+            pass_fds=(root.descriptor,),
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -533,35 +612,318 @@ class GitAdapter:
                 task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
 
+    async def capture_snapshot(
+        self,
+        repository_root: _RepositoryRoot,
+        *,
+        repository_registration_id: UUID,
+        content_store: ContentAddressedStore,
+        max_entries: int = 2048,
+        max_file_bytes: int = 1024 * 1024,
+        max_total_bytes: int = 64 * 1024 * 1024,
+    ) -> RepositorySnapshotObservation:
+        """Capture all mutable inputs before the caller starts a database UoW."""
+        from hashlib import sha256
 
-def _validate_git_metadata_tree(git_dir: Path) -> None:
-    directories = [git_dir]
-    entry_count = 0
-    while directories:
-        directory = directories.pop()
+        from labpilot.context.repository_identities import (
+            BundleEntryManifestItemV1,
+            dirty_worktree_manifest_hash,
+            repository_inspection_bundle_entries_manifest_hash,
+            repository_inspection_bundle_entry_identity,
+            repository_inspection_bundle_identity,
+            repository_snapshot_identity,
+            repository_state_digest,
+            untracked_manifest_hash,
+        )
+        from labpilot.context.repository_types import (
+            RepositorySnapshotCaptureConflict,
+        )
+
+        if max_entries < 1 or max_file_bytes < 1 or max_total_bytes < 1:
+            raise ValueError("snapshot capture limits must be positive")
+        if isinstance(repository_root, Path):
+            anchored_root = await asyncio.to_thread(_anchor_repository_root, repository_root)
+            try:
+                return await self.capture_snapshot(
+                    anchored_root,
+                    repository_registration_id=repository_registration_id,
+                    content_store=content_store,
+                    max_entries=max_entries,
+                    max_file_bytes=max_file_bytes,
+                    max_total_bytes=max_total_bytes,
+                )
+            finally:
+                os.close(anchored_root.descriptor)
+        anchored_root = repository_root
+        before = await self.probe(anchored_root)
+        if len(before.status_entries) > max_entries:
+            raise _unsupported("snapshot_entry_limit_exceeded")
+        root_descriptor = os.dup(anchored_root.descriptor)
         try:
-            with os.scandir(directory) as entries:
-                for entry in entries:
-                    entry_count += 1
-                    if entry_count > _MAX_GIT_METADATA_ENTRIES:
-                        raise _unsupported(
-                            "repository_git_metadata_entry_limit_exceeded"
-                        )
-                    entry_mode = entry.stat(follow_symlinks=False).st_mode
-                    if stat.S_ISLNK(entry_mode):
-                        raise _unsupported(
-                            "repository_git_metadata_symlink_unsupported"
-                        )
-                    if stat.S_ISDIR(entry_mode):
-                        directories.append(Path(entry.path))
-                    elif not stat.S_ISREG(entry_mode):
-                        raise _unsupported(
-                            "repository_git_metadata_special_file_unsupported"
-                        )
-        except OSError as exc:
-            raise _unsupported(
-                "repository_git_metadata_special_file_unsupported"
-            ) from exc
+            entries: list[CapturedBundleEntry] = []
+            manifest_entries: list[RepositoryManifestEntryV1] = []
+            captured_paths: list[tuple[str, StableStatToken]] = []
+            total_bytes = 0
+            lfs_pointer_presence = False
+            for ordinal, status_entry in enumerate(before.status_entries):
+                content_ref: str | None = None
+                content_hash: str | None = None
+                size_bytes = 0
+                stable_token: StableStatToken | None = None
+                identity_status: Literal["verified", "not_applicable"] = "not_applicable"
+                if status_entry.file_type == "submodule":
+                    pass
+                elif status_entry.change_kind == "mode_change":
+                    content, stable_token = await asyncio.to_thread(
+                        _read_snapshot_path,
+                        root_descriptor,
+                        status_entry.relative_path,
+                        status_entry.file_type,
+                        max_file_bytes,
+                    )
+                    if total_bytes + len(content) > max_total_bytes:
+                        raise _unsupported("snapshot_content_limit_exceeded")
+                    total_bytes += len(content)
+                    if not _matches_git_blob_oid(content, status_entry.index_blob_oid):
+                        raise RepositorySnapshotCaptureConflict("mode_change_content_changed")
+                    assert stable_token is not None
+                    captured_paths.append((status_entry.relative_path, stable_token))
+                elif status_entry.change_kind in {"tracked_overlay", "untracked_file"}:
+                    content, stable_token = await asyncio.to_thread(
+                        _read_snapshot_path,
+                        root_descriptor,
+                        status_entry.relative_path,
+                        status_entry.file_type,
+                        max_file_bytes,
+                    )
+                    if (
+                        len(content) > max_file_bytes
+                        or total_bytes + len(content) > max_total_bytes
+                    ):
+                        raise _unsupported("snapshot_content_limit_exceeded")
+                    total_bytes += len(content)
+                    content_ref = await content_store.put_bytes(content)
+                    content_hash = sha256(content).hexdigest()
+                    await content_store.verify(content_ref, content_hash)
+                    size_bytes = len(content)
+                    identity_status = "verified"
+                    assert stable_token is not None
+                    captured_paths.append((status_entry.relative_path, stable_token))
+                    lfs_pointer_presence = lfs_pointer_presence or (
+                        status_entry.file_type == "regular" and _is_lfs_pointer(content)
+                    )
+                manifest = RepositoryManifestEntryV1(
+                    status_entry.relative_path,
+                    status_entry.original_relative_path,
+                    status_entry.change_kind,
+                    status_entry.file_type,
+                    status_entry.file_mode,
+                    status_entry.head_blob_oid,
+                    status_entry.index_blob_oid,
+                    content_hash,
+                    size_bytes,
+                    identity_status,
+                )
+                manifest_entries.append(manifest)
+                entry_identity = repository_inspection_bundle_entry_identity(
+                    repository_path=status_entry.relative_path,
+                    original_repository_path=status_entry.original_relative_path,
+                    entry_kind=status_entry.change_kind,
+                    file_type=status_entry.file_type,
+                    file_mode=status_entry.file_mode,
+                    head_blob_oid=status_entry.head_blob_oid,
+                    index_blob_oid=status_entry.index_blob_oid,
+                    content_hash=content_hash,
+                    size_bytes=size_bytes,
+                    content_identity_status=identity_status,
+                )
+                entries.append(
+                    CapturedBundleEntry(
+                        status_entry.relative_path,
+                        status_entry.original_relative_path,
+                        status_entry.change_kind,
+                        status_entry.file_type,
+                        status_entry.file_mode,
+                        status_entry.head_blob_oid,
+                        status_entry.index_blob_oid,
+                        content_ref,
+                        content_hash,
+                        size_bytes,
+                        ordinal,
+                        entry_identity,
+                        stable_token,
+                    )
+                )
+            dirty = [entry for entry in manifest_entries if entry.entry_kind != "untracked_file"]
+            untracked = [
+                entry for entry in manifest_entries if entry.entry_kind == "untracked_file"
+            ]
+            dirty_hash = dirty_worktree_manifest_hash(dirty) if dirty else None
+            untracked_hash = untracked_manifest_hash(untracked) if untracked else None
+            dirty_ref = await _put_manifest(content_store, dirty, "dirty") if dirty else None
+            untracked_ref = (
+                await _put_manifest(content_store, untracked, "untracked") if untracked else None
+            )
+            after = await self.probe(anchored_root)
+            if (
+                before.canonical_root_path,
+                before.head_commit,
+                before.tracked_tree_identity,
+                before.status_entries,
+            ) != (
+                after.canonical_root_path,
+                after.head_commit,
+                after.tracked_tree_identity,
+                after.status_entries,
+            ):
+                raise RepositorySnapshotCaptureConflict("probe_changed")
+            for relative_path, token in captured_paths:
+                if (
+                    await asyncio.to_thread(_snapshot_path_token, root_descriptor, relative_path)
+                    != token
+                ):
+                    raise RepositorySnapshotCaptureConflict("captured_path_changed")
+        finally:
+            os.close(root_descriptor)
+        is_clean = not manifest_entries
+        state_digest = repository_state_digest(
+            head_commit=before.head_commit,
+            tracked_tree_identity=before.tracked_tree_identity,
+            is_clean=is_clean,
+            dirty_worktree_manifest_hash=dirty_hash,
+            untracked_manifest_hash=untracked_hash,
+        )
+        snapshot_identity = repository_snapshot_identity(
+            repository_registration_id=repository_registration_id,
+            repository_state_digest=state_digest,
+            current_branch=before.current_branch,
+            is_detached_head=before.is_detached_head,
+        )
+        bundle_identity = None
+        if entries:
+            entries_hash = repository_inspection_bundle_entries_manifest_hash(
+                [
+                    BundleEntryManifestItemV1(
+                        entry.relative_path, entry.entry_kind, entry.file_type, entry.entry_identity
+                    )
+                    for entry in entries
+                ]
+            )
+            bundle_identity = repository_inspection_bundle_identity(
+                repository_snapshot_identity=snapshot_identity,
+                base_commit_sha=before.head_commit,
+                entries_manifest_hash=entries_hash,
+                bundle_schema_version=1,
+                capture_tool_version=OBSERVATION_PROFILE_VERSION,
+            )
+        tree = await self.ls_tree(
+            anchored_root,
+            before.head_commit,
+            max_entries=max_entries,
+            max_output_bytes=self._max_stdout_bytes,
+        )
+        replaced_or_deleted_paths = {
+            entry.relative_path
+            for entry in before.status_entries
+            if entry.change_kind in {"tracked_overlay", "deletion"}
+        }
+        submodule_presence = any(
+            entry.change_kind == "tracked_overlay" and entry.file_type == "submodule"
+            for entry in before.status_entries
+        ) or any(
+            entry.file_type == "submodule" and entry.relative_path not in replaced_or_deleted_paths
+            for entry in tree
+        )
+        if not lfs_pointer_presence:
+            from labpilot.context.repository_types import RepositoryGitObjectTooLarge
+
+            for entry in tree:
+                if entry.file_type != "regular" or entry.relative_path in replaced_or_deleted_paths:
+                    continue
+                try:
+                    (blob,) = await self.cat_file_batch(
+                        anchored_root,
+                        (entry.object_oid,),
+                        max_object_bytes=1024,
+                        max_total_bytes=1024,
+                    )
+                except RepositoryGitObjectTooLarge:
+                    continue
+                if _is_lfs_pointer(blob.content):
+                    lfs_pointer_presence = True
+                    break
+        await asyncio.to_thread(_validate_repository_root_binding, anchored_root)
+        return RepositorySnapshotObservation(
+            before,
+            dirty_ref,
+            dirty_hash,
+            untracked_ref,
+            untracked_hash,
+            state_digest,
+            snapshot_identity,
+            tuple(entries),
+            bundle_identity,
+            submodule_presence,
+            lfs_pointer_presence,
+        )
+
+
+def _validate_git_metadata_tree(git_descriptor: int) -> None:
+    entry_count = 0
+
+    def walk(descriptor: int) -> None:
+        nonlocal entry_count
+        with os.scandir(descriptor) as entries:
+            for entry in entries:
+                entry_count += 1
+                if entry_count > _MAX_GIT_METADATA_ENTRIES:
+                    raise _unsupported("repository_git_metadata_entry_limit_exceeded")
+                entry_mode = entry.stat(follow_symlinks=False).st_mode
+                if stat.S_ISLNK(entry_mode):
+                    raise _unsupported("repository_git_metadata_symlink_unsupported")
+                if stat.S_ISDIR(entry_mode):
+                    child = os.open(
+                        entry.name,
+                        os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                        dir_fd=descriptor,
+                    )
+                    try:
+                        walk(child)
+                    finally:
+                        os.close(child)
+                elif not stat.S_ISREG(entry_mode):
+                    raise _unsupported("repository_git_metadata_special_file_unsupported")
+
+    try:
+        walk(git_descriptor)
+    except OSError as exc:
+        raise _unsupported("repository_git_metadata_special_file_unsupported") from exc
+
+
+def _git_metadata_path_exists(
+    git_descriptor: int,
+    components: tuple[str, ...],
+    reason_code: str,
+) -> bool:
+    descriptor = os.dup(git_descriptor)
+    try:
+        for component in components[:-1]:
+            child = os.open(
+                component,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                dir_fd=descriptor,
+            )
+            os.close(descriptor)
+            descriptor = child
+        try:
+            os.stat(components[-1], dir_fd=descriptor, follow_symlinks=False)
+        except FileNotFoundError:
+            return False
+        return True
+    except OSError as exc:
+        raise _unsupported(reason_code) from exc
+    finally:
+        os.close(descriptor)
 
 
 def _safe_git_arguments(
@@ -719,9 +1081,10 @@ def _validate_object_oid(value: str) -> str:
 
 def _parse_porcelain_v2(
     payload: bytes,
-    repository_root: Path,
+    repository_root: int,
     *,
     max_entries: int = 10_000,
+    worktree_content_changes: frozenset[str] = frozenset(),
 ) -> tuple[GitStatusEntry, ...]:
     if payload and not payload.endswith(b"\0"):
         raise _unsupported("truncated_status_record")
@@ -736,7 +1099,13 @@ def _parse_porcelain_v2(
             fields = record.split(b" ", 8)
             if len(fields) != 9:
                 raise _unsupported("malformed_ordinary_status")
-            entries.append(_parse_ordinary_status(fields, repository_root))
+            entries.append(
+                _parse_ordinary_status(
+                    fields,
+                    repository_root,
+                    worktree_content_changes=worktree_content_changes,
+                )
+            )
         elif record.startswith(b"2 "):
             fields = record.split(b" ", 9)
             if len(fields) != 10:
@@ -773,7 +1142,9 @@ def _parse_porcelain_v2(
 
 def _parse_ordinary_status(
     fields: list[bytes],
-    repository_root: Path,
+    repository_root: int,
+    *,
+    worktree_content_changes: frozenset[str],
 ) -> GitStatusEntry:
     (
         _,
@@ -807,7 +1178,11 @@ def _parse_ordinary_status(
     change_kind: RepositoryChangeKind
     if deleted:
         change_kind = "deletion"
-    elif head_oid == index_oid and len({head_mode, index_mode, worktree_mode} - {"000000"}) > 1:
+    elif (
+        head_oid == index_oid
+        and len({head_mode, index_mode, worktree_mode} - {"000000"}) > 1
+        and relative_path not in worktree_content_changes
+    ):
         change_kind = "mode_change"
     else:
         change_kind = "tracked_overlay"
@@ -825,10 +1200,35 @@ def _parse_ordinary_status(
     )
 
 
+def _parse_numstat_content_changes(
+    payload: bytes,
+    *,
+    max_entries: int,
+) -> frozenset[str]:
+    if payload and not payload.endswith(b"\0"):
+        raise _unsupported("truncated_numstat_record")
+    records = payload.split(b"\0")[:-1] if payload else []
+    if len(records) > max_entries:
+        raise _unsupported("status_entry_limit_exceeded")
+    changed_paths: set[str] = set()
+    for record in records:
+        fields = record.split(b"\t", 2)
+        if len(fields) != 3:
+            raise _unsupported("malformed_numstat_record")
+        additions, deletions, raw_path = fields
+        if not raw_path or not all(
+            value == b"-" or (value.isdigit() and value) for value in (additions, deletions)
+        ):
+            raise _unsupported("malformed_numstat_record")
+        if additions != b"0" or deletions != b"0":
+            changed_paths.add(_parse_relative_path(raw_path))
+    return frozenset(changed_paths)
+
+
 def _parse_rename_or_copy_status(
     fields: list[bytes],
     raw_original_path: bytes,
-    repository_root: Path,
+    repository_root: int,
 ) -> tuple[GitStatusEntry, ...]:
     (
         _,
@@ -899,12 +1299,13 @@ def _parse_rename_or_copy_status(
     return deletion, destination
 
 
-def _parse_untracked_status(raw_path: bytes, repository_root: Path) -> GitStatusEntry:
+def _parse_untracked_status(raw_path: bytes, repository_root: int) -> GitStatusEntry:
     relative_path = _parse_relative_path(raw_path)
     try:
-        metadata = os.lstat(repository_root / relative_path)
+        metadata = _snapshot_path_metadata(repository_root, relative_path)
     except OSError as exc:
         raise _unsupported("untracked_path_unavailable") from exc
+    file_mode: RepositoryFileMode
     file_type: RepositoryFileType
     if stat.S_ISLNK(metadata.st_mode):
         file_type = "symlink"
@@ -929,7 +1330,7 @@ def _parse_untracked_status(raw_path: bytes, repository_root: Path) -> GitStatus
 
 
 def _tracked_file_type(
-    repository_root: Path,
+    repository_root: int,
     relative_path: str,
     *,
     file_mode: str,
@@ -941,7 +1342,7 @@ def _tracked_file_type(
     if deleted:
         return expected
     try:
-        metadata = os.lstat(repository_root / relative_path)
+        metadata = _snapshot_path_metadata(repository_root, relative_path)
     except OSError as exc:
         raise _unsupported("tracked_path_unavailable") from exc
     observed: RepositoryFileType = "symlink" if stat.S_ISLNK(metadata.st_mode) else "regular"
@@ -967,14 +1368,18 @@ def _parse_relative_path(value: bytes) -> str:
     return path
 
 
-def _parse_mode(value: bytes) -> str:
+def _parse_mode(value: bytes) -> _GitStatusMode:
     mode = _decode_ascii(value, "invalid_mode")
     if mode not in _ALLOWED_MODES:
         raise _unsupported("invalid_mode")
-    return mode
+    return cast(_GitStatusMode, mode)
 
 
-def _select_file_mode(head_mode: str, index_mode: str, worktree_mode: str) -> str:
+def _select_file_mode(
+    head_mode: _GitStatusMode,
+    index_mode: _GitStatusMode,
+    worktree_mode: _GitStatusMode,
+) -> RepositoryFileMode:
     for mode in (worktree_mode, index_mode, head_mode):
         if mode != "000000":
             return mode
@@ -1067,3 +1472,230 @@ def _sanitize_stderr(value: bytes) -> str:
     text = "".join(character for character in text if unicodedata.category(character)[0] != "C")
     text = " ".join(text.split())
     return text.encode("utf-8")[:512].decode("utf-8", errors="ignore")
+
+
+def _stat_token_from_metadata(metadata: os.stat_result) -> StableStatToken:
+    if stat.S_ISREG(metadata.st_mode):
+        file_type = "regular"
+    elif stat.S_ISLNK(metadata.st_mode):
+        file_type = "symlink"
+    else:
+        raise _unsupported("unsupported_snapshot_file_type")
+    return StableStatToken(
+        metadata.st_ino,
+        file_type,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def _snapshot_components(relative_path: str) -> tuple[str, ...]:
+    components = tuple(relative_path.split("/"))
+    if not components or any(component in {"", ".", ".."} for component in components):
+        raise RepositorySnapshotCaptureConflict("snapshot_path_unavailable")
+    return components
+
+
+def _open_canonical_snapshot_root(root: Path) -> int:
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+    if root.anchor != "/":
+        raise RepositorySnapshotCaptureConflict("snapshot_path_unavailable")
+    descriptor = os.open("/", flags)
+    try:
+        for component in root.parts[1:]:
+            child = os.open(component, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+    except OSError as exc:
+        os.close(descriptor)
+        raise RepositorySnapshotCaptureConflict("snapshot_path_unavailable") from exc
+    return descriptor
+
+
+def _anchor_repository_root(root: Path) -> _AnchoredRepositoryRoot:
+    canonical_path = Path(os.path.abspath(root))
+    descriptor = _open_canonical_snapshot_root(canonical_path)
+    metadata = os.fstat(descriptor)
+    if not stat.S_ISDIR(metadata.st_mode):
+        os.close(descriptor)
+        raise RepositorySnapshotCaptureConflict("snapshot_path_unavailable")
+    return _AnchoredRepositoryRoot(
+        canonical_path,
+        descriptor,
+        metadata.st_dev,
+        metadata.st_ino,
+    )
+
+
+def _validate_repository_root_binding(root: _AnchoredRepositoryRoot) -> None:
+    descriptor = _open_canonical_snapshot_root(root.canonical_path)
+    try:
+        metadata = os.fstat(descriptor)
+        if (metadata.st_dev, metadata.st_ino) != (root.device, root.inode):
+            raise RepositorySnapshotCaptureConflict("repository_root_changed")
+    finally:
+        os.close(descriptor)
+
+
+def _open_snapshot_parent(root_descriptor: int, components: tuple[str, ...]) -> tuple[int, str]:
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+    descriptor = os.dup(root_descriptor)
+    try:
+        for component in components[:-1]:
+            child = os.open(component, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+    except OSError:
+        os.close(descriptor)
+        raise
+    return descriptor, components[-1]
+
+
+def _snapshot_path_metadata(root_descriptor: int, relative_path: str) -> os.stat_result:
+    parent, name = _open_snapshot_parent(
+        root_descriptor,
+        _snapshot_components(relative_path),
+    )
+    try:
+        return os.stat(name, dir_fd=parent, follow_symlinks=False)
+    finally:
+        os.close(parent)
+
+
+def _snapshot_path_token(root_descriptor: int, relative_path: str) -> StableStatToken:
+    try:
+        parent, name = _open_snapshot_parent(root_descriptor, _snapshot_components(relative_path))
+        try:
+            return _stat_token_from_metadata(os.stat(name, dir_fd=parent, follow_symlinks=False))
+        finally:
+            os.close(parent)
+    except OSError as exc:
+        raise RepositorySnapshotCaptureConflict("snapshot_path_unavailable") from exc
+
+
+def _read_snapshot_path(
+    root_descriptor: int,
+    relative_path: str,
+    expected_file_type: str,
+    max_file_bytes: int,
+) -> tuple[bytes, StableStatToken]:
+    try:
+        parent, name = _open_snapshot_parent(root_descriptor, _snapshot_components(relative_path))
+    except OSError as exc:
+        raise RepositorySnapshotCaptureConflict("snapshot_path_unavailable") from exc
+    try:
+        before = _stat_token_from_metadata(os.stat(name, dir_fd=parent, follow_symlinks=False))
+        if before.file_type != expected_file_type:
+            raise RepositorySnapshotCaptureConflict("snapshot_file_type_changed")
+        if before.file_type == "symlink":
+            target = os.readlink(name, dir_fd=parent)
+            after = _stat_token_from_metadata(os.stat(name, dir_fd=parent, follow_symlinks=False))
+            if before != after:
+                raise RepositorySnapshotCaptureConflict("symlink_changed")
+            return unicodedata.normalize("NFC", target).encode("utf-8", "strict"), before
+        descriptor = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=parent)
+        try:
+            chunks: list[bytes] = []
+            total = 0
+            while chunk := os.read(descriptor, min(64 * 1024, max_file_bytes - total + 1)):
+                total += len(chunk)
+                if total > max_file_bytes:
+                    raise _unsupported("snapshot_single_file_limit_exceeded")
+                chunks.append(chunk)
+            after = _stat_token_from_metadata(os.fstat(descriptor))
+        finally:
+            os.close(descriptor)
+        if before != after:
+            raise RepositorySnapshotCaptureConflict("regular_file_changed")
+        return b"".join(chunks), before
+    except OSError as exc:
+        raise RepositorySnapshotCaptureConflict("snapshot_path_unavailable") from exc
+    finally:
+        os.close(parent)
+
+
+def _matches_git_blob_oid(content: bytes, expected_oid: str | None) -> bool:
+    from hashlib import sha1, sha256
+
+    if expected_oid is None:
+        raise RepositorySnapshotCaptureConflict("mode_change_content_changed")
+    payload = b"blob " + str(len(content)).encode("ascii") + b"\0" + content
+    if len(expected_oid) == 40:
+        actual_oid = sha1(payload, usedforsecurity=False).hexdigest()
+    elif len(expected_oid) == 64:
+        actual_oid = sha256(payload).hexdigest()
+    else:
+        raise RepositorySnapshotCaptureConflict("mode_change_content_changed")
+    return actual_oid == expected_oid
+
+
+async def _put_manifest(
+    content_store: ContentAddressedStore,
+    entries: list[RepositoryManifestEntryV1],
+    kind: Literal["dirty", "untracked"],
+) -> str:
+    return await content_store.put_bytes(repository_manifest_canonical_bytes(entries, kind=kind))
+
+
+def _is_lfs_pointer(value: bytes) -> bool:
+    if len(value) >= _LFS_POINTER_MAX_BYTES:
+        return False
+    try:
+        text = value.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    if not value.endswith(b"\n"):
+        return False
+    lines = text[:-1].split("\n")
+    if len(lines) < 3:
+        return False
+
+    def split_line(line: str) -> tuple[str, str] | None:
+        if line.count(" ") != 1:
+            return None
+        key, separator, field_value = line.partition(" ")
+        if not separator or not key or not field_value:
+            return None
+        return key, field_value
+
+    first = split_line(lines[0])
+    if first != ("version", "https://git-lfs.github.com/spec/v1"):
+        return False
+
+    index = 1
+    priorities: set[int] = set()
+    previous_priority = -1
+    while index < len(lines):
+        field = split_line(lines[index])
+        if field is None:
+            return False
+        key, field_value = field
+        extension = _LFS_EXTENSION_KEY_PATTERN.fullmatch(key)
+        if extension is None:
+            break
+        priority = int(extension.group(1))
+        if (
+            priority > _MAX_SIGNED_INT64
+            or priority in priorities
+            or priority <= previous_priority
+            or _LFS_OID_PATTERN.fullmatch(field_value) is None
+        ):
+            return False
+        priorities.add(priority)
+        previous_priority = priority
+        index += 1
+
+    if len(lines) != index + 2:
+        return False
+    oid = split_line(lines[index])
+    size = split_line(lines[index + 1])
+    if oid is None or size is None or oid[0] != "oid" or size[0] != "size":
+        return False
+    if _LFS_OID_PATTERN.fullmatch(oid[1]) is None:
+        return False
+    size_value = size[1]
+    return (
+        size_value == "0"
+        or (size_value[:1] in "123456789" and size_value.isascii() and size_value.isdecimal())
+    ) and int(size_value) <= _MAX_SIGNED_INT64

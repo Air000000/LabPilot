@@ -6,6 +6,7 @@ from sqlalchemy import func, select
 
 from labpilot.common.commands import CommandContext
 from labpilot.common.errors import LabPilotError
+from labpilot.context.content_store import ContentAddressedStore
 from labpilot.context.events import (
     build_repository_registration_availability_changed_event,
     build_repository_registration_created_event,
@@ -17,12 +18,15 @@ from labpilot.context.repository_identities import repository_registration_ident
 from labpilot.context.repository_paths import resolve_repository_root
 from labpilot.context.repository_repository import RepositoryRegistrationRepository
 from labpilot.context.repository_types import (
+    CaptureRepositorySnapshot,
     CheckRepositoryAvailability,
     RegisterLocalRepository,
     RepositoryHeadUnavailable,
     RepositoryNotGit,
     RepositoryPathMustBeAbsolute,
     RepositoryProbe,
+    RepositorySnapshotInvariantViolation,
+    RepositorySnapshotObservation,
     RepositoryUnavailable,
     RevokeRepositoryRegistration,
 )
@@ -64,13 +68,298 @@ class RepositoryApplicationService:
         *,
         git_adapter: GitAdapter,
         allowed_roots: tuple[Path, ...],
+        content_store: ContentAddressedStore | None = None,
     ) -> None:
         self._session_context_factory = session_context_factory
         self._git_adapter = git_adapter
         self._allowed_roots = allowed_roots
+        self._content_store = content_store
 
         self._registrations = RepositoryRegistrationRepository()
         self._projects = ProjectRepository()
+
+    async def capture_repository_snapshot(
+        self,
+        *,
+        context: CommandContext,
+        idempotency_key: str,
+        command: CaptureRepositorySnapshot,
+    ) -> IdempotentCommandOutcome:
+        from labpilot.context.events import build_repository_snapshot_captured_event
+        from labpilot.context.models import (
+            RepositorySnapshotFreshnessRow,
+            RepositorySnapshotInspectionBundleEntryRow,
+            RepositorySnapshotInspectionBundleRow,
+            RepositorySnapshotRow,
+        )
+        from labpilot.context.repository_identities import (
+            BundleEntryManifestItemV1,
+            EntryKind,
+            FileMode,
+            FileType,
+            RepositoryIdentityInputInvalid,
+            repository_inspection_bundle_entries_manifest_hash,
+            repository_inspection_bundle_entry_identity,
+            repository_inspection_bundle_identity,
+        )
+        from labpilot.context.repository_repository import RepositorySnapshotRepository
+        from labpilot.context.repository_types import RepositorySnapshotCaptureConflict
+
+        registration_id = command.repository_registration_id
+        async with self._session_context_factory() as session:
+            registration = await self._registrations.get_registration(session, registration_id)
+        if registration is None:
+            raise RepositoryRegistrationConflict("registration not found")
+        scope_identity = prepare_project_scope(context, project_id=registration.project_id)
+        identity = prepare_command_identity(
+            scope_identity=scope_identity,
+            command_name="CaptureRepositorySnapshot",
+            command_version=1,
+            idempotency_key=idempotency_key,
+            normalized_request={
+                "authority_scope_identity": scope_identity,
+                "command_name": "CaptureRepositorySnapshot",
+                "command_version": 1,
+                "repository_registration_id": str(registration_id),
+            },
+        )
+        snapshots = RepositorySnapshotRepository()
+
+        async def prepare() -> RepositorySnapshotObservation:
+            if self._content_store is None:
+                raise RepositorySnapshotCaptureConflict("content_store_unconfigured")
+            if registration.status != "active":
+                raise RepositoryRegistrationConflict("registration is not active")
+            return await self._git_adapter.capture_snapshot(
+                Path(registration.canonical_root_path),
+                repository_registration_id=registration_id,
+                content_store=self._content_store,
+            )
+
+        async def operation(
+            uow: UnitOfWork, observation: RepositorySnapshotObservation
+        ) -> CommandResultEnvelope:
+            current = await self._registrations.get_registration_for_update(
+                uow.session, registration_id
+            )
+            if current is None or current.status != "active":
+                raise RepositoryRegistrationConflict("registration is not active")
+            if current.repository_type != "local_git":
+                raise RepositoryRegistrationConflict("registration identity invalid")
+            if current.canonical_root_path != observation.probe.canonical_root_path:
+                raise RepositoryRegistrationConflict("registration root changed")
+            if current.root_path_identity != repository_registration_identity(
+                canonical_root_path=current.canonical_root_path,
+                repository_type="local_git",
+            ):
+                raise RepositoryRegistrationConflict("registration identity invalid")
+            existing = await snapshots.get_by_identity(
+                uow.session, registration_id, observation.snapshot_identity
+            )
+            if existing is not None:
+                bundle = await snapshots.get_bundle_by_snapshot(
+                    uow.session,
+                    existing.repository_snapshot_id,
+                )
+                if (
+                    existing.is_clean != (not observation.bundle_entries)
+                    or (bundle is None and observation.bundle_identity is not None)
+                    or (
+                        bundle is not None
+                        and bundle.inspection_bundle_identity != observation.bundle_identity
+                    )
+                ):
+                    raise RepositorySnapshotInvariantViolation("bundle_identity_mismatch")
+                if bundle is not None:
+                    from typing import Literal, cast
+
+                    persisted_entries = await snapshots.list_bundle_entries(
+                        uow.session,
+                        bundle.inspection_bundle_id,
+                    )
+                    manifest_items: list[BundleEntryManifestItemV1] = []
+                    try:
+                        for entry in persisted_entries:
+                            entry_kind = cast(EntryKind, entry.entry_kind)
+                            file_type = cast(FileType, entry.file_type)
+                            file_mode = cast(FileMode, entry.file_mode)
+                            content_identity_status: Literal["verified", "not_applicable"] = (
+                                "verified"
+                                if entry_kind in {"tracked_overlay", "untracked_file"}
+                                and file_type != "submodule"
+                                else "not_applicable"
+                            )
+                            entry_identity = repository_inspection_bundle_entry_identity(
+                                repository_path=entry.repository_path,
+                                original_repository_path=entry.original_repository_path,
+                                entry_kind=entry_kind,
+                                file_type=file_type,
+                                file_mode=file_mode,
+                                head_blob_oid=entry.head_blob_oid,
+                                index_blob_oid=entry.index_blob_oid,
+                                content_hash=entry.content_hash,
+                                size_bytes=entry.size_bytes,
+                                content_identity_status=content_identity_status,
+                            )
+                            if entry_identity != entry.entry_identity:
+                                raise RepositorySnapshotInvariantViolation(
+                                    "bundle_entry_identity_mismatch"
+                                )
+                            manifest_items.append(
+                                BundleEntryManifestItemV1(
+                                    entry.repository_path,
+                                    entry_kind,
+                                    file_type,
+                                    entry_identity,
+                                )
+                            )
+                    except RepositoryIdentityInputInvalid as exc:
+                        raise RepositorySnapshotInvariantViolation(
+                            "bundle_entry_identity_mismatch"
+                        ) from exc
+                    try:
+                        entries_hash = repository_inspection_bundle_entries_manifest_hash(
+                            manifest_items
+                        )
+                    except RepositoryIdentityInputInvalid as exc:
+                        raise RepositorySnapshotInvariantViolation(
+                            "bundle_entries_manifest_hash_mismatch"
+                        ) from exc
+                    if entries_hash != bundle.entries_manifest_hash:
+                        raise RepositorySnapshotInvariantViolation(
+                            "bundle_entries_manifest_hash_mismatch"
+                        )
+                    try:
+                        bundle_identity = repository_inspection_bundle_identity(
+                            repository_snapshot_identity=existing.repository_snapshot_identity,
+                            base_commit_sha=bundle.base_commit_sha,
+                            entries_manifest_hash=entries_hash,
+                            bundle_schema_version=bundle.bundle_schema_version,
+                            capture_tool_version=bundle.capture_tool_version,
+                        )
+                    except RepositoryIdentityInputInvalid as exc:
+                        raise RepositorySnapshotInvariantViolation(
+                            "bundle_identity_mismatch"
+                        ) from exc
+                    if bundle_identity != bundle.inspection_bundle_identity:
+                        raise RepositorySnapshotInvariantViolation("bundle_identity_mismatch")
+                return CommandResultEnvelope(
+                    outcome_kind="repository_snapshot_reused",
+                    primary_result_type="repository_snapshot",
+                    primary_result_id=str(existing.repository_snapshot_id),
+                    primary_result_identity=existing.repository_snapshot_identity,
+                    related_result_refs=(),
+                    committed_state="current",
+                )
+            now = await uow.session.scalar(select(func.clock_timestamp()))
+            assert now is not None
+            snapshot_id = uuid4()
+            sequence = await snapshots.next_sequence(uow.session, registration_id)
+            snapshot = RepositorySnapshotRow(
+                repository_snapshot_id=snapshot_id,
+                repository_registration_id=registration_id,
+                snapshot_sequence=sequence,
+                captured_at=now,
+                canonical_root_path=observation.probe.canonical_root_path,
+                head_commit=observation.probe.head_commit,
+                current_branch=observation.probe.current_branch,
+                is_detached_head=observation.probe.is_detached_head,
+                is_clean=not observation.bundle_entries,
+                tracked_tree_identity=observation.probe.tracked_tree_identity,
+                dirty_worktree_manifest_ref=observation.dirty_manifest_ref,
+                dirty_worktree_manifest_hash=observation.dirty_manifest_hash,
+                untracked_manifest_ref=observation.untracked_manifest_ref,
+                untracked_manifest_hash=observation.untracked_manifest_hash,
+                repository_state_digest=observation.state_digest,
+                repository_snapshot_identity=observation.snapshot_identity,
+                submodule_presence=observation.submodule_presence,
+                lfs_pointer_presence=observation.lfs_pointer_presence,
+                inspector_compatibility_version=1,
+            )
+            await snapshots.add_snapshot(uow, snapshot)
+            if observation.bundle_entries:
+                entries_hash = repository_inspection_bundle_entries_manifest_hash(
+                    [
+                        BundleEntryManifestItemV1(
+                            entry.relative_path,
+                            entry.entry_kind,
+                            entry.file_type,
+                            entry.entry_identity,
+                        )
+                        for entry in observation.bundle_entries
+                    ]
+                )
+                bundle_id = uuid4()
+                bundle = RepositorySnapshotInspectionBundleRow(
+                    inspection_bundle_id=bundle_id,
+                    repository_snapshot_id=snapshot_id,
+                    base_commit_sha=observation.probe.head_commit,
+                    bundle_schema_version=1,
+                    capture_tool_version=observation.probe.observation_profile_version,
+                    entries_manifest_hash=entries_hash,
+                    inspection_bundle_identity=observation.bundle_identity,
+                    created_at=now,
+                )
+                rows = tuple(
+                    RepositorySnapshotInspectionBundleEntryRow(
+                        inspection_bundle_entry_id=uuid4(),
+                        inspection_bundle_id=bundle_id,
+                        repository_path=entry.relative_path,
+                        original_repository_path=entry.original_relative_path,
+                        entry_kind=entry.entry_kind,
+                        file_type=entry.file_type,
+                        file_mode=entry.file_mode,
+                        head_blob_oid=entry.head_blob_oid,
+                        index_blob_oid=entry.index_blob_oid,
+                        content_ref=entry.content_ref,
+                        content_hash=entry.content_hash,
+                        size_bytes=entry.size_bytes,
+                        stable_ordinal=entry.stable_ordinal,
+                        entry_identity=entry.entry_identity,
+                    )
+                    for entry in observation.bundle_entries
+                )
+                await snapshots.add_bundle(uow, bundle, rows)
+            await snapshots.add_freshness(
+                uow,
+                RepositorySnapshotFreshnessRow(
+                    repository_snapshot_id=snapshot_id,
+                    status="current",
+                    reason_code=None,
+                    current_probe_identity=observation.state_digest,
+                    probe_version=observation.probe.observation_profile_version,
+                    checked_at=now,
+                    row_version=1,
+                ),
+            )
+            await append_runtime_event(
+                uow,
+                build_repository_snapshot_captured_event(
+                    context=context,
+                    project_id=current.project_id,
+                    repository_registration_id=registration_id,
+                    repository_snapshot_id=snapshot_id,
+                    repository_snapshot_identity=observation.snapshot_identity,
+                    repository_state_digest=observation.state_digest,
+                    is_clean=snapshot.is_clean,
+                    snapshot_sequence=sequence,
+                ),
+            )
+            return CommandResultEnvelope(
+                outcome_kind="repository_snapshot_created",
+                primary_result_type="repository_snapshot",
+                primary_result_id=str(snapshot_id),
+                primary_result_identity=observation.snapshot_identity,
+                related_result_refs=(f"repository_registration:{registration_id}",),
+                committed_state="current",
+            )
+
+        return await execute_idempotent_command(
+            session_context_factory=self._session_context_factory,
+            identity=identity,
+            prepare=prepare,
+            operation=operation,
+        )
 
     async def register_local_repository(
         self,

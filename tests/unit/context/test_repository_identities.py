@@ -796,20 +796,23 @@ def test_submodule_deletion_with_at_least_one_git_oid_is_valid() -> None:
         "not_applicable",
     )
     assert len(dirty_worktree_manifest_hash((deletion,))) == 64
-    assert len(
-        repository_inspection_bundle_entry_identity(
-            repository_path="vendor/lib",
-            original_repository_path=None,
-            entry_kind="deletion",
-            file_type="submodule",
-            file_mode="160000",
-            head_blob_oid=OID_1,
-            index_blob_oid=None,
-            content_hash=None,
-            size_bytes=0,
-            content_identity_status="not_applicable",
+    assert (
+        len(
+            repository_inspection_bundle_entry_identity(
+                repository_path="vendor/lib",
+                original_repository_path=None,
+                entry_kind="deletion",
+                file_type="submodule",
+                file_mode="160000",
+                head_blob_oid=OID_1,
+                index_blob_oid=None,
+                content_hash=None,
+                size_bytes=0,
+                content_identity_status="not_applicable",
+            )
         )
-    ) == 64
+        == 64
+    )
 
 
 def test_unsupported_dependency_binds_question_and_typed_repository_path() -> None:
@@ -891,3 +894,12 @@ def test_result_keeps_profile_byte_budget_below_encoder_limit() -> None:
     with pytest.raises(InspectionResourceLimitExceeded) as captured:
         _large_ambiguous_result(4)
     assert captured.value.reason_code == "max_result_canonical_bytes"
+
+
+def test_capture_repository_snapshot_command_has_immutable_target() -> None:
+    from labpilot.context.repository_types import CaptureRepositorySnapshot
+
+    registration_id = UUID("00000000-0000-4000-8000-000000000001")
+    command = CaptureRepositorySnapshot(repository_registration_id=registration_id)
+
+    assert command.repository_registration_id == registration_id

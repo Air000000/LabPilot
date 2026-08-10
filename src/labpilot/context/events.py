@@ -12,6 +12,7 @@ from labpilot.observability.payloads import (
 _CREATED = "repository.registration.created"
 _AVAILABILITY_CHANGED = "repository.registration.availability_changed"
 _REVOKED = "repository.registration.revoked"
+_SNAPSHOT_CAPTURED = "repository.snapshot.captured"
 _STATUS = {"active", "unavailable", "invalid_git_repository", "revoked"}
 
 
@@ -183,3 +184,73 @@ def build_repository_registration_revoked_event(
             "row_version": row_version,
         },
     )
+
+
+def _validate_snapshot_captured(payload: EventJsonObject) -> None:
+    expected = {
+        "repository_snapshot_id",
+        "repository_registration_id",
+        "repository_snapshot_identity",
+        "repository_state_digest",
+        "is_clean",
+        "snapshot_sequence",
+    }
+    if set(payload) != expected:
+        raise CanonicalizationError("snapshot event payload fields do not match schema")
+    for field in (
+        "repository_snapshot_id",
+        "repository_registration_id",
+        "repository_snapshot_identity",
+        "repository_state_digest",
+    ):
+        if type(payload[field]) is not str or not payload[field]:
+            raise CanonicalizationError(f"snapshot event requires {field}")
+    if type(payload["is_clean"]) is not bool:
+        raise CanonicalizationError("snapshot event requires is_clean")
+    if type(payload["snapshot_sequence"]) is not int or payload["snapshot_sequence"] < 1:
+        raise CanonicalizationError("snapshot event requires positive snapshot_sequence")
+
+
+def build_repository_snapshot_captured_event(
+    *,
+    context: CommandContext,
+    project_id: UUID,
+    repository_registration_id: UUID,
+    repository_snapshot_id: UUID,
+    repository_snapshot_identity: str,
+    repository_state_digest: str,
+    is_clean: bool,
+    snapshot_sequence: int,
+) -> RuntimeEventEnvelope:
+    snapshot_id = str(repository_snapshot_id)
+    return RuntimeEventEnvelope(
+        project_id=project_id,
+        aggregate_type="repository_snapshot",
+        aggregate_id=snapshot_id,
+        event_type=_SNAPSHOT_CAPTURED,
+        event_schema_version=1,
+        payload=prepare_runtime_event_payload(
+            event_type=_SNAPSHOT_CAPTURED,
+            event_schema_version=1,
+            payload={
+                "repository_snapshot_id": snapshot_id,
+                "repository_registration_id": str(repository_registration_id),
+                "repository_snapshot_identity": repository_snapshot_identity,
+                "repository_state_digest": repository_state_digest,
+                "is_clean": is_clean,
+                "snapshot_sequence": snapshot_sequence,
+            },
+        ),
+        occurred_at=None,
+        interaction_correlation_id=context.interaction_correlation_id,
+        workflow_correlation_id=None,
+        causation_id=None,
+        actor_type=context.actor.actor_type,
+        actor_id=context.actor.actor_id,
+        visibility_class="internal",
+        topic="runtime-events",
+        partition_key=f"repository_snapshot:{snapshot_id}",
+    )
+
+
+register_runtime_event_payload_schema(_SNAPSHOT_CAPTURED, 1, _validate_snapshot_captured)

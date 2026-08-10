@@ -1,3 +1,7 @@
+import asyncio
+from pathlib import Path
+from uuid import UUID
+
 import pytest
 from sqlalchemy import CheckConstraint, create_engine, text
 from sqlalchemy.exc import IntegrityError
@@ -66,6 +70,79 @@ def _seed_registration(connection, project_id: str, registration_id: str, root: 
             "registration_id": registration_id,
             "root": root * 64,
         },
+    )
+
+
+async def _run_git(repository: Path, *arguments: str) -> str:
+    process = await asyncio.create_subprocess_exec(
+        "/usr/bin/git",
+        *arguments,
+        cwd=repository,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await process.communicate()
+    assert process.returncode == 0, stderr.decode("utf-8", "replace")
+    return stdout.decode("utf-8").strip()
+
+
+async def _seed_capture_service(isolated_database_url: str, tmp_path: Path, repository: Path):
+    from labpilot.context.content_store import ContentAddressedStore
+    from labpilot.context.git_adapter import GitAdapter
+    from labpilot.context.models import RepositoryRegistrationRow
+    from labpilot.context.repository_identities import repository_registration_identity
+    from labpilot.context.repository_service import RepositoryApplicationService
+    from labpilot.db.session import Database
+    from labpilot.db.uow import UnitOfWork
+    from labpilot.experiments.models import ProjectRow
+
+    upgrade_database_to_head(isolated_database_url)
+    database = Database(isolated_database_url)
+    project_id = UUID("10000000-0000-4000-8000-000000000020")
+    registration_id = UUID("20000000-0000-4000-8000-000000000020")
+    canonical_root = str(repository.resolve())
+    async with UnitOfWork(database.session) as uow:
+        project = ProjectRow(
+            project_id=project_id,
+            project_identity="p" * 64,
+            name="Project",
+            description=None,
+            status="active",
+            primary_repository_registration_id=None,
+            artifact_root_ref="artifact",
+            row_version=1,
+        )
+        uow.session.add(project)
+        await uow.session.flush()
+        uow.session.add(
+            RepositoryRegistrationRow(
+                repository_registration_id=registration_id,
+                project_id=project_id,
+                repository_type="local_git",
+                canonical_root_path=canonical_root,
+                root_path_identity=repository_registration_identity(
+                    canonical_root_path=canonical_root,
+                    repository_type="local_git",
+                ),
+                remote_origin_sanitized=None,
+                default_branch="main",
+                status="active",
+                last_access_check_at=None,
+                row_version=1,
+            )
+        )
+        await uow.session.flush()
+        project.primary_repository_registration_id = registration_id
+        await uow.commit()
+    return (
+        database,
+        RepositoryApplicationService(
+            database.session,
+            git_adapter=GitAdapter(git_executable=Path("/usr/bin/git"), timeout_seconds=2),
+            allowed_roots=(tmp_path,),
+            content_store=ContentAddressedStore(tmp_path / "content"),
+        ),
+        registration_id,
     )
 
 
@@ -384,3 +461,696 @@ async def test_repository_snapshot_schema_enforces_history_and_bundle_constraint
                     )
     finally:
         engine.dispose()
+
+
+@pytest.mark.integration
+async def test_capture_clean_snapshot_persists_snapshot_freshness_and_receipt(
+    isolated_database_url: str,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pathlib import Path
+    from uuid import UUID
+
+    from sqlalchemy import func, select
+
+    from labpilot.common.commands import CommandActor, CommandContext
+    from labpilot.context.content_store import ContentAddressedStore
+    from labpilot.context.git_adapter import GitAdapter
+    from labpilot.context.models import (
+        RepositoryRegistrationRow,
+        RepositorySnapshotFreshnessRow,
+        RepositorySnapshotInspectionBundleEntryRow,
+        RepositorySnapshotInspectionBundleRow,
+        RepositorySnapshotRow,
+    )
+    from labpilot.context.repository_identities import repository_registration_identity
+    from labpilot.context.repository_service import (
+        RepositoryApplicationService,
+        RepositoryRegistrationConflict,
+    )
+    from labpilot.context.repository_types import (
+        CaptureRepositorySnapshot,
+        RepositorySnapshotCaptureConflict,
+        RepositorySnapshotInvariantViolation,
+    )
+    from labpilot.db.idempotency_models import CommandReceiptRow
+    from labpilot.db.session import Database
+    from labpilot.db.uow import UnitOfWork
+    from labpilot.experiments.models import ProjectRow
+    from labpilot.observability.models import OutboxRecordRow, RuntimeEventRow
+
+    upgrade_database_to_head(isolated_database_url)
+    database = Database(isolated_database_url)
+    project_id = UUID("10000000-0000-4000-8000-000000000010")
+    registration_id = UUID("20000000-0000-4000-8000-000000000010")
+    repository = Path(tmp_path) / "repository"
+    repository.mkdir()
+
+    async def run_git(*arguments: str) -> None:
+        process = await asyncio.create_subprocess_exec(
+            "/usr/bin/git",
+            *arguments,
+            cwd=repository,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await process.communicate()
+        assert process.returncode == 0, stderr.decode("utf-8", "replace")
+
+    await run_git("init", "-q", "-b", "main")
+    (repository / "README.md").write_text("base", encoding="utf-8")
+    await run_git("add", "README.md")
+    await run_git(
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-qm",
+        "base",
+    )
+    try:
+        async with UnitOfWork(database.session) as uow:
+            project = ProjectRow(
+                project_id=project_id,
+                project_identity="p" * 64,
+                name="Project",
+                description=None,
+                status="active",
+                primary_repository_registration_id=None,
+                artifact_root_ref="artifact",
+                row_version=1,
+            )
+            uow.session.add(project)
+            await uow.session.flush()
+            uow.session.add(
+                RepositoryRegistrationRow(
+                    repository_registration_id=registration_id,
+                    project_id=project_id,
+                    repository_type="local_git",
+                    canonical_root_path=str(repository),
+                    root_path_identity=repository_registration_identity(
+                        canonical_root_path=str(repository),
+                        repository_type="local_git",
+                    ),
+                    remote_origin_sanitized=None,
+                    default_branch="main",
+                    status="active",
+                    last_access_check_at=None,
+                    row_version=1,
+                )
+            )
+            await uow.session.flush()
+            project.primary_repository_registration_id = registration_id
+            await uow.commit()
+        service = RepositoryApplicationService(
+            database.session,
+            git_adapter=GitAdapter(git_executable=Path("/usr/bin/git"), timeout_seconds=2),
+            allowed_roots=(Path(tmp_path),),
+            content_store=ContentAddressedStore(Path(tmp_path) / "content"),
+        )
+        initial_probe = await service._git_adapter.probe(repository)
+
+        outcome = await service.capture_repository_snapshot(
+            context=CommandContext(
+                installation_identity="installation",
+                actor=CommandActor(actor_type="user", actor_id="user"),
+                interaction_correlation_id="capture",
+            ),
+            idempotency_key="capture-clean",
+            command=CaptureRepositorySnapshot(registration_id),
+        )
+
+        assert outcome.replayed is False
+        assert outcome.envelope.outcome_kind == "repository_snapshot_created"
+        removed_repository = Path(tmp_path) / "removed-repository"
+        repository.rename(removed_repository)
+        replay = await service.capture_repository_snapshot(
+            context=CommandContext(
+                installation_identity="installation",
+                actor=CommandActor(actor_type="user", actor_id="user"),
+                interaction_correlation_id="capture",
+            ),
+            idempotency_key="capture-clean",
+            command=CaptureRepositorySnapshot(registration_id),
+        )
+        assert replay.replayed is True
+        assert replay.envelope.primary_result_id == outcome.envelope.primary_result_id
+
+        removed_repository.rename(repository)
+        clean_reused = await service.capture_repository_snapshot(
+            context=CommandContext(
+                installation_identity="installation",
+                actor=CommandActor(actor_type="user", actor_id="user"),
+                interaction_correlation_id="capture",
+            ),
+            idempotency_key="capture-clean-reuse",
+            command=CaptureRepositorySnapshot(registration_id),
+        )
+        assert clean_reused.replayed is False
+        assert clean_reused.envelope.outcome_kind == "repository_snapshot_reused"
+        assert clean_reused.envelope.primary_result_id == outcome.envelope.primary_result_id
+
+        (repository / "README.md").write_text("dirty", encoding="utf-8")
+        outcomes = await asyncio.gather(
+            service.capture_repository_snapshot(
+                context=CommandContext(
+                    installation_identity="installation",
+                    actor=CommandActor(actor_type="user", actor_id="user"),
+                    interaction_correlation_id="capture",
+                ),
+                idempotency_key="capture-dirty",
+                command=CaptureRepositorySnapshot(registration_id),
+            ),
+            service.capture_repository_snapshot(
+                context=CommandContext(
+                    installation_identity="installation",
+                    actor=CommandActor(actor_type="user", actor_id="user"),
+                    interaction_correlation_id="capture",
+                ),
+                idempotency_key="capture-dirty-reuse",
+                command=CaptureRepositorySnapshot(registration_id),
+            ),
+        )
+        dirty = next(
+            outcome
+            for outcome in outcomes
+            if outcome.envelope.outcome_kind == "repository_snapshot_created"
+        )
+        reused = next(
+            outcome
+            for outcome in outcomes
+            if outcome.envelope.outcome_kind == "repository_snapshot_reused"
+        )
+        assert dirty.replayed is False
+        assert reused.replayed is False
+        assert reused.envelope.primary_result_id == dirty.envelope.primary_result_id
+        async with UnitOfWork(database.session) as uow:
+            bundle = await uow.session.scalar(
+                select(RepositorySnapshotInspectionBundleRow).where(
+                    RepositorySnapshotInspectionBundleRow.repository_snapshot_id
+                    == UUID(dirty.envelope.primary_result_id)
+                )
+            )
+            assert bundle is not None
+            assert bundle.inspection_bundle_identity != "0" * 64
+            bundle.inspection_bundle_identity = "0" * 64
+            await uow.commit()
+        with pytest.raises(RepositorySnapshotInvariantViolation):
+            await service.capture_repository_snapshot(
+                context=CommandContext(
+                    installation_identity="installation",
+                    actor=CommandActor(actor_type="user", actor_id="user"),
+                    interaction_correlation_id="capture",
+                ),
+                idempotency_key="capture-dirty-invariant",
+                command=CaptureRepositorySnapshot(registration_id),
+            )
+
+        original_capture = service._git_adapter.capture_snapshot
+
+        async def fail_capture(*arguments: object, **keywords: object) -> object:
+            raise RepositorySnapshotCaptureConflict("test_capture_failure")
+
+        monkeypatch.setattr(service._git_adapter, "capture_snapshot", fail_capture)
+        with pytest.raises(RepositorySnapshotCaptureConflict, match="test_capture_failure"):
+            await service.capture_repository_snapshot(
+                context=CommandContext(
+                    installation_identity="installation",
+                    actor=CommandActor(actor_type="user", actor_id="user"),
+                    interaction_correlation_id="capture",
+                ),
+                idempotency_key="capture-failure",
+                command=CaptureRepositorySnapshot(registration_id),
+            )
+
+        async def capture_then_change_root(*arguments: object, **keywords: object) -> object:
+            observation = await original_capture(*arguments, **keywords)
+            async with UnitOfWork(database.session) as uow:
+                registration = await uow.session.get(RepositoryRegistrationRow, registration_id)
+                assert registration is not None
+                registration.canonical_root_path = str(repository / "changed")
+                await uow.commit()
+            return observation
+
+        monkeypatch.setattr(service._git_adapter, "capture_snapshot", capture_then_change_root)
+        with pytest.raises(RepositoryRegistrationConflict, match="registration root changed"):
+            await service.capture_repository_snapshot(
+                context=CommandContext(
+                    installation_identity="installation",
+                    actor=CommandActor(actor_type="user", actor_id="user"),
+                    interaction_correlation_id="capture",
+                ),
+                idempotency_key="capture-root-race",
+                command=CaptureRepositorySnapshot(registration_id),
+            )
+        async with UnitOfWork(database.session) as uow:
+            registration = await uow.session.get(RepositoryRegistrationRow, registration_id)
+            assert registration is not None
+            registration.canonical_root_path = str(repository)
+            await uow.commit()
+
+        async def capture_then_revoke(*arguments: object, **keywords: object) -> object:
+            observation = await original_capture(*arguments, **keywords)
+            async with UnitOfWork(database.session) as uow:
+                registration = await uow.session.get(RepositoryRegistrationRow, registration_id)
+                assert registration is not None
+                registration.status = "revoked"
+                await uow.commit()
+            return observation
+
+        monkeypatch.setattr(service._git_adapter, "capture_snapshot", capture_then_revoke)
+        with pytest.raises(RepositoryRegistrationConflict, match="registration is not active"):
+            await service.capture_repository_snapshot(
+                context=CommandContext(
+                    installation_identity="installation",
+                    actor=CommandActor(actor_type="user", actor_id="user"),
+                    interaction_correlation_id="capture",
+                ),
+                idempotency_key="capture-revocation-race",
+                command=CaptureRepositorySnapshot(registration_id),
+            )
+        async with database.session() as session:
+            snapshots = list(
+                (
+                    await session.scalars(
+                        select(RepositorySnapshotRow).order_by(
+                            RepositorySnapshotRow.snapshot_sequence
+                        )
+                    )
+                ).all()
+            )
+            assert len(snapshots) == 2
+            clean_snapshot, dirty_snapshot = snapshots
+            assert (clean_snapshot.snapshot_sequence, dirty_snapshot.snapshot_sequence) == (1, 2)
+            assert clean_snapshot.repository_snapshot_id == UUID(outcome.envelope.primary_result_id)
+            assert clean_snapshot.canonical_root_path == initial_probe.canonical_root_path
+            assert clean_snapshot.head_commit == initial_probe.head_commit
+            assert clean_snapshot.tracked_tree_identity == initial_probe.tracked_tree_identity
+            assert clean_snapshot.current_branch == initial_probe.current_branch
+            assert clean_snapshot.is_clean is True
+            assert clean_snapshot.dirty_worktree_manifest_ref is None
+            assert clean_snapshot.untracked_manifest_ref is None
+            freshness = await session.get(
+                RepositorySnapshotFreshnessRow,
+                clean_snapshot.repository_snapshot_id,
+            )
+            assert freshness is not None
+            assert freshness.status == "current"
+            assert freshness.reason_code is None
+            assert freshness.current_probe_identity == clean_snapshot.repository_state_digest
+            assert freshness.probe_version == initial_probe.observation_profile_version
+            assert freshness.row_version == 1
+            assert (
+                await session.scalar(
+                    select(func.count()).select_from(RepositorySnapshotFreshnessRow)
+                )
+                == 2
+            )
+            assert (
+                await session.scalar(
+                    select(func.count())
+                    .select_from(RepositorySnapshotInspectionBundleRow)
+                    .where(
+                        RepositorySnapshotInspectionBundleRow.repository_snapshot_id
+                        == clean_snapshot.repository_snapshot_id
+                    )
+                )
+                == 0
+            )
+            bundle = await session.scalar(
+                select(RepositorySnapshotInspectionBundleRow).where(
+                    RepositorySnapshotInspectionBundleRow.repository_snapshot_id
+                    == dirty_snapshot.repository_snapshot_id
+                )
+            )
+            assert bundle is not None
+            assert (
+                await session.scalar(
+                    select(func.count())
+                    .select_from(RepositorySnapshotInspectionBundleEntryRow)
+                    .where(
+                        RepositorySnapshotInspectionBundleEntryRow.inspection_bundle_id
+                        == bundle.inspection_bundle_id
+                    )
+                )
+                > 0
+            )
+            assert await session.scalar(select(func.count()).select_from(CommandReceiptRow)) == 4
+            events = list((await session.scalars(select(RuntimeEventRow))).all())
+            outboxes = list((await session.scalars(select(OutboxRecordRow))).all())
+            assert len(events) == len(outboxes) == 2
+            snapshots_by_id = {snapshot.repository_snapshot_id: snapshot for snapshot in snapshots}
+            outboxes_by_event = {outbox.event_id: outbox for outbox in outboxes}
+            for event in events:
+                snapshot = snapshots_by_id[UUID(event.aggregate_id)]
+                assert event.aggregate_type == "repository_snapshot"
+                assert event.event_type == "repository.snapshot.captured"
+                assert event.aggregate_sequence == 1
+                assert event.payload_json == {
+                    "repository_snapshot_id": str(snapshot.repository_snapshot_id),
+                    "repository_registration_id": str(registration_id),
+                    "repository_snapshot_identity": snapshot.repository_snapshot_identity,
+                    "repository_state_digest": snapshot.repository_state_digest,
+                    "is_clean": snapshot.is_clean,
+                    "snapshot_sequence": snapshot.snapshot_sequence,
+                }
+                outbox = outboxes_by_event[event.event_id]
+                assert outbox.topic == "runtime-events"
+                assert outbox.partition_key == (
+                    f"repository_snapshot:{snapshot.repository_snapshot_id}"
+                )
+    finally:
+        await database.dispose()
+
+
+@pytest.mark.integration
+async def test_snapshot_reuse_rejects_persisted_entry_identity_mismatch(
+    isolated_database_url: str,
+    tmp_path: Path,
+) -> None:
+    from sqlalchemy import func, select
+
+    from labpilot.common.commands import CommandActor, CommandContext
+    from labpilot.context.models import (
+        RepositorySnapshotFreshnessRow,
+        RepositorySnapshotInspectionBundleEntryRow,
+        RepositorySnapshotInspectionBundleRow,
+        RepositorySnapshotRow,
+    )
+    from labpilot.context.repository_types import (
+        CaptureRepositorySnapshot,
+        RepositorySnapshotInvariantViolation,
+    )
+    from labpilot.db.idempotency_models import CommandReceiptRow
+    from labpilot.db.uow import UnitOfWork
+    from labpilot.observability.models import OutboxRecordRow, RuntimeEventRow
+
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    await _run_git(repository, "init", "-q", "-b", "main")
+    tracked = repository / "README.md"
+    tracked.write_bytes(b"base")
+    await _run_git(repository, "add", "README.md")
+    await _run_git(
+        repository,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-qm",
+        "base",
+    )
+    tracked.write_bytes(b"dirty")
+    database, service, registration_id = await _seed_capture_service(
+        isolated_database_url,
+        tmp_path,
+        repository,
+    )
+    context = CommandContext(
+        installation_identity="installation",
+        actor=CommandActor(actor_type="user", actor_id="user"),
+        interaction_correlation_id="capture",
+    )
+    try:
+        dirty = await service.capture_repository_snapshot(
+            context=context,
+            idempotency_key="capture-dirty",
+            command=CaptureRepositorySnapshot(registration_id),
+        )
+        async with UnitOfWork(database.session) as uow:
+            bundle = await uow.session.scalar(
+                select(RepositorySnapshotInspectionBundleRow).where(
+                    RepositorySnapshotInspectionBundleRow.repository_snapshot_id
+                    == UUID(dirty.envelope.primary_result_id)
+                )
+            )
+            assert bundle is not None
+            entry = await uow.session.scalar(
+                select(RepositorySnapshotInspectionBundleEntryRow)
+                .where(
+                    RepositorySnapshotInspectionBundleEntryRow.inspection_bundle_id
+                    == bundle.inspection_bundle_id
+                )
+                .order_by(RepositorySnapshotInspectionBundleEntryRow.stable_ordinal)
+                .limit(1)
+            )
+            assert entry is not None
+            entry.size_bytes += 1
+            await uow.commit()
+
+        async def persistence_counts() -> tuple[int, ...]:
+            counts: list[int] = []
+            async with database.session() as session:
+                for model in (
+                    RepositorySnapshotRow,
+                    RepositorySnapshotFreshnessRow,
+                    RepositorySnapshotInspectionBundleRow,
+                    RepositorySnapshotInspectionBundleEntryRow,
+                    CommandReceiptRow,
+                    RuntimeEventRow,
+                    OutboxRecordRow,
+                ):
+                    value = await session.scalar(select(func.count()).select_from(model))
+                    assert value is not None
+                    counts.append(value)
+            return tuple(counts)
+
+        before_counts = await persistence_counts()
+        with pytest.raises(
+            RepositorySnapshotInvariantViolation,
+            match="bundle_entry_identity_mismatch",
+        ):
+            await service.capture_repository_snapshot(
+                context=context,
+                idempotency_key="capture-dirty-entry-invariant",
+                command=CaptureRepositorySnapshot(registration_id),
+            )
+        assert await persistence_counts() == before_counts
+    finally:
+        await database.dispose()
+
+
+@pytest.mark.integration
+async def test_capture_snapshot_revalidates_locked_registration_identity(
+    isolated_database_url: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sqlalchemy import func, select
+
+    from labpilot.common.commands import CommandActor, CommandContext
+    from labpilot.context.models import (
+        RepositoryRegistrationRow,
+        RepositorySnapshotFreshnessRow,
+        RepositorySnapshotInspectionBundleEntryRow,
+        RepositorySnapshotInspectionBundleRow,
+        RepositorySnapshotRow,
+    )
+    from labpilot.context.repository_service import RepositoryRegistrationConflict
+    from labpilot.context.repository_types import CaptureRepositorySnapshot
+    from labpilot.db.idempotency_models import CommandReceiptRow
+    from labpilot.db.uow import UnitOfWork
+    from labpilot.observability.models import OutboxRecordRow, RuntimeEventRow
+
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    await _run_git(repository, "init", "-q", "-b", "main")
+    (repository / "README.md").write_text("base", encoding="utf-8")
+    await _run_git(repository, "add", "README.md")
+    await _run_git(
+        repository,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-qm",
+        "base",
+    )
+    database, service, registration_id = await _seed_capture_service(
+        isolated_database_url,
+        tmp_path,
+        repository,
+    )
+    original_capture = service._git_adapter.capture_snapshot
+
+    async def capture_then_corrupt_identity(*arguments: object, **keywords: object):
+        observation = await original_capture(*arguments, **keywords)
+        async with UnitOfWork(database.session) as uow:
+            registration = await uow.session.get(RepositoryRegistrationRow, registration_id)
+            assert registration is not None
+            registration.root_path_identity = "f" * 64
+            await uow.commit()
+        return observation
+
+    monkeypatch.setattr(service._git_adapter, "capture_snapshot", capture_then_corrupt_identity)
+    try:
+        with pytest.raises(RepositoryRegistrationConflict, match="registration identity"):
+            await service.capture_repository_snapshot(
+                context=CommandContext(
+                    installation_identity="installation",
+                    actor=CommandActor(actor_type="user", actor_id="user"),
+                    interaction_correlation_id="capture",
+                ),
+                idempotency_key="capture-registration-identity-race",
+                command=CaptureRepositorySnapshot(registration_id),
+            )
+
+        async with database.session() as session:
+            for model in (
+                RepositorySnapshotRow,
+                RepositorySnapshotInspectionBundleRow,
+                RepositorySnapshotInspectionBundleEntryRow,
+                RepositorySnapshotFreshnessRow,
+                RuntimeEventRow,
+                OutboxRecordRow,
+                CommandReceiptRow,
+            ):
+                assert await session.scalar(select(func.count()).select_from(model)) == 0
+    finally:
+        await database.dispose()
+
+
+@pytest.mark.integration
+async def test_capture_dirty_submodule_persists_metadata_only_entry(
+    isolated_database_url: str,
+    tmp_path: Path,
+) -> None:
+    from sqlalchemy import select
+
+    from labpilot.common.commands import CommandActor, CommandContext
+    from labpilot.context.models import (
+        RepositorySnapshotInspectionBundleEntryRow,
+        RepositorySnapshotInspectionBundleRow,
+        RepositorySnapshotRow,
+    )
+    from labpilot.context.repository_types import CaptureRepositorySnapshot
+
+    source = tmp_path / "source"
+    source.mkdir()
+    await _run_git(source, "init", "-q", "-b", "main")
+    (source / "source.txt").write_bytes(b"first")
+    await _run_git(source, "add", "source.txt")
+    await _run_git(
+        source,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-qm",
+        "first",
+    )
+    first_oid = await _run_git(source, "rev-parse", "HEAD")
+
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    await _run_git(repository, "init", "-q", "-b", "main")
+    await _run_git(
+        repository,
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "-q",
+        str(source),
+        "module",
+    )
+    await _run_git(repository, "add", "-A")
+    await _run_git(
+        repository,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-qm",
+        "base",
+    )
+
+    (source / "source.txt").write_bytes(b"second")
+    await _run_git(source, "add", "source.txt")
+    await _run_git(
+        source,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-qm",
+        "second",
+    )
+    second_oid = await _run_git(source, "rev-parse", "HEAD")
+    module = repository / "module"
+    await _run_git(module, "fetch", "-q", "origin")
+    await _run_git(module, "checkout", "-q", second_oid)
+    await _run_git(repository, "add", "module")
+
+    database, service, registration_id = await _seed_capture_service(
+        isolated_database_url,
+        tmp_path,
+        repository,
+    )
+    context = CommandContext(
+        installation_identity="installation",
+        actor=CommandActor(actor_type="user", actor_id="user"),
+        interaction_correlation_id="capture",
+    )
+    try:
+        dirty = await service.capture_repository_snapshot(
+            context=context,
+            idempotency_key="capture-dirty-submodule",
+            command=CaptureRepositorySnapshot(registration_id),
+        )
+        async with database.session() as session:
+            snapshot = await session.get(
+                RepositorySnapshotRow,
+                UUID(dirty.envelope.primary_result_id),
+            )
+            assert snapshot is not None
+            assert snapshot.submodule_presence is True
+            bundle = await session.scalar(
+                select(RepositorySnapshotInspectionBundleRow).where(
+                    RepositorySnapshotInspectionBundleRow.repository_snapshot_id
+                    == snapshot.repository_snapshot_id
+                )
+            )
+            assert bundle is not None
+            entry = await session.scalar(
+                select(RepositorySnapshotInspectionBundleEntryRow).where(
+                    RepositorySnapshotInspectionBundleEntryRow.inspection_bundle_id
+                    == bundle.inspection_bundle_id,
+                    RepositorySnapshotInspectionBundleEntryRow.repository_path == "module",
+                )
+            )
+            assert entry is not None
+            assert (entry.entry_kind, entry.file_type, entry.file_mode) == (
+                "tracked_overlay",
+                "submodule",
+                "160000",
+            )
+            assert entry.content_ref is None
+            assert entry.content_hash is None
+            assert entry.size_bytes == 0
+            assert entry.head_blob_oid == first_oid
+            assert entry.index_blob_oid == second_oid
+
+        await _run_git(repository, "reset", "--hard", "-q", "HEAD")
+        await _run_git(repository, "submodule", "update", "-q", "--init")
+        await _run_git(repository, "rm", "-q", "-f", "module")
+        deleted = await service.capture_repository_snapshot(
+            context=context,
+            idempotency_key="capture-deleted-submodule",
+            command=CaptureRepositorySnapshot(registration_id),
+        )
+        async with database.session() as session:
+            snapshot = await session.get(
+                RepositorySnapshotRow,
+                UUID(deleted.envelope.primary_result_id),
+            )
+            assert snapshot is not None
+            assert snapshot.submodule_presence is False
+    finally:
+        await database.dispose()

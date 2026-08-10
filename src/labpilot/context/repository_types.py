@@ -10,6 +10,7 @@ RepositoryChangeKind = Literal[
     "mode_change",
 ]
 RepositoryFileType = Literal["regular", "symlink", "submodule"]
+RepositoryFileMode = Literal["100644", "100755", "120000", "160000"]
 
 
 class RepositoryPathError(Exception):
@@ -198,7 +199,7 @@ class GitStatusEntry:
     index_status: str
     worktree_status: str
     file_type: RepositoryFileType
-    file_mode: str
+    file_mode: RepositoryFileMode
     head_blob_oid: str | None
     index_blob_oid: str | None
     is_untracked: bool
@@ -246,3 +247,57 @@ class RevokeRepositoryRegistration:
     repository_registration_id: UUID
     expected_row_version: int
     expected_project_row_version: int
+
+
+@dataclass(frozen=True, slots=True)
+class CaptureRepositorySnapshot:
+    repository_registration_id: UUID
+
+
+class RepositorySnapshotCaptureConflict(Exception):
+    error_code = "repository_snapshot_capture_conflict"
+
+
+class RepositorySnapshotInvariantViolation(Exception):
+    error_code = "repository_snapshot_invariant_violation"
+
+
+@dataclass(frozen=True, slots=True)
+class StableStatToken:
+    inode: int
+    file_type: str
+    size_bytes: int
+    mtime_ns: int
+    ctime_ns: int
+
+
+@dataclass(frozen=True, slots=True)
+class CapturedBundleEntry:
+    relative_path: str
+    original_relative_path: str | None
+    entry_kind: RepositoryChangeKind
+    file_type: RepositoryFileType
+    file_mode: RepositoryFileMode
+    head_blob_oid: str | None
+    index_blob_oid: str | None
+    content_ref: str | None
+    content_hash: str | None
+    size_bytes: int
+    stable_ordinal: int
+    entry_identity: str
+    stable_stat_token: StableStatToken | None
+
+
+@dataclass(frozen=True, slots=True)
+class RepositorySnapshotObservation:
+    probe: RepositoryProbe
+    dirty_manifest_ref: str | None
+    dirty_manifest_hash: str | None
+    untracked_manifest_ref: str | None
+    untracked_manifest_hash: str | None
+    state_digest: str
+    snapshot_identity: str
+    bundle_entries: tuple[CapturedBundleEntry, ...]
+    bundle_identity: str | None
+    submodule_presence: bool
+    lfs_pointer_presence: bool
