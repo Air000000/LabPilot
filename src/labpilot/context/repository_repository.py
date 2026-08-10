@@ -57,6 +57,20 @@ class RepositoryRegistrationRepository:
 
 
 class RepositorySnapshotRepository:
+    async def get_snapshot(
+        self,
+        session: AsyncSession,
+        repository_snapshot_id: UUID,
+    ) -> RepositorySnapshotRow | None:
+        return await session.get(RepositorySnapshotRow, repository_snapshot_id)
+
+    async def get_freshness(
+        self,
+        session: AsyncSession,
+        repository_snapshot_id: UUID,
+    ) -> RepositorySnapshotFreshnessRow | None:
+        return await session.get(RepositorySnapshotFreshnessRow, repository_snapshot_id)
+
     async def get_by_identity(
         self,
         session: AsyncSession,
