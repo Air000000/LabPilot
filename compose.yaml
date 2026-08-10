@@ -33,7 +33,7 @@ services:
     environment: *app-env
     command: ["uvicorn", "labpilot.main:app", "--host", "0.0.0.0", "--port", "8000"]
     ports:
-      - "${LABPILOT_API_PORT:-8000}:8000"
+      - "127.0.0.1:${LABPILOT_API_PORT:-8000}:8000"
     volumes:
       - ${LABPILOT_REPOSITORY_HOST_ROOT:-.}:/repositories:ro
       - labpilot_content:/var/lib/labpilot/content
@@ -55,6 +55,7 @@ services:
         condition: service_completed_successfully
 
   projection:
+    profiles: ["advanced-ops"]
     build: .
     environment: *app-env
     command: ["python", "-m", "labpilot.observability.projection_worker"]

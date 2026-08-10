@@ -13,7 +13,8 @@ echo "== Verify WP1-A frozen dependencies =="
   docs/labpilot/implementation/wp1-a-v0.2.dependencies.sha256
 
 echo "== Install =="
-uv sync --frozen --all-groups
+uv lock --check
+uv sync --locked --all-groups
 
 echo "== Ruff =="
 uv run ruff check src tests scripts

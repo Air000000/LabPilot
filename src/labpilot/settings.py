@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     environment: Literal["development", "test", "production"] = "development"
     database_url: str = Field(min_length=1)
     log_level: str = "INFO"
+    data_egress_policy: Literal["local_only", "remote_provider_allowed"] = "local_only"
     installation_identity: str = Field(min_length=1, max_length=200)
     local_actor_id: str = Field(min_length=1, max_length=200)
     repository_allowed_roots: tuple[Path, ...]

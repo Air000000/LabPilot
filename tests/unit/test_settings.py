@@ -200,3 +200,40 @@ def test_settings_reject_invalid_repository_limits(field: str, value: int) -> No
 
     with pytest.raises(ValidationError):
         Settings(**values)
+
+
+def test_data_egress_policy_defaults_local_only() -> None:
+    settings = Settings(
+        database_url="postgresql+asyncpg://user:pass@db:5432/labpilot",
+        installation_identity="installation-1",
+        local_actor_id="air",
+        repository_allowed_roots=(Path("/repositories"),),
+        repository_content_store_root=Path("/content"),
+    )
+
+    assert settings.data_egress_policy == "local_only"
+
+
+def test_data_egress_policy_accepts_remote_provider_allowed() -> None:
+    settings = Settings(
+        database_url="postgresql+asyncpg://user:pass@db:5432/labpilot",
+        installation_identity="installation-1",
+        local_actor_id="air",
+        repository_allowed_roots=(Path("/repositories"),),
+        repository_content_store_root=Path("/content"),
+        data_egress_policy="remote_provider_allowed",
+    )
+
+    assert settings.data_egress_policy == "remote_provider_allowed"
+
+
+def test_data_egress_policy_rejects_unknown_value() -> None:
+    with pytest.raises(ValidationError, match="data_egress_policy"):
+        Settings(
+            database_url="postgresql+asyncpg://user:pass@db:5432/labpilot",
+            installation_identity="installation-1",
+            local_actor_id="air",
+            repository_allowed_roots=(Path("/repositories"),),
+            repository_content_store_root=Path("/content"),
+            data_egress_policy="anything_else",
+        )
