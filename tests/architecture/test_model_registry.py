@@ -14,3 +14,12 @@ def test_model_registry_registers_proposal_authority_tables() -> None:
         "experiment_design_decisions",
         "experiment_versions",
     } <= set(Base.metadata.tables)
+
+
+def test_model_registry_registers_tool_and_agent_runtime_tables() -> None:
+    assert {
+        "tool_calls",
+        "tool_approvals",
+        "agent_runs",
+        "agent_steps",
+    } <= set(Base.metadata.tables)

@@ -5,10 +5,12 @@ from pathlib import Path
 MODEL_REGISTRY_PATH = Path("db/model_registry.py")
 MODEL_REGISTRY_ALLOWED_IMPORTS = frozenset(
     {
+        "labpilot.agent_runtime.models",
         "labpilot.context.models",
         "labpilot.experiments.models",
         "labpilot.experiments.proposal_models",
         "labpilot.observability.models",
+        "labpilot.tools_policy.models",
     }
 )
 
@@ -111,9 +113,7 @@ def resolve_relative_target(
     package_parts = list(relative_path.parent.parts)
     ascend = level - 1
     if ascend > len(package_parts):
-        raise AssertionError(
-            f"invalid relative import level={level} in {relative_path.as_posix()}"
-        )
+        raise AssertionError(f"invalid relative import level={level} in {relative_path.as_posix()}")
     base = package_parts[: len(package_parts) - ascend]
     suffix = module_name.split(".") if module_name else []
     resolved = base + suffix
@@ -122,9 +122,7 @@ def resolve_relative_target(
     return ROOT_MODULE_CLASSIFICATION.get(resolved[0], resolved[0])
 
 
-def imported_targets(
-    tree: ast.AST, relative_path: Path
-) -> list[tuple[str, str | None, int]]:
+def imported_targets(tree: ast.AST, relative_path: Path) -> list[tuple[str, str | None, int]]:
     targets: list[tuple[str, str | None, int]] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -180,9 +178,7 @@ def find_dependency_violations(source_root: Path) -> list[DependencyViolation]:
         source_module = classify_source_module(relative_path)
         allowed = ALLOWED_INTERNAL_IMPORTS[source_module]
         tree = ast.parse(path.read_text(), filename=relative_path.as_posix())
-        for target_module, target_module_name, line in imported_targets(
-            tree, relative_path
-        ):
+        for target_module, target_module_name, line in imported_targets(tree, relative_path):
             if target_module not in allowed and not is_path_specific_import_allowed(
                 relative_path=relative_path,
                 target_module_name=target_module_name,

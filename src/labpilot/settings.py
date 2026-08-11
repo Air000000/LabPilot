@@ -2,7 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal, Self
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -18,6 +18,13 @@ class Settings(BaseSettings):
     database_url: str = Field(min_length=1)
     log_level: str = "INFO"
     data_egress_policy: Literal["local_only", "remote_provider_allowed"] = "local_only"
+    agent_provider_model: str | None = None
+    agent_provider_api_key: SecretStr | None = None
+    agent_provider_timeout_seconds: int = Field(default=60, ge=1, le=300)
+    agent_provider_max_response_bytes: int = Field(
+        default=1024 * 1024,
+        ge=1024,
+    )
     installation_identity: str = Field(min_length=1, max_length=200)
     local_actor_id: str = Field(min_length=1, max_length=200)
     repository_allowed_roots: tuple[Path, ...]
