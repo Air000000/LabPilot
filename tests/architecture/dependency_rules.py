@@ -7,6 +7,7 @@ MODEL_REGISTRY_ALLOWED_IMPORTS = frozenset(
     {
         "labpilot.context.models",
         "labpilot.experiments.models",
+        "labpilot.experiments.proposal_models",
         "labpilot.observability.models",
     }
 )

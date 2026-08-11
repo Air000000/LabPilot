@@ -31,7 +31,7 @@ async def test_upgrade_head_succeeds_on_an_isolated_empty_database(
             version = connection.scalar(
                 text("SELECT version_num FROM alembic_version")
             )
-        assert version == "0006_repository_snapshots"
+        assert version == "0007_experiment_proposals"
     finally:
         engine.dispose()
 
@@ -41,6 +41,9 @@ async def test_upgrade_head_succeeds_on_an_isolated_empty_database(
     assert Path("migrations/versions/0004_projects.py").exists()
     assert Path("migrations/versions/0005_repository_registrations.py").exists()
     assert Path("migrations/versions/0006_repository_snapshots.py").exists()
+    assert Path(
+        "migrations/versions/0007_experiment_proposals.py"
+    ).exists()
 
 
 @pytest.mark.integration
@@ -150,7 +153,7 @@ async def test_task3_migration_upgrade_downgrade_upgrade_round_trip(
         with engine.connect() as connection:
             assert connection.scalar(
                 text("SELECT version_num FROM alembic_version")
-            ) == "0006_repository_snapshots"
+            ) == "0007_experiment_proposals"
             assert connection.scalar(
                 text("SELECT to_regclass('public.projects')")
             ) == "projects"
@@ -168,7 +171,7 @@ async def test_task3_migration_upgrade_downgrade_upgrade_round_trip(
         with engine.connect() as connection:
             assert connection.scalar(
                 text("SELECT version_num FROM alembic_version")
-            ) == "0006_repository_snapshots"
+            ) == "0007_experiment_proposals"
             assert connection.scalar(
                 text("SELECT to_regclass('public.projects')")
             ) == "projects"
