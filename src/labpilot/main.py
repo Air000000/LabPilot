@@ -3,7 +3,8 @@ from typing import cast
 from uuid import UUID
 
 from labpilot.agent_runtime.context_compiler import ContextCompiler
-from labpilot.agent_runtime.provider import UnconfiguredModelProvider
+from labpilot.agent_runtime.opencode_go import OpenCodeGoChatProvider
+from labpilot.agent_runtime.provider import ModelProvider, UnconfiguredModelProvider
 from labpilot.agent_runtime.repository import SqlAgentRepository
 from labpilot.agent_runtime.service import (
     AgentApplicationService,
@@ -52,12 +53,24 @@ def tool_service_for_snapshot(repository_snapshot_id: UUID) -> ToolApplicationSe
     )
 
 
-provider = UnconfiguredModelProvider()
+provider: ModelProvider
+if settings.agent_provider_model and settings.agent_provider_api_key:
+    provider = OpenCodeGoChatProvider(
+        model=settings.agent_provider_model,
+        api_key=settings.agent_provider_api_key,
+        timeout_seconds=settings.agent_provider_timeout_seconds,
+        max_response_bytes=settings.agent_provider_max_response_bytes,
+    )
+    model_name = settings.agent_provider_model
+else:
+    provider = UnconfiguredModelProvider()
+    model_name = 'unconfigured'
+
 agent_runs = AgentApplicationService(
     repository=SqlAgentRepository(database.session),
     repository_source=repository_source,
     provider=provider,
-    model_name=settings.agent_provider_model or "unconfigured",
+    model_name=model_name,
     context_compiler=ContextCompiler(),
     tool_service_factory=tool_service_for_snapshot,
     proposal_service=cast(AgentProposalService, proposals),
