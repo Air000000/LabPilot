@@ -296,6 +296,16 @@ class SnapshotSource:
         return self.descriptor
 
 
+class SnapshotCatalog:
+    def __init__(self, *descriptors: RepositorySourceDescriptor) -> None:
+        self.descriptors = {
+            descriptor.repository_snapshot_id: descriptor for descriptor in descriptors
+        }
+
+    async def describe(self, repository_snapshot_id: UUID) -> RepositorySourceDescriptor:
+        return self.descriptors[repository_snapshot_id]
+
+
 class ScriptedProvider:
     provider_name = "scripted"
     egress = "local"
@@ -338,15 +348,21 @@ class DeadlineProbeProvider:
 
 
 class MemoryToolService:
-    def __init__(self, repository: MemoryAgentRepository) -> None:
+    def __init__(
+        self,
+        repository: MemoryAgentRepository,
+        snapshot_id: UUID | None = None,
+    ) -> None:
         self.repository = repository
+        self.snapshot_id = snapshot_id
         self.executions = 0
         self.calls: dict[UUID, ToolCallDetails] = {}
+        self.events: list[str] = []
 
         async def executor(arguments: Mapping[str, object]) -> Mapping[str, object]:
             return arguments
 
-        self.definitions = (
+        self._definitions = (
             ToolDefinition(
                 name="repository.read_text",
                 version="v1",
@@ -363,9 +379,15 @@ class MemoryToolService:
             ),
         )
 
+    @property
+    def definitions(self) -> tuple[ToolDefinition, ...]:
+        self.events.append("definitions")
+        return self._definitions
+
     async def request_call(
         self, *, context, project_id, definition_name, arguments
     ) -> ToolCallDetails:
+        self.events.append("request_call")
         call = ToolCallDetails(
             tool_call_id=uuid4(),
             project_id=project_id,
@@ -387,6 +409,7 @@ class MemoryToolService:
 
     async def execute_call(self, *, context, tool_call_id) -> ToolCallDetails:
         assert self.repository.active is False
+        self.events.append("execute_call")
         self.executions += 1
         call = replace(
             self.calls[tool_call_id],
@@ -399,7 +422,21 @@ class MemoryToolService:
         return call
 
     async def get_call(self, tool_call_id: UUID) -> ToolCallDetails:
+        self.events.append("get_call")
         return self.calls[tool_call_id]
+
+
+class RecordingToolFactory:
+    def __init__(self, repository: MemoryAgentRepository) -> None:
+        self.repository = repository
+        self.calls: list[UUID] = []
+        self.services: list[MemoryToolService] = []
+
+    def __call__(self, repository_snapshot_id: UUID) -> MemoryToolService:
+        self.calls.append(repository_snapshot_id)
+        service = MemoryToolService(self.repository, repository_snapshot_id)
+        self.services.append(service)
+        return service
 
 
 @dataclass(frozen=True)
@@ -507,6 +544,11 @@ def _service(
 ) -> tuple[AgentApplicationService, MemoryToolService, MemoryProposalService]:
     tools = MemoryToolService(repository)
     proposals = MemoryProposalService(repository)
+
+    def tool_service_factory(repository_snapshot_id: UUID) -> MemoryToolService:
+        assert repository_snapshot_id == descriptor.repository_snapshot_id
+        return tools
+
     return (
         AgentApplicationService(
             repository=repository,
@@ -514,13 +556,257 @@ def _service(
             provider=provider,
             model_name="test-model",
             context_compiler=ContextCompiler(),
-            tool_service=tools,
+            tool_service_factory=tool_service_factory,
             proposal_service=proposals,
             data_egress_policy=egress_policy,
         ),
         tools,
         proposals,
     )
+
+
+def _factory_service(
+    repository: MemoryAgentRepository,
+    repository_source: SnapshotSource | SnapshotCatalog,
+    provider: ScriptedProvider,
+    factory: RecordingToolFactory,
+) -> AgentApplicationService:
+    return AgentApplicationService(
+        repository=repository,
+        repository_source=repository_source,
+        provider=provider,
+        model_name="test-model",
+        context_compiler=ContextCompiler(),
+        tool_service_factory=factory,
+        proposal_service=MemoryProposalService(repository),
+        data_egress_policy="local_only",
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_run_does_not_resolve_tool_factory() -> None:
+    descriptor = _descriptor()
+    repository = MemoryAgentRepository()
+    provider = ScriptedProvider([])
+    factory = RecordingToolFactory(repository)
+    service = _factory_service(repository, SnapshotSource(descriptor), provider, factory)
+
+    await service.create_run(
+        context=_context(),
+        project_id=descriptor.project_id,
+        repository_snapshot_id=descriptor.repository_snapshot_id,
+        goal="goal",
+        budget=_budget(),
+    )
+
+    assert factory.calls == []
+    assert provider.calls == []
+
+
+@pytest.mark.asyncio
+async def test_advance_resolves_tool_factory_from_persisted_snapshot() -> None:
+    descriptor = _descriptor()
+    repository = MemoryAgentRepository()
+    provider = ScriptedProvider([{"kind": "stop", "reason_code": "done"}])
+    factory = RecordingToolFactory(repository)
+    service = _factory_service(repository, SnapshotSource(descriptor), provider, factory)
+    run = await service.create_run(
+        context=_context(),
+        project_id=descriptor.project_id,
+        repository_snapshot_id=descriptor.repository_snapshot_id,
+        goal="goal",
+        budget=_budget(),
+    )
+
+    await service.advance_run(
+        context=_context(),
+        agent_run_id=run.agent_run_id,
+        expected_row_version=run.row_version,
+    )
+
+    assert factory.calls == [descriptor.repository_snapshot_id]
+
+
+@pytest.mark.asyncio
+async def test_one_agent_service_isolates_two_run_snapshots() -> None:
+    project_id = uuid4()
+    first = replace(
+        _descriptor(project_id),
+        repository_snapshot_id=UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+    )
+    second = replace(
+        _descriptor(project_id),
+        repository_snapshot_id=UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+    )
+    repository = MemoryAgentRepository()
+    provider = ScriptedProvider(
+        [
+            {"kind": "stop", "reason_code": "first_done"},
+            {"kind": "stop", "reason_code": "second_done"},
+        ]
+    )
+    factory = RecordingToolFactory(repository)
+    service = _factory_service(
+        repository, SnapshotCatalog(first, second), provider, factory
+    )
+    first_run = await service.create_run(
+        context=_context(),
+        project_id=project_id,
+        repository_snapshot_id=first.repository_snapshot_id,
+        goal="first",
+        budget=_budget(),
+    )
+    second_run = await service.create_run(
+        context=_context(),
+        project_id=project_id,
+        repository_snapshot_id=second.repository_snapshot_id,
+        goal="second",
+        budget=_budget(),
+    )
+
+    await service.advance_run(
+        context=_context(),
+        agent_run_id=first_run.agent_run_id,
+        expected_row_version=first_run.row_version,
+    )
+    await service.advance_run(
+        context=_context(),
+        agent_run_id=second_run.agent_run_id,
+        expected_row_version=second_run.row_version,
+    )
+
+    assert factory.calls == [
+        first.repository_snapshot_id,
+        second.repository_snapshot_id,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_one_advance_reuses_same_snapshot_bound_tool_service() -> None:
+    descriptor = _descriptor()
+    repository = MemoryAgentRepository()
+    provider = ScriptedProvider(
+        [
+            {
+                "kind": "tool_call",
+                "tool_name": "repository.read_text",
+                "arguments": {"relative_path": "train.py"},
+            },
+            {"kind": "stop", "reason_code": "done"},
+        ]
+    )
+    factory = RecordingToolFactory(repository)
+    service = _factory_service(repository, SnapshotSource(descriptor), provider, factory)
+    run = await service.create_run(
+        context=_context(),
+        project_id=descriptor.project_id,
+        repository_snapshot_id=descriptor.repository_snapshot_id,
+        goal="goal",
+        budget=_budget(),
+    )
+
+    await service.advance_run(
+        context=_context(),
+        agent_run_id=run.agent_run_id,
+        expected_row_version=run.row_version,
+    )
+
+    assert factory.calls == [descriptor.repository_snapshot_id]
+    assert len(factory.services) == 1
+    assert factory.services[0].events.count("definitions") == 2
+    assert factory.services[0].events.count("request_call") == 1
+    assert factory.services[0].events.count("execute_call") == 1
+    assert factory.services[0].events.count("get_call") == 1
+
+
+@pytest.mark.asyncio
+async def test_tool_arguments_cannot_override_persisted_snapshot_binding() -> None:
+    project_id = uuid4()
+    persisted = _descriptor(project_id)
+    attempted = _descriptor(project_id)
+    repository = MemoryAgentRepository()
+    provider = ScriptedProvider(
+        [
+            {
+                "kind": "tool_call",
+                "tool_name": "repository.read_text",
+                "arguments": {
+                    "relative_path": "train.py",
+                    "repository_snapshot_id": str(attempted.repository_snapshot_id),
+                },
+            },
+            {"kind": "stop", "reason_code": "done"},
+        ]
+    )
+    factory = RecordingToolFactory(repository)
+    service = _factory_service(
+        repository, SnapshotCatalog(persisted, attempted), provider, factory
+    )
+    run = await service.create_run(
+        context=_context(),
+        project_id=project_id,
+        repository_snapshot_id=persisted.repository_snapshot_id,
+        goal="goal",
+        budget=_budget(),
+    )
+
+    await service.advance_run(
+        context=_context(),
+        agent_run_id=run.agent_run_id,
+        expected_row_version=run.row_version,
+    )
+
+    assert factory.calls == [persisted.repository_snapshot_id]
+    assert all(
+        tools.snapshot_id == persisted.repository_snapshot_id
+        for tools in factory.services
+    )
+    assert factory.services[0].events.count("request_call") == 1
+    assert factory.services[0].events.count("execute_call") == 1
+
+
+@pytest.mark.asyncio
+async def test_later_advance_resolves_factory_again_from_persisted_snapshot() -> None:
+    descriptor = _descriptor()
+    repository = MemoryAgentRepository()
+    provider = ScriptedProvider(
+        [
+            {"kind": "request_human_input", "question": "Which metric?"},
+            {"kind": "stop", "reason_code": "done"},
+        ]
+    )
+    factory = RecordingToolFactory(repository)
+    service = _factory_service(repository, SnapshotSource(descriptor), provider, factory)
+    run = await service.create_run(
+        context=_context(),
+        project_id=descriptor.project_id,
+        repository_snapshot_id=descriptor.repository_snapshot_id,
+        goal="goal",
+        budget=_budget(),
+    )
+    paused = await service.advance_run(
+        context=_context(),
+        agent_run_id=run.agent_run_id,
+        expected_row_version=run.row_version,
+    )
+    resumed = await service.submit_human_input(
+        context=_context(),
+        agent_run_id=run.agent_run_id,
+        expected_row_version=paused.row_version,
+        text="accuracy",
+    )
+
+    await service.advance_run(
+        context=_context(),
+        agent_run_id=run.agent_run_id,
+        expected_row_version=resumed.row_version,
+    )
+
+    assert factory.calls == [
+        descriptor.repository_snapshot_id,
+        descriptor.repository_snapshot_id,
+    ]
+    assert factory.services[0] is not factory.services[1]
 
 
 @pytest.mark.asyncio

@@ -386,6 +386,17 @@ def test_bound_toolset_hash_preserves_arrays_inside_literal_values(
     assert bound_toolset_hash((tool(first),)) != bound_toolset_hash((tool(second),))
 
 
+def test_repository_toolset_hash_is_snapshot_binding_independent() -> None:
+    snapshot_a = uuid4()
+    snapshot_b = uuid4()
+
+    definitions_a = repository_tool_definitions(object(), snapshot_a)
+    definitions_b = repository_tool_definitions(object(), snapshot_b)
+
+    assert snapshot_a != snapshot_b
+    assert bound_toolset_hash(definitions_a) == bound_toolset_hash(definitions_b)
+
+
 @pytest.mark.asyncio
 async def test_read_only_tool_executes_without_approval(context) -> None:
     snapshot_id = uuid4()

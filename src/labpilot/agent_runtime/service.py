@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Protocol, cast
 from uuid import UUID, uuid4
@@ -64,6 +64,9 @@ class AgentToolService(Protocol):
     async def get_call(self, tool_call_id: UUID) -> ToolCallDetails: ...
 
 
+AgentToolServiceFactory = Callable[[UUID], AgentToolService]
+
+
 class ProposalRevisionResult(Protocol):
     proposal_revision_id: UUID
 
@@ -88,7 +91,7 @@ class AgentApplicationService:
         provider: ModelProvider,
         model_name: str,
         context_compiler: ContextCompiler,
-        tool_service: AgentToolService,
+        tool_service_factory: AgentToolServiceFactory,
         proposal_service: AgentProposalService,
         data_egress_policy: DataEgressPolicy,
     ) -> None:
@@ -97,7 +100,7 @@ class AgentApplicationService:
         self._provider = provider
         self._model_name = model_name
         self._compiler = context_compiler
-        self._tools = tool_service
+        self._tool_service_factory = tool_service_factory
         self._proposals = proposal_service
         self._egress_policy = data_egress_policy
         self._decision_adapter: TypeAdapter[AgentDecision] = TypeAdapter(AgentDecision)
@@ -176,6 +179,7 @@ class AgentApplicationService:
             )
         if steps and _is_pending_proposal(steps[-1], run):
             return await self._materialize_proposal(context, run, steps[-1])
+        tools = self._tool_service_factory(run.repository_snapshot_id)
 
         while True:
             budget_reason = _budget_reason(run)
@@ -191,13 +195,13 @@ class AgentApplicationService:
             except ProviderPolicyError as exc:
                 raise AgentRuntimeError(exc.reason_code) from None
             descriptor = await self._repository_source.describe(run.repository_snapshot_id)
-            prior_results, human_inputs = await self._history(agent_run_id)
+            prior_results, human_inputs = await self._history(agent_run_id, tools)
             compiled = self._compiler.compile(
                 provider_name=run.provider_name,
                 model=run.model_name,
                 goal=run.goal,
                 snapshot=descriptor,
-                definitions=self._tools.definitions,
+                definitions=tools.definitions,
                 prior_tool_results=prior_results,
                 prior_human_inputs=human_inputs,
             )
@@ -316,7 +320,7 @@ class AgentApplicationService:
                 return run
             if isinstance(decision, ToolCallDecision):
                 try:
-                    call = await self._tools.request_call(
+                    call = await tools.request_call(
                         context=context,
                         project_id=run.project_id,
                         definition_name=decision.tool_name,
@@ -328,7 +332,7 @@ class AgentApplicationService:
                         agent_step_id=step.agent_step_id,
                         tool_call_id=call.tool_call_id,
                     )
-                    result = await self._tools.execute_call(
+                    result = await tools.execute_call(
                         context=context, tool_call_id=call.tool_call_id
                     )
                 except Exception:
@@ -400,7 +404,9 @@ class AgentApplicationService:
         return await self._require_run(agent_run_id)
 
     async def _history(
-        self, agent_run_id: UUID
+        self,
+        agent_run_id: UUID,
+        tools: AgentToolService,
     ) -> tuple[tuple[PriorToolResult, ...], tuple[str, ...]]:
         results: list[PriorToolResult] = []
         human_inputs: list[str] = []
@@ -408,7 +414,7 @@ class AgentApplicationService:
             if step.step_kind == "human_input" and step.human_input_text is not None:
                 human_inputs.append(step.human_input_text)
             if step.tool_call_id is not None:
-                call = await self._tools.get_call(step.tool_call_id)
+                call = await tools.get_call(step.tool_call_id)
                 if call.status == "executed" and call.result is not None:
                     results.append(PriorToolResult(call.tool_name, call.result))
         return tuple(results), tuple(human_inputs)
