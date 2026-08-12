@@ -62,6 +62,51 @@ No ModelRequestSnapshot, ToolManifest, Projection platform, or new provider fami
 Manual ProposalRevision retry ambiguity remains a non-blocking Deferred Finding.
 ```
 
+### Targeted composition correction — r3
+
+Task 5 preflight exposed one executable composition defect between the
+accepted Task 4 runtime and Task 5 application composition.
+
+The correction is limited to dependency injection of Snapshot-bound
+Repository Tools; it does not change Tool authority, Tool schemas, Agent
+public commands, persistence, migrations, provider semantics, or Proposal
+authority.
+
+```text
+C1  Repository Tool contracts remain static, but Repository Tool executors are
+    bound per AgentRun to that run's persisted repository_snapshot_id.
+
+C2  AgentApplicationService receives a narrow Tool-service factory rather than
+    one process-global Snapshot-bound ToolApplicationService.
+
+C3  The factory input is exclusively the persisted
+    AgentRun.repository_snapshot_id loaded by AgentApplicationService.
+    Model output, Tool arguments, and API transport cannot select or override
+    repository_snapshot_id.
+
+C4  Context compilation, ToolCall request/execution, and prior Tool-result
+    lookup for one advance use a ToolApplicationService produced for that
+    AgentRun's bound Snapshot.
+
+C5  ToolDefinition contract identity remains Snapshot-independent:
+    bound_toolset_hash excludes executor identity, so identical static Tool
+    schemas/version/risk/side-effect/approval semantics hash identically
+    across Snapshot bindings.
+
+C6  ToolCall/ToolApproval persistence remains shared through the existing
+    ToolRepository. No per-run ToolManifest, registry table, cache, or new
+    lifecycle persistence is introduced.
+
+C7  Task 5 application composition creates a process-level factory/closure
+    capable of producing a lightweight Snapshot-bound ToolApplicationService
+    on demand. Startup does not require or invent an AgentRun/Snapshot.
+
+C8  No migration, Tool schema, Tool argument, Agent public method, Proposal
+    contract, provider contract, egress rule, or UoW authority rule changes.
+```
+
+Task 5 remains blocked until this correction is implemented and reviewed.
+
 ---
 
 ## 1. File / ownership map
@@ -598,6 +643,18 @@ repository.path_fact:v1
 
 All four are `green`, `read_only`, `approval_required=False` and are backed by the bound `RepositorySnapshotSourceService`; no tool accepts an arbitrary host path or repository root. Production limits are fixed at: list ≤500 entries; one read ≤64 KiB and ≤500 lines; search ≤100 hits and scans only files ≤256 KiB per file.
 
+Repository Tool **contract definitions** are static, while executor binding is
+per AgentRun Snapshot.
+
+`repository_snapshot_id` is not a Tool argument and is never model-selectable.
+A Repository Tool service used by an AgentRun is constructed from the persisted
+`AgentRun.repository_snapshot_id`; its executors close over that exact Snapshot
+when delegating to `RepositorySnapshotSourceService`.
+
+Reconstructing the lightweight service on a later `advance_run` is valid:
+ToolCall/ToolResult persistence remains in the shared ToolRepository, and
+`bound_toolset_hash` excludes executor callable identity.
+
 `ToolApplicationService` methods:
 
 ```python
@@ -779,6 +836,34 @@ async def submit_human_input(
 async def get_run(self, agent_run_id: UUID) -> AgentRunDetails: ...
 ```
 
+```python
+from collections.abc import Callable
+
+AgentToolServiceFactory = Callable[[UUID], AgentToolService]
+```
+
+`AgentApplicationService` is composed with an `AgentToolServiceFactory`, not
+with one process-global Snapshot-bound Tool service.
+
+For every `advance_run`, after loading the authoritative AgentRun, the service
+resolves:
+
+```python
+tools = tool_service_factory(run.repository_snapshot_id)
+```
+
+The Snapshot id supplied to the factory comes only from the persisted
+AgentRun. It is not accepted from `AgentDecision`, Tool arguments, or API
+transport.
+
+The same run-bound `tools` instance is used for that advance's:
+
+- Tool definitions passed to ContextCompiler;
+- prior Tool-result lookup;
+- ToolCall request;
+- Tool execution.
+
+`create_run` does not need to construct or invoke Repository Tools.
 `AgentBudget` fields:
 
 ```text
@@ -1733,6 +1818,10 @@ max_steps/model_calls/tokens/wallclock terminates budget_exhausted
 provider failure => failed with explicit termination reason
 invalid AgentDecision never executes Tool or materializes Proposal
 structured log records carry applicable request_id/project_id/agent_run_id/tool_call_id and never raw Prompt/ToolResult/secret
+same process-level AgentApplicationService can host runs bound to different RepositorySnapshots
+advance_run resolves its Tool service from persisted AgentRun.repository_snapshot_id
+model Tool arguments cannot override/select repository_snapshot_id
+different Snapshot-bound executor closures with otherwise identical Tool contracts produce the same bound_toolset_hash
 ```
 
 - [ ] **Step 12: Run Agent service tests and confirm RED**
@@ -1748,6 +1837,11 @@ Follow §2.7, §2.8, §3.2 and §4 exactly. No Lease/Wakeup/DetachedResponse tab
 `create_run` stores effective egress policy, provider name/model and budget snapshot. It does not use CommandReceipt in Slice 1 and never invokes the provider during run creation.
 
 Every reserved model-call AgentStep stores `canonical_request_hash`, `bound_toolset_hash`, `semantic_parameters_json`, and `output_schema_hash` before the external provider call.
+
+AgentApplicationService stores a Tool-service factory. advance_run loads AgentRun
+first and obtains exactly one run-bound Tool service for the advance from
+run.repository_snapshot_id. That instance is used consistently for context
+compilation, history lookup, request_call, and execute_call.
 
 - [ ] **Step 14: Write real PostgreSQL transaction-boundary tests**
 
@@ -1892,7 +1986,26 @@ RepositorySnapshotSourceService
 ProposalRepositoryAdapter
 ProposalVerifier
 ProposalApplicationService
-static Repository Tool registry/ToolApplicationService
+static Repository Tool contract + run-bound ToolApplicationService factory
+
+Production composition is equivalent to:
+
+```python
+tool_repository = SqlToolRepository(database.session)
+
+def tool_service_for_snapshot(
+    repository_snapshot_id: UUID,
+) -> ToolApplicationService:
+    return ToolApplicationService(
+        repository_tool_definitions(
+            repository_source,
+            repository_snapshot_id,
+        ),
+        tool_repository,
+    )
+```
+
+AgentApplicationService receives `tool_service_factory=tool_service_for_snapshot`.
 configured or Unconfigured ModelProvider
 AgentApplicationService
 ```
