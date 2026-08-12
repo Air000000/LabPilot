@@ -1,6 +1,6 @@
 # LabPilot 文档状态
 
-> 当前状态：V1 v0.3 R0 Rebaseline 已通过 broad architecture review、targeted remediation 与 finding-specific re-review，现为剩余 V1 的 Current planning authority。
+> 当前状态：R0 仍为 V1 rebaseline authority root；Slice 1 已 Accepted；Slice 2 Detailed Plan 已授权 JIT drafting，但 Slice 2 implementation 尚未授权。
 
 | 文档 | 状态 | 用途 |
 |---|---|---|
@@ -64,11 +64,13 @@ Planning baseline: <exact R0 authority commit SHA>
 - WP1-A Task 0–10: Completed / independently reviewed / pushed / CI passed
 - WP1-A v0.2 Task 11–17: **Superseded / Never Executed**
 - Task 11: Not executed; superseded by V1 v0.3
-- Slice 1 Detailed Implementation Plan: Not started; **now authorized for drafting**
-- Slice 1 implementation: Not started; **not authorized until the Slice 1 Detailed Implementation Plan is approved**
-- Slice 2: Not started; JIT planning only after Slice 1 acceptance
+- Slice 1 Detailed Implementation Plan: Approved / Executed
+- Slice 1: Accepted
+- Slice 1 acceptance commit: `ff7909503c3b755bffb564423de3a56ce5bb9b4a`
+- Slice 2 Detailed Plan: Authorized for JIT drafting
+- Slice 2 implementation: Not authorized until its detailed plan is approved
 - Slice 3: Not started; JIT planning only after Slice 2 acceptance
-- Current branch: `feature/wp1-domain-context`
+- Current branch: `feature/v1-slice1-proposal-loop`
 - Task 8 accepted implementation commit: `ab3e773ee957b02f257df3f60f3ea3492626bcfa`
 - Task 9 accepted implementation commit: `949d22a676141cc279086775135610726b518c31`
 - Task 10 accepted implementation commit: `6d85b88c238714ebbd1fb1d7b90b0f93308f5006`
@@ -76,17 +78,25 @@ Planning baseline: <exact R0 authority commit SHA>
 
 ## 4. Next authorized action
 
-R0 finalization **does not authorize implementation**。
+Next authorized action:
 
-唯一下一步是起草一份绑定 exact R0 authority commit SHA 的：
+Draft the Slice 2 Detailed Implementation Plan JIT.
+
+The Slice 2 plan must remain subordinate to:
 
 ```text
-Slice 1 Detailed Implementation Plan
+V1 Scope v0.3
+> Architecture 10 v0.3
+> Master Roadmap v0.3
+> approved Slice 2 detailed plan / ADR once approved
 ```
 
-该 plan 必须定义 exact files、interfaces、migration ownership、transaction/UoW boundaries、tests、per-unit acceptance、risk tier 与 Accepted Foundation/facade usage。plan 通过 focused review 后才允许开始 Slice 1 implementation。
+It may use the accepted Slice 1 implementation as foundation.
 
-不得恢复旧 Task 11–17 执行路径，也不得提前创建 Slice 2/3 detailed implementation plans。
+Slice 2 implementation is **NOT authorized** until the Slice 2 Detailed
+Implementation Plan passes its required review and is approved.
+
+Do not start Slice 2 implementation in this operation. Do not draft Slice 3.
 
 ## 5. Foundation alignment to include in Slice 1 Detailed Plan
 
