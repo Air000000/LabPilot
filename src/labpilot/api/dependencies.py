@@ -3,15 +3,21 @@ from typing import Annotated, cast
 
 from fastapi import Depends, Request
 
+from labpilot.agent_runtime.service import AgentApplicationService
 from labpilot.api.actor import ActorProvider
 from labpilot.api.errors import ServiceUnavailableError
 from labpilot.common.commands import CommandContext
+from labpilot.context.repository_source import RepositorySnapshotSourceService
 from labpilot.experiments.project_service import ProjectApplicationService
+from labpilot.experiments.proposal_service import ProposalApplicationService
 
 
 @dataclass(frozen=True, slots=True)
 class ApplicationServices:
     projects: ProjectApplicationService
+    repository_source: RepositorySnapshotSourceService | None = None
+    proposals: ProposalApplicationService | None = None
+    agent_runs: AgentApplicationService | None = None
 
 
 def get_application_services(request: Request) -> ApplicationServices:
@@ -25,6 +31,22 @@ def get_project_service(
     services: Annotated[ApplicationServices, Depends(get_application_services)],
 ) -> ProjectApplicationService:
     return services.projects
+
+
+def get_proposal_service(
+    services: Annotated[ApplicationServices, Depends(get_application_services)],
+) -> ProposalApplicationService:
+    if services.proposals is None:
+        raise ServiceUnavailableError("proposal service is not configured")
+    return services.proposals
+
+
+def get_agent_run_service(
+    services: Annotated[ApplicationServices, Depends(get_application_services)],
+) -> AgentApplicationService:
+    if services.agent_runs is None:
+        raise ServiceUnavailableError("agent run service is not configured")
+    return services.agent_runs
 
 
 def get_actor_provider(request: Request) -> ActorProvider:

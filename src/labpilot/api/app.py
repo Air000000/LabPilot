@@ -6,6 +6,8 @@ from fastapi import FastAPI
 from labpilot.api.actor import ActorProvider
 from labpilot.api.dependencies import ApplicationServices
 from labpilot.api.errors import register_error_handlers
+from labpilot.api.routers.agent_runs import router as agent_runs_router
+from labpilot.api.routers.experiments import router as experiments_router
 from labpilot.api.routers.health import router as health_router
 from labpilot.api.routers.projects import router as projects_router
 from labpilot.common.readiness import ReadinessProbe, UnconfiguredReadinessProbe
@@ -54,4 +56,6 @@ def create_app(
     register_error_handlers(app)
     app.include_router(health_router)
     app.include_router(projects_router)
+    app.include_router(agent_runs_router)
+    app.include_router(experiments_router)
     return app

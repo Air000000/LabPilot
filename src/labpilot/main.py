@@ -1,15 +1,73 @@
+from pathlib import Path
+from typing import cast
+from uuid import UUID
+
+from labpilot.agent_runtime.context_compiler import ContextCompiler
+from labpilot.agent_runtime.provider import UnconfiguredModelProvider
+from labpilot.agent_runtime.repository import SqlAgentRepository
+from labpilot.agent_runtime.service import (
+    AgentApplicationService,
+    AgentProposalService,
+)
 from labpilot.api.actor import ServerConfiguredActorProvider
 from labpilot.api.app import create_app
 from labpilot.api.dependencies import ApplicationServices
+from labpilot.context.content_store import ContentAddressedStore
+from labpilot.context.git_adapter import GitAdapter
+from labpilot.context.proposal_repository_adapter import ProposalRepositoryFactAdapter
+from labpilot.context.repository_source import RepositorySnapshotSourceService
 from labpilot.db.readiness import DatabaseReadinessProbe
 from labpilot.db.session import Database
 from labpilot.experiments.project_service import ProjectApplicationService
+from labpilot.experiments.proposal_service import ProposalApplicationService
+from labpilot.experiments.proposal_verifier import ProposalVerifier
 from labpilot.settings import get_settings
+from labpilot.tools_policy.repository import SqlToolRepository
+from labpilot.tools_policy.repository_tools import repository_tool_definitions
+from labpilot.tools_policy.service import ToolApplicationService
 
 settings = get_settings()
 database = Database(settings.database_url)
+repository_source = RepositorySnapshotSourceService(
+    database.session,
+    git_adapter=GitAdapter(
+        git_executable=Path("/usr/bin/git"),
+        timeout_seconds=settings.repository_git_timeout_seconds,
+    ),
+    content_store=ContentAddressedStore(settings.repository_content_store_root),
+)
+proposal_facts = ProposalRepositoryFactAdapter(repository_source)
+proposals = ProposalApplicationService(
+    database.session,
+    repository_facts=proposal_facts,
+    verifier=ProposalVerifier(proposal_facts),
+)
+tool_repository = SqlToolRepository(database.session)
+
+
+def tool_service_for_snapshot(repository_snapshot_id: UUID) -> ToolApplicationService:
+    return ToolApplicationService(
+        repository_tool_definitions(repository_source, repository_snapshot_id),
+        tool_repository,
+    )
+
+
+provider = UnconfiguredModelProvider()
+agent_runs = AgentApplicationService(
+    repository=SqlAgentRepository(database.session),
+    repository_source=repository_source,
+    provider=provider,
+    model_name=settings.agent_provider_model or "unconfigured",
+    context_compiler=ContextCompiler(),
+    tool_service_factory=tool_service_for_snapshot,
+    proposal_service=cast(AgentProposalService, proposals),
+    data_egress_policy=settings.data_egress_policy,
+)
 services = ApplicationServices(
     projects=ProjectApplicationService(database.session),
+    repository_source=repository_source,
+    proposals=proposals,
+    agent_runs=agent_runs,
 )
 actor_provider = ServerConfiguredActorProvider(
     installation_identity=settings.installation_identity,

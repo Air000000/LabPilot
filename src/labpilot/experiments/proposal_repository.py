@@ -134,6 +134,13 @@ class ProposalRepository:
         uow.session.add(row)
         await uow.session.flush()
 
+    async def get_version(
+        self,
+        session: AsyncSession,
+        experiment_version_id: UUID,
+    ) -> ExperimentVersionRow | None:
+        return await session.get(ExperimentVersionRow, experiment_version_id)
+
     async def get_version_by_revision(
         self,
         session: AsyncSession,

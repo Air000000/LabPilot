@@ -53,6 +53,10 @@ class ProposalNotFound(LabPilotError):
     pass
 
 
+class ExperimentVersionNotFound(LabPilotError):
+    pass
+
+
 class ProposalInvariantViolation(LabPilotError):
     pass
 
@@ -280,6 +284,18 @@ class ProposalApplicationService:
                     f"proposal revision not found: {proposal_revision_id}"
                 )
             return _revision_details(row)
+
+    async def get_version(
+        self,
+        experiment_version_id: UUID,
+    ) -> ExperimentVersionDetails:
+        async with self._session_context_factory() as session:
+            row = await self._repository.get_version(session, experiment_version_id)
+            if row is None:
+                raise ExperimentVersionNotFound(
+                    f"experiment version not found: {experiment_version_id}"
+                )
+            return _version_details(row)
 
     async def verify_revision(
         self,

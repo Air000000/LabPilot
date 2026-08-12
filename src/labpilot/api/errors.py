@@ -3,12 +3,22 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
+from labpilot.agent_runtime.types import AgentRuntimeError
 from labpilot.common.errors import LabPilotError
+from labpilot.context.repository_source import RepositorySourceReadError
 from labpilot.db.idempotency import IdempotencyKeyConflict
 from labpilot.experiments.project_service import (
     ProjectNotFound,
     ProjectStateConflict,
     ProjectVersionConflict,
+)
+from labpilot.experiments.proposal_service import (
+    ExperimentVersionNotFound,
+    ProposalApprovalNotReady,
+    ProposalDecisionConflict,
+    ProposalInvariantViolation,
+    ProposalNotFound,
+    ProposalVerificationConflict,
 )
 
 
@@ -160,6 +170,81 @@ async def _idempotency_conflict_handler(
     )
 
 
+async def _repository_source_handler(
+    _: Request,
+    exc: Exception,
+) -> JSONResponse:
+    assert isinstance(exc, RepositorySourceReadError)
+    return _response(
+        status_code=404 if exc.reason_code == "snapshot_not_found" else 409,
+        error_code="resource_not_found"
+        if exc.reason_code == "snapshot_not_found"
+        else "repository_source_conflict",
+        human_message="requested resource was not found"
+        if exc.reason_code == "snapshot_not_found"
+        else "repository source is unavailable",
+    )
+
+
+async def _agent_runtime_handler(_: Request, exc: Exception) -> JSONResponse:
+    assert isinstance(exc, AgentRuntimeError)
+    if exc.reason_code == "agent_run_not_found":
+        return _response(
+            status_code=404,
+            error_code=exc.reason_code,
+            human_message="agent run was not found",
+            aggregate_type="agent_run",
+        )
+    if exc.reason_code == "remote_provider_blocked":
+        return _response(
+            status_code=403,
+            error_code=exc.reason_code,
+            human_message="provider policy denied this command",
+        )
+    if exc.reason_code.endswith(("_blank", "_invalid_utf8", "_too_large")):
+        return _response(
+            status_code=422,
+            error_code="request_validation_error",
+            human_message="request validation failed",
+        )
+    return _response(
+        status_code=409,
+        error_code=exc.reason_code,
+        human_message="agent run state does not allow this command",
+        retryable=exc.reason_code == "row_version_conflict",
+    )
+
+
+async def _proposal_not_found_handler(
+    _: Request,
+    exc: Exception,
+) -> JSONResponse:
+    assert isinstance(exc, ProposalNotFound | ExperimentVersionNotFound)
+    return _response(
+        status_code=404,
+        error_code="resource_not_found",
+        human_message="requested resource was not found",
+    )
+
+
+async def _proposal_conflict_handler(
+    _: Request,
+    exc: Exception,
+) -> JSONResponse:
+    assert isinstance(
+        exc,
+        ProposalApprovalNotReady
+        | ProposalDecisionConflict
+        | ProposalInvariantViolation
+        | ProposalVerificationConflict,
+    )
+    return _response(
+        status_code=409,
+        error_code="proposal_conflict",
+        human_message="proposal state does not allow this command",
+    )
+
+
 async def _service_unavailable_handler(
     _: Request,
     exc: Exception,
@@ -214,6 +299,32 @@ def register_error_handlers(app: FastAPI) -> None:
     app.add_exception_handler(
         IdempotencyKeyConflict,
         _idempotency_conflict_handler,
+    )
+    app.add_exception_handler(
+        RepositorySourceReadError,
+        _repository_source_handler,
+    )
+    app.add_exception_handler(AgentRuntimeError, _agent_runtime_handler)
+    app.add_exception_handler(ProposalNotFound, _proposal_not_found_handler)
+    app.add_exception_handler(
+        ExperimentVersionNotFound,
+        _proposal_not_found_handler,
+    )
+    app.add_exception_handler(
+        ProposalApprovalNotReady,
+        _proposal_conflict_handler,
+    )
+    app.add_exception_handler(
+        ProposalDecisionConflict,
+        _proposal_conflict_handler,
+    )
+    app.add_exception_handler(
+        ProposalInvariantViolation,
+        _proposal_conflict_handler,
+    )
+    app.add_exception_handler(
+        ProposalVerificationConflict,
+        _proposal_conflict_handler,
     )
     app.add_exception_handler(
         ServiceUnavailableError,
