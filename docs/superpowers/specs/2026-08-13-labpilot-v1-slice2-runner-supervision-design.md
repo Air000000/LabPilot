@@ -1,7 +1,7 @@
 # LabPilot V1 Slice 2 — S2.0 Runner Supervision PoC + ADR Design
 
 ```text
-Status: Design discussion approved; written spec awaiting user review; implementation NOT authorized by this document
+Status: Approved Design Spec
 Date: 2026-08-13
 Design scope: S2.0 Runner Supervision PoC + ADR only
 Design baseline before this spec: ecf9d7e86803834363b8f4d6eabb84c4cf9fb54b
@@ -57,6 +57,21 @@ Native Linux host
 
 Candidate A is evaluated first. If it satisfies the complete S2.0 recovery and permission contract, experimentation stops and the ADR selects it.
 
+For the native-Linux PoC, Candidate A uses the **system manager** boundary unless a later ADR explicitly proves a different manager lifecycle. Codex/implementation must not silently switch to `systemd --user` merely to bypass permissions. The PoC launch profile must make these properties explicit:
+
+```text
+service type = exec semantics
+systemd environment expansion disabled
+Restart = no
+stdout = journal
+stderr = journal
+whole execution cgroup/process tree controlled as one unit
+bounded stop behavior
+explicit intended training execution Unix user
+```
+
+The control-plane Unix identity and the training execution Unix identity are distinct concerns. If the intended control-plane identity cannot exercise a sufficiently narrow system-manager permission boundary, that is P12/topology evidence. Running the PoC as root or switching to a user manager does not turn a permission failure into PASS.
+
 ## 1.2 Candidate topology B — fallback
 
 ```text
@@ -108,7 +123,7 @@ supervisor auto-restart policy
 
 After the supervisor accepts a valid launch, API or Coordinator death must not kill the training execution merely because the controller disappeared. A fresh controller must rediscover and reconcile the original execution.
 
-Host reboot is a different failure class. The original process does not have to survive host reboot. The same Attempt must not be silently resurrected or blindly relaunched after reboot. Reconciliation may classify retained evidence as terminal/lost or, only where explicitly permitted by the ADR, `UNKNOWN / needs_attention`. A genuine retry creates a new Attempt; the host supervisor must not implement experiment retry through `Restart=always` or equivalent implicit resurrection.
+Host reboot is a different failure class. The original process does not have to survive host reboot. The same Attempt must not be silently resurrected or blindly relaunched after reboot. Reconciliation may classify retained evidence as terminal or, only where explicitly permitted by the ADR, `UNKNOWN / needs_attention`. A genuine retry creates a new Attempt; the host supervisor must not implement experiment retry through `Restart=always` or equivalent implicit resurrection.
 
 ## 1.5 Physical duplicate invariant
 
@@ -169,6 +184,8 @@ H = SHA-256(
 ```
 
 The canonicalization version is explicit. The same semantic `FrozenLaunchSpec` under the same schema/canonicalization version must reproduce the same H after controller restart.
+
+Every caller-controlled input that can change target process behavior or caller-selectable supervisor execution semantics must be inside the frozen spec covered by H, or be a fixed invariant that the caller cannot vary. The PoC must not accept behavior-changing launch arguments outside H. For the probe this includes, as applicable, runtime/argv/workdir, non-secret environment, start-marker/evidence path, sleep/exit behavior, child-process behavior, and caller-selectable collection mode. Fixed PoC invariants such as `Type=exec` and `Restart=no` need not be duplicated in H if they cannot vary per request.
 
 Secret values are excluded from X, H, ordinary supervisor metadata, and normal logs. A non-secret credential slot/reference may remain part of execution semantics when it affects the frozen launch contract.
 
@@ -250,6 +267,8 @@ NEVER_ACCEPTED_PROVEN
 
 Once dispatch may have occurred, first-dispatch proof is consumed/lost for safety purposes. Absence is then insufficient to authorize creation.
 
+Any concrete API capable of creating a physical execution must either accept positive creation evidence explicitly or be reachable only through one orchestration gate that validates the evidence before dispatch. A low-level `launch()` path that can create solely because it was called is outside this contract.
+
 ## 2.6 Terminal evidence requirement
 
 After supervisor acceptance, enough durable physical evidence must survive controller restart and supervisor unit GC to distinguish:
@@ -268,10 +287,12 @@ Whether evidence must also survive host reboot is determined by the ADR accordin
 Possible evidence stacks are evaluated progressively:
 
 ```text
-A1: systemd observable state
+A1: systemd current/transient unit observable state baseline
 A2: systemd + explicitly verified persistent journald
 A3: systemd + minimal bounded host-side physical witness
 ```
+
+A1 remains a required baseline experiment, but **is not a selectable final disposition** under the frozen P7 requirement. P7 explicitly requires `TERMINAL_MATCH` after unit GC/unload; current/transient unit state alone cannot be the durable evidence source once that state has been collected. The first selectable Candidate-A result is therefore A2.
 
 A host witness is an acceptance/terminal observation witness, never a second domain execution ledger.
 
@@ -382,13 +403,13 @@ The PoC must execute and retain bounded evidence for the following scenarios.
 | P8 | Deterministic failure before any supervisor dispatch | `NEVER_ACCEPTED_PROVEN`; supervisor dispatch count 0; contrast with ambiguous NOT_FOUND→UNKNOWN |
 | P9 | stop-before-exit, exit-before-stop, near-concurrent stop/exit | One converged physical result; no duplicate; no fabricated causal certainty |
 | P10 | Controller down while process exits, then fresh controller | `TERMINAL_MATCH`; recovered exit evidence; no relaunch |
-| P11 | Native Linux host reboot during active execution | No automatic same-Attempt resurrection; no blind relaunch; terminal/lost or explicitly allowed UNKNOWN |
+| P11 | Native Linux host reboot during active execution | Scenario-level proof: boot changed, no automatic same-X activation, no extra independent root, no new activation mistaken for old execution; `PhysicalObservation` may be an explicitly allowed `UNKNOWN` |
 | P12 | Host permission boundary | No Docker socket, generic root shell, or unconstrained systemd control; least narrow privilege demonstrated |
 | P13 | Representative execution environment propagation | Exact argv/workdir/non-secret env/runtime path/stdout/stderr/exit result as applicable |
 
 P3, P6, P7, and P10 are mandatory normal recovery scenarios. A topology cannot be selected if any of them resolves only to `UNKNOWN`.
 
-P11 is different: host reboot does not require the original process to survive, and the ADR may explicitly allow `UNKNOWN / needs_attention` when retained evidence cannot safely prove more. The same Attempt still must not be automatically or blindly relaunched.
+P11 is different: host reboot does not require the original process to survive. P11 is a scenario-level reboot safety result, not a fifth `PhysicalObservationKind`. After reboot, `PhysicalObservation` may remain `UNKNOWN / needs_attention` when retained evidence cannot prove exact terminal state, but the same Attempt still must not be automatically or blindly relaunched.
 
 ## 3.4 F5 duplicate-safety coverage
 
@@ -419,25 +440,24 @@ without claiming that stop caused the terminal event when ordering cannot be pro
 
 ## 4.1 Allowed dispositions
 
-The S2.0 ADR has exactly five final dispositions:
+The S2.0 ADR has exactly four final dispositions:
 
 ```text
-SELECT_A1
 SELECT_A2
 SELECT_A3
 SELECT_B
 BLOCKED
 ```
 
-There is no `PARTIAL_PASS`, `GOOD_ENOUGH`, `IMPLEMENT_AND_HARDEN_LATER`, or sixth candidate disposition.
+A1 is a required baseline experiment, not a selectable final disposition, because P7 requires exact terminal X/H evidence after unit GC. There is no `PARTIAL_PASS`, `GOOD_ENOUGH`, `IMPLEMENT_AND_HARDEN_LATER`, or additional candidate disposition.
 
 ## 4.2 Candidate A escalation
 
-Evaluation begins with A1.
+Evaluation begins with A1 as a baseline experiment.
 
-### A1 → SELECT_A1
+### A1 baseline — not selectable
 
-Select A1 only when F1–F8, R1–R4, permission boundary, and representative environment propagation all pass. Stop topology experimentation immediately after selection.
+A1 must still prove live launch identity, duplicate safety, controller independence, and the other facts for which current unit state is sufficient. Its expected failure at P7 is used to determine whether the only missing property is durable X/H terminal retention/correlation. A1 cannot be the final ADR disposition.
 
 ### A1 → A2
 
@@ -445,7 +465,7 @@ A1 may escalate to A2 only when live X/H launch identity, dedupe, permissions, a
 
 A2 is not allowed to repair bad execution identity, duplicate launch, unsafe privilege, or broken control semantics.
 
-If persistent journald is proven unavailable or incompatible with the target deployment, record A2 as `not applicable` in candidate evaluation and proceed to A3. This is not a sixth final disposition.
+If persistent journald is proven unavailable or incompatible with the target deployment, record A2 as `not applicable` in candidate evaluation and proceed to A3. This is not a final disposition.
 
 ### A2 → SELECT_A2
 
@@ -496,7 +516,7 @@ P7 → TERMINAL_MATCH
 P10 → TERMINAL_MATCH
 ```
 
-The ADR must separately enumerate a finite set of cases in which final `UNKNOWN / needs_attention` is allowed. A generic `other errors` category is forbidden. Candidate examples that may be admitted if evidence supports them include contradictory/corrupted physical evidence, supervisor state unavailable beyond verified retention guarantees, and host-reboot evidence insufficient to distinguish terminal from physical loss.
+The ADR must separately enumerate a finite set of cases in which final `UNKNOWN / needs_attention` is allowed. A generic `other errors` category is forbidden. Candidate examples that may be admitted if evidence supports them include contradictory/corrupted physical evidence, supervisor state unavailable beyond verified retention guarantees, and the P11 host-reboot case when evidence is insufficient to prove exact terminal state but reboot safety invariants are still proven.
 
 ## 4.5 BLOCKED hard gate
 
@@ -620,6 +640,8 @@ FIRST_DISPATCH_PROVEN or NEVER_ACCEPTED_PROVEN
 
 An uncertain launch/control response never authorizes blind retry. Observe X/H first.
 
+Any concrete creation-capable interface must make the positive-creation gate mechanically unavoidable: either carry the evidence explicitly or be private behind one orchestration function that validates it before the supervisor call.
+
 ## 5.4 Conceptual observe result
 
 Physical observation may expose bounded facts sufficient to classify X/H, such as:
@@ -677,6 +699,7 @@ A stop request is not itself proof of a domain `cancelled` state. The normal seq
 Backend-specific systemd/journal/daemon errors must not leak throughout Coordinator/domain code. S2.0 uses semantic categories only; it does not require production enum/exception shapes:
 
 ```text
+CONTROL_ACCEPTED
 IDENTITY_CONFLICT
 DEFINITE_NON_ACCEPTANCE
 OBSERVATION_UNKNOWN
