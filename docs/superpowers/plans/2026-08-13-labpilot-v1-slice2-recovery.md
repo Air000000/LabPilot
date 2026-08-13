@@ -10,7 +10,7 @@
 
 **S2.0 design spec:** `docs/superpowers/specs/2026-08-13-labpilot-v1-slice2-runner-supervision-design.md`
 
-**Status:** Draft r1 for finding-specific plan re-review. In this revision, only **Task 1 / S2.0** is specified at execution precision. Task 1 remains **NOT AUTHORIZED** until this r1 receives focused approval. Tasks 2–5 are named, bounded future task slots and require an ADR-guided amendment of this same plan before implementation.
+**Status:** Draft r2 for final mechanical re-review. In this revision, only **Task 1 / S2.0** is specified at execution precision. Task 1 remains **NOT AUTHORIZED** until the r2 finding-specific recheck passes. Tasks 2–5 are named, bounded future task slots and require an ADR-guided amendment of this same plan before implementation.
 
 **Goal:** Prove a real native-Linux supervision contract first, then use that evidence to build one controlled path from an approved `ExperimentVersion` through exact source materialization, real training, restart reconciliation, and no duplicate physical launch.
 
@@ -18,9 +18,9 @@
 
 **Tech Stack for Task 1:** Python 3.12, pytest, standard-library `subprocess`/`json`/`hashlib`/filesystem APIs, native Linux, systemd/systemctl/systemd-run/journalctl, existing `uv`/Ruff/mypy toolchain. PostgreSQL/SQLAlchemy/Alembic are deliberately not part of Task 1.
 
-## Review-r1 corrections incorporated
+## Review corrections incorporated
 
-This r1 preserves the original Task 1 execution detail and incorporates the focused review findings:
+This r2 preserves the detailed Task 1 execution plan and closes the focused findings accumulated during r1 review:
 
 ```text
 F1. H covers every caller-controlled behavior-changing physical launch semantic.
@@ -28,6 +28,10 @@ F2. A1 remains a required baseline experiment but is not a final selectable disp
 F3. The systemd PoC freezes the manager/service launch profile instead of letting Codex choose it.
 F4. Positive creation authority is mechanically present on the creation-capable API.
 F5. P11 is a scenario-level reboot result; no fifth PhysicalObservation value is invented.
+I1. spec.runtime_path is the sole runtime executable authority; SystemdCli has no second executable input.
+I2. Creation has an exact preflight: PRESENT / CONFIRMED_ABSENT / LOOKUP_UNKNOWN, and only CONFIRMED_ABSENT + positive creation evidence may create.
+I3. A1 live X/H binding is exact: unit name binds X and systemd Description binds H.
+I4. P0 characterizes the entire frozen systemd feature/authorization profile before native scenarios; missing required capability is HOST_CAPABILITY_GAP, never silent downgrade.
 P1. Task 1 remains one formal task, with three internal execution batches rather than task proliferation.
 ```
 
@@ -47,17 +51,22 @@ P1. Task 1 remains one formal task, with three internal execution batches rather
 - SupervisorExecutionIdentity `X` is derived deterministically from an Attempt-like UUID plus a stable installation namespace. PID, process start time, and systemd InvocationID are observation facts only.
 - `execution_spec_hash H` is a versioned canonical SHA-256 over non-secret frozen launch semantics.
 - Every caller-controlled value that can alter target process behavior or caller-selectable supervisor launch behavior must be inside `FrozenLaunchSpec` and therefore H. Behavior-changing launch arguments outside H are forbidden.
+- `FrozenLaunchSpec.runtime_path` is the sole runtime executable authority. No constructor/config value outside the frozen spec may select another executable for the same X/H.
 - Secret values never enter X, H, ordinary supervisor metadata, evidence files, or logs.
 - `NOT_FOUND` is never equivalent to `NEVER_ACCEPTED_PROVEN`.
 - Once supervisor dispatch may have occurred, absence never authorizes blind recreation. Unknown launch/control outcome must be followed by observation, not retry.
+- A creation-capable call performs an exact raw preflight before `systemd-run`: `PRESENT`, `CONFIRMED_ABSENT`, or `LOOKUP_UNKNOWN`. Only `CONFIRMED_ABSENT + positive creation evidence` may cross the creation boundary. `LOOKUP_UNKNOWN` returns fail-closed without creating.
 - Same X + same H reconciles existing execution. Same X + different H is identity conflict and fails closed.
+- A1 live binding uses exact metadata: systemd unit name binds X and systemd unit `Description` binds H. PID or command-line similarity is not an X/H binding mechanism.
 - Destructive stop/kill requires `ACTIVE_MATCH` for exact X/H. `IDENTITY_CONFLICT` or `UNKNOWN` must not trigger destructive control.
 - Mandatory normal recovery scenarios P3/P6/P7/P10 may not pass as `UNKNOWN` for a selected topology.
 - Host reboot does not require process survival and must never cause automatic same-Attempt resurrection.
 - No `Restart=always` or equivalent supervisor policy may implement experiment retry.
 - Native-host commands use structured argv and never `shell=True`.
 - Task 1 uses the system manager boundary; it must not silently switch to `systemd --user` to bypass permission failures.
+- Native control paths are noninteractive. `systemd-run` and destructive `systemctl` operations must disable interactive password prompting where the installed version supports the required option; P0 must prove the concrete noninteractive behavior before scenarios. An interactive authorization prompt is a capability/permission failure, not a test step.
 - The PoC harness must never invoke `sudo`, `reboot`, `shutdown`, edit `/etc`, enable lingering, or otherwise mutate host authorization/lifecycle policy automatically. P11 contains an explicit human reboot gate.
+- P0 validates the full frozen systemd profile before P1–P13. Missing required manager/CLI/property behavior yields `HOST_CAPABILITY_GAP`; Codex must not drop flags, change manager scope, or invent an alternate launch mechanism to continue.
 - Raw host logs are bounded evidence, not a repository dump. Do not commit secrets or unrestricted journal/system logs.
 - Do not push Task 1 implementation until the required review says APPROVE.
 - `DOCUMENT-STATUS.md` is updated once at Slice 2 acceptance, not after S2.0.
@@ -77,7 +86,7 @@ Task 4 — S2.3 Coordinator Reconciliation + S2.4 API Composition
 Task 5 — S2.5 Real Recovery / Fault-Injection Acceptance
 ```
 
-This revision fully specifies **Task 1 only**. That is intentional. Task 1 exists to discover the real supervisor/evidence contract. Writing exact production interfaces for Tasks 2–5 before that ADR would force implementation to depend on assumptions that S2.0 is explicitly meant to test.
+This revision fully specifies **Task 1 only**. Task 1 exists to discover the real supervisor/evidence contract. Writing exact production interfaces for Tasks 2–5 before that ADR would force implementation to depend on assumptions that S2.0 is explicitly meant to test.
 
 After Task 1 is accepted, amend this same plan with exact Task 2–5 files/interfaces/tests while preserving the five-task outer shape. An amendment is not permission to split each design subsection into a separate formal task.
 
@@ -128,6 +137,8 @@ These batches control implementation precision. They do **not** create additiona
   - long/short exit, known exit code, optional child, structured start/terminal messages, independent-root marker.
 - `tests/poc/s2_runner/systemd_cli.py`
   - direct Candidate-A system-manager harness only;
+  - exact X/H live binding;
+  - exact creation preflight;
   - structured subprocess argv, never shell;
   - launch/query/stop/kill and optional journal evidence;
   - no generic backend interface.
@@ -136,6 +147,7 @@ These batches control implementation precision. They do **not** create additiona
   - fsync before injected crash when evidence is claimed durable.
 - `tests/poc/s2_runner/scenario_runner.py`
   - CLI/orchestrator for P0–P13;
+  - full host capability characterization;
   - fresh child controller processes for crash/restart scenarios;
   - explicit two-phase P11 reboot workflow;
   - mechanical A1 baseline/A2 evaluation.
@@ -261,7 +273,8 @@ Implementation rules:
 - Canonical JSON uses sorted object keys, UTF-8, `ensure_ascii=False`, and separators `(",", ":")`.
 - `environment`, `credential_slots`, and `print_env_keys` are canonicalized in sorted order. Duplicate environment keys are rejected before hashing.
 - `execution_spec_hash()` is lowercase hexadecimal SHA-256 over the canonical bytes.
-- Every caller-controlled probe/launch behavior in Task 1 is represented in `FrozenLaunchSpec`. `SystemdCli.launch()` must not take separate caller-controlled sleep/exit/child/marker/collect/user parameters.
+- Every caller-controlled probe/launch behavior in Task 1 is represented in `FrozenLaunchSpec`. `SystemdCli.launch()` must not take separate caller-controlled runtime/sleep/exit/child/marker/collect/user parameters.
+- `runtime_path` is absolute/non-empty and is the only executable selected for the physical target command. There is no second executable authority in `SystemdCli` construction or scenario configuration.
 - No field named or typed as a secret value exists in `FrozenLaunchSpec`. Task 1 uses only non-secret environment values. Credential slot names may be present; credential values may not.
 - `supervisor_execution_identity()` includes the full lowercase UUID hex and the full SHA-256 of the explicit installation namespace. Do not truncate either source identity.
 - Use this exact PoC projection shape:
@@ -354,9 +367,16 @@ Expose:
 
 ```python
 from collections.abc import Callable, Sequence
+from enum import StrEnum
 import subprocess
 
 CommandRunner = Callable[[Sequence[str], float], subprocess.CompletedProcess[str]]
+
+
+class RawUnitLookupKind(StrEnum):
+    PRESENT = "present"
+    CONFIRMED_ABSENT = "confirmed_absent"
+    LOOKUP_UNKNOWN = "lookup_unknown"
 
 
 class SystemdCli:
@@ -364,7 +384,6 @@ class SystemdCli:
         self,
         *,
         command_runner: CommandRunner,
-        python_executable: str,
         use_journal_evidence: bool,
     ) -> None: ...
 
@@ -393,17 +412,22 @@ class SystemdCli:
     ) -> ControlOutcome: ...
 ```
 
+`RawUnitLookupKind` is adapter-private supervision evidence, not a domain/recovery enum. It exists only to prevent `PhysicalObservation.UNKNOWN` from being overloaded as creation authority.
+
+`SystemdCli` deliberately has **no `python_executable`, runtime executable, or second runtime selector**. The target executable used in the physical argv is exactly `spec.runtime_path`.
+
 `launch()` is creation-capable and therefore requires explicit `PositiveCreationEvidence`. The orchestration layer remains responsible for proving that evidence from durable state; the adapter must not offer a second creation-capable entry point without the gate.
 
 ### Frozen systemd launch profile
 
 Task 1 evaluates Candidate A using the **system manager**. Do not silently switch to `--user`.
 
-The launch argv must make the following semantics explicit:
+The launch argv must make the following semantics explicit when supported by the characterized host:
 
 ```text
 --system
 --unit=<systemd_unit_name(X)>
+--description=labpilot-poc:<H>
 --service-type=exec
 --expand-environment=no
 --property=Restart=no
@@ -412,23 +436,80 @@ The launch argv must make the following semantics explicit:
 --property=KillMode=control-group
 --uid=<spec.execution_user>
 --working-directory=<spec.working_directory>
+noninteractive authorization / no password prompt
 ```
 
 Use repeated `--setenv=NAME=VALUE` only for the non-secret environment already covered by H. Do not import arbitrary controller environment values by name.
 
-`runtime_path`, `argv`, X/H probe metadata, and the remaining frozen probe values are converted to structured argv after all systemd options. No shell command string is ever constructed.
+`spec.runtime_path`, `spec.argv`, X/H probe metadata, and the remaining frozen probe values are converted to structured argv after all systemd options. No shell command string is ever constructed.
 
-Command rules:
+### Exact X/H live binding
+
+For A1 live observation:
+
+```text
+unit name == systemd_unit_name(X)
+AND
+Description == "labpilot-poc:" + H
+```
+
+is the exact X/H binding mechanism. `observe()` must request `Description` together with the other unit properties and compare it exactly. A live unit with the expected X but a different Description/H is `IDENTITY_CONFLICT`. PID, InvocationID, executable path, or fuzzy command-line matching cannot substitute for this binding.
+
+### Exact creation preflight
+
+Before any `systemd-run` call, `launch()` performs a raw exact unit lookup for X and classifies it privately as:
+
+```text
+PRESENT
+CONFIRMED_ABSENT
+LOOKUP_UNKNOWN
+```
+
+Rules:
+
+```text
+PRESENT
+→ call observe(X,H)
+→ ACTIVE_MATCH      => EXISTING_MATCH, no create
+→ TERMINAL_MATCH    => TERMINAL_MATCH, no create
+→ IDENTITY_CONFLICT => IDENTITY_CONFLICT, no create
+→ UNKNOWN           => CONTROL_UNKNOWN, no create
+
+CONFIRMED_ABSENT + valid PositiveCreationEvidence
+→ creation may be attempted
+
+CONFIRMED_ABSENT without valid PositiveCreationEvidence
+→ local CONTROL_REJECTED, no create
+
+LOOKUP_UNKNOWN
+→ CONTROL_UNKNOWN, no create
+```
+
+`CONFIRMED_ABSENT` is only the adapter's current preflight fact. It is **not** `NEVER_ACCEPTED_PROVEN` and cannot manufacture replay authority after a prior uncertain dispatch. Positive creation evidence remains independently required.
+
+If the actual `systemd-run` dispatch returns timeout, transport failure, or an ordinary nonzero result whose non-acceptance semantics were not positively proven, `launch()` must immediately `observe(X,H)` before returning:
+
+```text
+ACTIVE_MATCH      → EXISTING_MATCH
+TERMINAL_MATCH    → TERMINAL_MATCH
+IDENTITY_CONFLICT → IDENTITY_CONFLICT
+UNKNOWN           → CONTROL_UNKNOWN
+```
+
+It must never create a fallback unit, generate another X, or blindly retry the same physical creation. This is the P4 concurrent-race loser behavior as well as the ack-lost behavior.
+
+### Command rules
 
 - Invoke `systemd-run`, `systemctl`, and `journalctl` through argv arrays only; `shell=True` is forbidden.
 - Unit name is derived only through `systemd_unit_name(X)`.
+- Creation and destructive control must be noninteractive; if the required no-prompt behavior is unavailable or authorization would prompt, report capability/permission failure rather than wait for input.
 - Unit control covers the whole target cgroup/process tree; never target a PID as the durable control identity.
 - The probe receives exact X/H as non-secret metadata and emits them to journal/stdout.
-- `collect_after_exit=True` may map to `--collect` only when P0 host characterization proves the target systemd supports it. Unsupported collection invalidates the corresponding P7 attempt; it is not silently ignored.
-- `launch()` calls `validate_request_hash()` before command execution.
+- `collect_after_exit=True` may map to `--collect` only when P0 host characterization proves the target systemd supports it. Unsupported collection is `HOST_CAPABILITY_GAP`; it is not silently ignored.
+- `launch()` calls `validate_request_hash()` before any raw lookup/command execution.
 - `launch()` rejects an unsupported/invalid creation-evidence value before command execution.
-- `observe()` first queries current unit properties. Capture at least `LoadState`, `ActiveState`, `SubState`, `Result`, `MainPID`, `InvocationID`, and exit-result properties available on the host.
-- A matching live unit is `ACTIVE_MATCH` only when physical evidence binds both X and H.
+- `observe()` queries current unit properties including at least `LoadState`, `ActiveState`, `SubState`, `Description`, `Result`, `MainPID`, `InvocationID`, and exit-result properties available on the host.
+- A matching live unit is `ACTIVE_MATCH` only when exact unit/X and Description/H both match.
 - A current unit/evidence with a different H is `IDENTITY_CONFLICT`.
 - A missing current unit is never by itself `NEVER_ACCEPTED_PROVEN`.
 - With `use_journal_evidence=False`, missing/insufficient current-unit evidence becomes `UNKNOWN`.
@@ -506,7 +587,9 @@ summarize
 
 There is deliberately no `reboot` command. The harness must never reboot the host itself.
 
-`characterize` records, at minimum:
+### P0 full host capability characterization
+
+`characterize` records at minimum:
 
 ```text
 kernel release
@@ -515,13 +598,31 @@ current boot_id
 effective controller user/uid
 intended training execution user/uid resolution
 systemd-run/systemctl/journalctl executable paths
-system manager reachability/permission result
-whether systemd-run supports --collect
+system manager reachability
+noninteractive system-manager authorization result
+support/behavior for service Type=exec semantics
+support for environment expansion disablement used by the fixed profile
+support for execution user selection
+support for explicit working directory
+support for exact non-secret environment injection
+support for unit Description metadata used for H binding
+support for Restart=no / KillMode=control-group / journal stdout+stderr properties
+support for --collect behavior required by P7
 state/evidence root mount target/filesystem type
 whether /var/log/journal exists
 bounded effective journald storage evidence
 current/previous boot list sufficient to assess persistence
 ```
+
+P0 must verify the concrete behavior needed by the frozen profile, not merely grep `--help`. A harmless disposable characterization unit may be used when needed, but it must itself use a bounded, non-secret command and be cleaned up without broad host mutation.
+
+If any required fixed-profile capability is missing or cannot be exercised noninteractively by the intended control identity, record:
+
+```text
+HOST_CAPABILITY_GAP: <exact missing capability or authorization>
+```
+
+and stop before P1–P13. Codex must not delete a required option, switch to a user manager, run as root, edit authorization policy, or substitute another launch mechanism to continue.
 
 For reboot-dependent evidence, neither state root nor evidence root may resolve under `/tmp` or `/run`. If either is volatile, P11 is invalid until the operator supplies a persistent root.
 
@@ -563,13 +664,14 @@ def test_different_attempt_changes_execution_identity(): ...
 def test_execution_identity_contains_full_uuid_without_truncation(): ...
 def test_semantically_same_spec_hashes_identically_after_set_order_normalization(): ...
 def test_behavior_change_changes_hash(): ...
+def test_runtime_path_change_changes_hash(): ...
 def test_unsupported_schema_version_is_rejected(): ...
 def test_hash_mismatch_is_rejected_locally(): ...
 def test_duplicate_environment_keys_are_rejected(): ...
 def test_secret_value_field_is_not_part_of_frozen_spec_surface(): ...
 ```
 
-`test_behavior_change_changes_hash()` must vary representative fields that were previously outside H: sleep/exit behavior, execution user, marker path, and collect flag.
+`test_behavior_change_changes_hash()` varies representative fields that were previously outside H: sleep/exit behavior, execution user, marker path, and collect flag. `test_runtime_path_change_changes_hash()` proves the runtime executable itself is part of H.
 
 Use fixed UUIDs and non-secret sentinel values. Do not use random canonical examples.
 
@@ -613,12 +715,20 @@ Cover at least:
 ```python
 def test_hash_mismatch_performs_zero_commands(): ...
 def test_launch_requires_positive_creation_evidence(): ...
+def test_launch_uses_only_hashed_runtime_path(): ...
 def test_launch_uses_system_manager_exec_profile_and_structured_argv(): ...
 def test_launch_does_not_use_user_manager_or_shell(): ...
 def test_launch_uses_only_non_secret_frozen_environment(): ...
-def test_active_matching_x_h_becomes_active_match(): ...
-def test_active_different_h_becomes_identity_conflict(): ...
+def test_launch_sets_exact_h_description_metadata(): ...
+def test_active_matching_x_and_description_h_becomes_active_match(): ...
+def test_same_x_different_description_h_becomes_identity_conflict(): ...
+def test_preflight_present_observes_and_never_creates(): ...
+def test_preflight_confirmed_absent_with_positive_evidence_may_create(): ...
+def test_preflight_confirmed_absent_without_positive_evidence_never_creates(): ...
+def test_preflight_lookup_unknown_never_creates(): ...
 def test_not_found_without_journal_is_unknown(): ...
+def test_dispatch_nonzero_observes_before_returning(): ...
+def test_concurrent_race_loser_reconciles_existing_x_without_fallback_unit(): ...
 def test_journal_exact_x_h_terminal_record_can_be_terminal_match(): ...
 def test_journal_different_h_is_identity_conflict(): ...
 def test_generic_launch_error_is_control_unknown_not_non_acceptance(): ...
@@ -628,7 +738,7 @@ def test_stop_identity_conflict_never_issues_destructive_control(): ...
 def test_stop_unknown_never_issues_destructive_control(): ...
 ```
 
-The structured-argv assertion must verify the fake runner receives a sequence and never a shell command string.
+The structured-argv assertion verifies the fake runner receives a sequence and never a shell command string. `test_launch_uses_only_hashed_runtime_path()` must prove there is no constructor/config executable that can override `spec.runtime_path`.
 
 Run RED:
 
@@ -680,6 +790,8 @@ def test_p8_not_found_after_possible_dispatch_is_unknown(tmp_path): ...
 def test_p9_does_not_claim_cancel_caused_exit_without_evidence(tmp_path): ...
 def test_reboot_verify_never_calls_launch(tmp_path): ...
 def test_reboot_verify_does_not_invent_lost_observation_kind(tmp_path): ...
+def test_characterize_checks_entire_required_systemd_profile(tmp_path): ...
+def test_characterize_capability_gap_stops_before_scenarios(tmp_path): ...
 def test_evidence_writer_rejects_secret_shaped_keys(tmp_path): ...
 ```
 
@@ -697,7 +809,9 @@ P3 ordering is fixed:
 persist FIRST_DISPATCH_AVAILABLE intent
 → durably mark DISPATCH_MAY_HAVE_OCCURRED
 → retain the already-proven FIRST_DISPATCH_PROVEN permit for this dispatch attempt
-→ child dispatches systemd launch(X,H,spec,permit)
+→ child calls launch(X,H,spec,permit)
+→ launch performs exact raw preflight
+→ confirmed absence allows the one creation attempt
 → probe start marker proves target root started
 → child exits with os._exit(73) before durable success acknowledgement
 → fresh recovery process observes X/H
@@ -709,8 +823,8 @@ The durable transition happens before the supervisor call. The permit represents
 Other scenarios:
 
 ```text
-P4  two fresh child controllers race the same X/H; no fallback identity is allowed.
-P5  run X/H1 then present X/H2; conflict, no stop/replacement/relaunch.
+P4  two fresh child controllers race the same X/H; both use exact preflight; any dispatch loser observes/reconciles the original X and never generates a fallback identity.
+P5  run X/H1 then present X/H2; exact Description/H conflict, no stop/replacement/relaunch.
 P6  very-short known-exit probe; recovery begins only after physical exit.
 P7  use collect/unit-GC behavior only when P0 proves support; after current unit state disappears, exact X/H terminal evidence must still be recoverable by a selectable stack.
 P8  deterministic local/pre-dispatch rejection with supervisor command count zero → NEVER_ACCEPTED_PROVEN; possible-dispatch + NOT_FOUND → UNKNOWN.
@@ -759,9 +873,9 @@ mkdir -p "$STATE_ROOT" "$EVIDENCE_ROOT"
 
 The harness records the actual mount/filesystem characteristics. The example path is not authority.
 
-## Step C1 — P0/P1/P2/P12/P13 baseline characterization
+## Step C0 — P0 capability gate
 
-Run A1 baseline evidence:
+Run first:
 
 ```bash
 uv run python -m tests.poc.s2_runner.scenario_runner \
@@ -769,7 +883,15 @@ uv run python -m tests.poc.s2_runner.scenario_runner \
   --evidence-root "$EVIDENCE_ROOT" \
   --installation-namespace "$INSTALLATION_NAMESPACE" \
   --evidence-stack systemd characterize
+```
 
+P0 must PASS every required frozen-profile capability in §3.6 before any physical scenario. If it returns `HOST_CAPABILITY_GAP`, stop Task 1 and report the exact missing capability/authorization. No silent downgrade is authorized.
+
+## Step C1 — P1/P2/P12/P13 baseline characterization
+
+After P0 PASS, run A1 baseline evidence:
+
+```bash
 for scenario in p1 p2 p12 p13; do
   uv run python -m tests.poc.s2_runner.scenario_runner \
     --state-root "$STATE_ROOT" \
@@ -783,7 +905,8 @@ Required:
 
 ```text
 P1 stable/collision-safe X PASS
-P2 ACTIVE_MATCH + exact argv/workdir/non-secret env/log observation PASS
+P2 ACTIVE_MATCH using exact unit-name/X + Description/H binding PASS
+P2 exact argv/workdir/non-secret env/log observation PASS
 P12 intended system-manager permission boundary recorded honestly
 P13 representative environment/runtime/stdout/stderr/exit propagation PASS
 ```
@@ -791,7 +914,7 @@ P13 representative environment/runtime/stdout/stderr/exit propagation PASS
 P12 rule:
 
 ```text
-If the intended unprivileged control identity cannot exercise the required system-manager operations,
+If the intended unprivileged control identity cannot exercise the required system-manager operations noninteractively,
 DO NOT rerun as root and call it PASS.
 DO NOT switch to systemd --user.
 DO NOT edit host policy automatically.
@@ -808,8 +931,8 @@ Required:
 
 ```text
 P3 ACTIVE_MATCH or TERMINAL_MATCH; independent-root starts = 1
-P4 authoritative execution units <= 1; independent-root starts = 1
-P5 IDENTITY_CONFLICT; no stop/replacement/relaunch
+P4 authoritative execution units <= 1; independent-root starts = 1; dispatch loser reconciles exact X
+P5 IDENTITY_CONFLICT from exact X/H binding; no stop/replacement/relaunch
 P8 proven pre-dispatch rejection distinguishable from ambiguous NOT_FOUND
 ```
 
@@ -1000,8 +1123,9 @@ For `SELECT_A2`, the ADR records:
 Selected topology: A
 Selected physical evidence stack: systemd + persistent journald
 SupervisorExecutionIdentity projection/namespace rule
-exact X/H binding evidence
-frozen system-manager/service profile
+exact unit-name/X + Description/H live binding mechanism
+exact creation preflight semantics
+frozen system-manager/service profile and P0 capability evidence
 ack-lost behavior
 meaning of NOT_FOUND
 terminal retention contract
@@ -1073,7 +1197,7 @@ Provide the reviewer:
 Task 1 harness commit SHA
 Task 1 ADR/evidence commit SHA if present
 exact changed-file list
-native host characterization
+native host characterization including P0 full profile
 P0–P13 evidence table
 F1–F8 disposition
 R1–R4 disposition
@@ -1096,17 +1220,24 @@ Task 1 is accepted only when every applicable item has fresh evidence:
 [ ] Native Linux, not WSL, is the authoritative supervision/reboot host.
 [ ] X projection is deterministic, stable, collision-safe, and not lossily truncated.
 [ ] H is versioned canonical SHA-256 over every caller-controlled behavior-changing FrozenLaunchSpec field.
+[ ] spec.runtime_path is the sole target executable authority; no second executable selector exists.
 [ ] Unsupported spec schema version is rejected before hashing/dispatch.
 [ ] H mismatch causes zero supervisor interaction.
 [ ] PID/start time/InvocationID never serve as LabPilot durable identity.
 [ ] Durable PoC intent is fsync-backed for the injected failure class.
 [ ] DISPATCH_MAY_HAVE_OCCURRED is durably persisted before supervisor dispatch.
 [ ] Creation-capable API mechanically requires positive creation evidence.
+[ ] Exact preflight distinguishes PRESENT / CONFIRMED_ABSENT / LOOKUP_UNKNOWN.
+[ ] LOOKUP_UNKNOWN performs no physical create.
+[ ] Dispatch nonzero/timeout observes exact X/H before returning and never blind-retries/falls back.
 [ ] NOT_FOUND alone never becomes NEVER_ACCEPTED_PROVEN.
+[ ] A1 live X/H binding is exact unit-name/X + Description/H.
+[ ] P0 proves the complete required systemd profile and noninteractive authorization before scenarios.
+[ ] Missing required host capability produces HOST_CAPABILITY_GAP and no silent downgrade.
 [ ] System manager + Type=exec + no environment expansion + Restart=no profile is explicit.
 [ ] Controller and training Unix identities are recorded separately.
 [ ] P3 accepted-before-ack recovers ACTIVE_MATCH or TERMINAL_MATCH.
-[ ] P4 concurrent same-X/same-H creates at most one authoritative execution/root.
+[ ] P4 concurrent same-X/same-H creates at most one authoritative execution/root and loser reconciles exact X.
 [ ] P5 same-X/different-H fails closed and does not kill/replace the original.
 [ ] P6 very-short process recovers TERMINAL_MATCH.
 [ ] P7 after actual unit GC/unload recovers TERMINAL_MATCH.
@@ -1129,6 +1260,7 @@ Task 1 is accepted only when every applicable item has fresh evidence:
 Stop rather than patch around evidence when any of these occurs:
 
 ```text
+- HOST_CAPABILITY_GAP in a required frozen-profile feature or noninteractive authorization;
 - duplicate independent target root for one X;
 - same-X/different-H execution is replaced or killed;
 - P3/P6/P7/P10 can only become UNKNOWN under the candidate stack;
@@ -1149,24 +1281,33 @@ bounded physical witness retention/correlation only
 host-control privilege / serialization / topology unsuitable
 → request Candidate-B-focused plan amendment
 
+required host capability absent but architecture not yet disproven
+→ report HOST_CAPABILITY_GAP and request a narrow environment/profile decision; no implementation workaround
+
 fundamental invariant cannot be proven even with the admitted topology family
 → ADR BLOCKED; S2.1 production work remains unauthorized
 ```
 
 ---
 
-# 10. Plan self-review checklist
+# 10. Final r2 mechanical re-review checklist
 
-Before approving this r1, verify it against the approved S2.0 design:
+Before approving this r2, verify it against the approved S2.0 design and the four final findings:
 
 ```text
-[ ] H includes all caller-controlled behavior-changing launch semantics.
+[I1] SystemdCli constructor has no python_executable/runtime selector.
+[I1] Actual physical executable is exactly spec.runtime_path and runtime changes change H.
+[I2] launch mechanically requires positive creation evidence.
+[I2] exact raw preflight separates PRESENT / CONFIRMED_ABSENT / LOOKUP_UNKNOWN.
+[I2] LOOKUP_UNKNOWN cannot create; dispatch uncertainty triggers observe and never blind retry/fallback identity.
+[I3] A1 ACTIVE_MATCH binds X through exact unit name and H through exact Description metadata.
+[I3] same X + different Description/H is IDENTITY_CONFLICT.
+[I4] P0 checks the entire frozen systemd launch/control/authorization profile, not only --collect.
+[I4] missing required capability becomes HOST_CAPABILITY_GAP and stops without silent downgrade.
 [ ] Unsupported schema version is rejected, not treated as another valid H version in Task 1.
 [ ] FIRST_DISPATCH_PROVEN and NEVER_ACCEPTED_PROVEN are separate from physical observation.
-[ ] Creation authority is present in the creation-capable API.
 [ ] NOT_FOUND never authorizes replay.
 [ ] X/H binding is required for ACTIVE/TERMINAL/destructive control.
-[ ] System manager / Type=exec / expansion-disabled profile is explicit.
 [ ] systemd --user is not an automatic permission workaround.
 [ ] R2 durable PoC state is explicit.
 [ ] R3 stop/natural-exit race does not fabricate causality.
@@ -1187,7 +1328,7 @@ Before approving this r1, verify it against the approved S2.0 design:
 
 # 11. Execution authorization after plan approval
 
-If and only if this r1 receives finding-specific approval, the sole authorized implementation instruction is:
+If and only if this r2 receives the final mechanical approval, the sole authorized implementation instruction is:
 
 ```text
 Execute Task 1 — S2.0 Runner Supervision PoC + ADR.
@@ -1195,7 +1336,7 @@ Execute Task 1 — S2.0 Runner Supervision PoC + ADR.
 Do not start Task 2.
 Do not modify production runtime/schema.
 Do not implement A3 witness or Candidate B daemon without a focused plan amendment.
-Stop at the A3/B escalation gate if A2 cannot satisfy the frozen contract.
+Stop at HOST_CAPABILITY_GAP or the A3/B escalation gate if A2 cannot satisfy the frozen contract.
 ```
 
 After Task 1/ADR acceptance, return to planning and amend this same document with exact files/interfaces/tests for Tasks 2–5. Do not expand the formal task count merely because those future tasks contain multiple design sections or test scenarios.
