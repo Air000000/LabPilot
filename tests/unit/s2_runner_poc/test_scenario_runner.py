@@ -512,6 +512,8 @@ def test_candidate_b_characterize_requires_runner_and_denied_direct_systemd(
         "tests.poc.s2_runner.scenario_runner.pwd.getpwuid",
         lambda uid: SimpleNamespace(pw_name="labpilot-controller"),
     )
+    monkeypatch.setattr("tests.poc.s2_runner.scenario_runner.os.getuid", lambda: 2101)
+    monkeypatch.setattr("tests.poc.s2_runner.scenario_runner.os.getgid", lambda: 2101)
     monkeypatch.setattr(
         "tests.poc.s2_runner.scenario_runner.pwd.getpwnam",
         lambda name: SimpleNamespace(pw_uid=2102 if name == "labpilot-train" else 2101),
@@ -553,6 +555,8 @@ def test_candidate_b_characterize_requires_runner_and_denied_direct_systemd(
             "protocol_version": "s2-runner-poc-v1",
             "runner_version": "s2-runner-poc-b1",
             "policy_identity": "a" * 64,
+            "peer_uid": 2101,
+            "peer_gid": 2101,
         },
         runner_socket=tmp_path / "control.sock",
         persistent_journal_path=persistent_journal,
@@ -564,6 +568,11 @@ def test_candidate_b_characterize_requires_runner_and_denied_direct_systemd(
     assert set(result.capabilities) == set(REQUIRED_CANDIDATE_B_CAPABILITIES)
     assert all(result.capabilities.values())
     assert result.facts["controller_user"] == "labpilot-controller"
+    assert result.facts["controller_uid"] == 2101
+    assert result.facts["controller_gid"] == 2101
+    assert result.facts["runner_peer_uid"] == 2101
+    assert result.facts["runner_peer_gid"] == 2101
+    assert result.capabilities["runner_peer_credentials_match"] is True
     assert result.facts["training_uid"] == 2102
     assert result.facts["training_gid"] == 2102
     assert result.facts["runner_policy_identity"] == "a" * 64

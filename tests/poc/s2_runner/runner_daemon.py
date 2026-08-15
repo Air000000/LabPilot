@@ -111,6 +111,8 @@ class RunnerDaemon:
                 "protocol_version": PROTOCOL_VERSION,
                 "runner_version": RUNNER_VERSION,
                 "policy_identity": self._policy.policy_identity,
+                "peer_uid": peer_uid,
+                "peer_gid": peer_gid,
             }
         if not _valid_identity_and_hash(request.execution_identity, request.execution_spec_hash):
             return {"ok": False, "error": "execution_identity_or_hash_invalid"}
@@ -130,25 +132,34 @@ class RunnerDaemon:
             connection, _ = listener.accept()
             with connection:
                 try:
-                    peer_pid, peer_uid, peer_gid = _peer_credentials(connection)
-                    del peer_pid
-                    request = decode_request(recv_frame(connection))
-                    response = self.handle_request(
-                        request, peer_uid=peer_uid, peer_gid=peer_gid
-                    )
-                    send_frame(connection, encode_response(response))
+                    self._serve_connection(connection)
                 except InjectedRunnerCrash:
                     os._exit(73)
-                except ProtocolError as error:
-                    send_frame(
-                        connection,
-                        encode_response({"ok": False, "error": str(error)}),
-                    )
-                except (OSError, ValueError):
-                    send_frame(
-                        connection,
-                        encode_response({"ok": False, "error": "runner_request_failed"}),
-                    )
+
+    def _serve_connection(self, connection: socket.socket) -> None:
+        try:
+            peer_pid, peer_uid, peer_gid = _peer_credentials(connection)
+            del peer_pid
+            request = decode_request(recv_frame(connection))
+            response = self.handle_request(
+                request, peer_uid=peer_uid, peer_gid=peer_gid
+            )
+            self._try_send_response(connection, response)
+        except ProtocolError as error:
+            self._try_send_response(connection, {"ok": False, "error": str(error)})
+        except (OSError, ValueError):
+            self._try_send_response(
+                connection, {"ok": False, "error": "runner_request_failed"}
+            )
+
+    @staticmethod
+    def _try_send_response(
+        connection: socket.socket, response: dict[str, object]
+    ) -> None:
+        try:
+            send_frame(connection, encode_response(response))
+        except OSError:
+            pass
 
     def _handle_launch(self, request: RunnerLaunchRequest) -> dict[str, object]:
         try:
@@ -192,7 +203,9 @@ class RunnerDaemon:
 
 
 def load_policy(path: Path) -> RunnerPolicy:
-    metadata = path.stat()
+    metadata = path.lstat()
+    if stat.S_ISLNK(metadata.st_mode):
+        raise ValueError("policy_symlink_denied")
     if not stat.S_ISREG(metadata.st_mode):
         raise ValueError("policy_not_regular_file")
     if metadata.st_uid != 0:

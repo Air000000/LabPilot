@@ -58,6 +58,7 @@ REQUIRED_CANDIDATE_B_CAPABILITIES = (
     "systemctl_available",
     "journalctl_available",
     "runner_info_available",
+    "runner_peer_credentials_match",
     "controller_identity",
     "training_identity_resolved",
     "controller_direct_system_manager_denied",
@@ -216,6 +217,7 @@ def characterize_candidate_b_host(
         "boot_id": _read_text(Path("/proc/sys/kernel/random/boot_id")),
         "controller_user": controller_user,
         "controller_uid": os.getuid(),
+        "controller_gid": os.getgid(),
         "runner_socket": str(runner_socket),
         "executable_paths": paths,
         "persistent_journal_directory": persistent_journal_path.is_dir(),
@@ -290,9 +292,21 @@ def characterize_candidate_b_host(
         and all(character in "0123456789abcdef" for character in policy_identity)
     )
     capabilities["runner_info_available"] = info_ok
+    peer_uid = info.get("peer_uid")
+    peer_gid = info.get("peer_gid")
     facts["runner_protocol_version"] = info.get("protocol_version")
     facts["runner_version"] = info.get("runner_version")
     facts["runner_policy_identity"] = policy_identity
+    facts["runner_peer_uid"] = peer_uid
+    facts["runner_peer_gid"] = peer_gid
+    capabilities["runner_peer_credentials_match"] = (
+        isinstance(peer_uid, int)
+        and not isinstance(peer_uid, bool)
+        and peer_uid == os.getuid()
+        and isinstance(peer_gid, int)
+        and not isinstance(peer_gid, bool)
+        and peer_gid == os.getgid()
+    )
 
     if paths["journalctl"] is not None:
         boots = _run(command_runner, ("journalctl", "--list-boots", "-n", "2", "--no-pager"))

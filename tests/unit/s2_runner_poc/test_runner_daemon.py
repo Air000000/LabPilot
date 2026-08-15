@@ -2,6 +2,7 @@ import grp
 import json
 import os
 import pwd
+import socket
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -21,9 +22,16 @@ from tests.poc.s2_runner.contract import (
 from tests.poc.s2_runner.runner_daemon import RunnerDaemon, RunnerPolicy, load_policy
 from tests.poc.s2_runner.runner_protocol import (
     PROTOCOL_VERSION,
+    RunnerInfoRequest,
     RunnerLaunchRequest,
     RunnerOperation,
     RunnerStopRequest,
+    decode_response,
+    encode_request,
+    recv_frame,
+)
+from tests.poc.s2_runner.runner_protocol import (
+    send_frame as protocol_send_frame,
 )
 from tests.poc.s2_runner.systemd_cli import SystemdCli
 
@@ -129,6 +137,69 @@ def test_wrong_peer_uid_or_gid_is_rejected_before_systemd() -> None:
     assert systemd.launch_calls == systemd.observe_calls == systemd.stop_calls == 0
 
 
+def test_info_reports_authenticated_kernel_peer_uid_gid() -> None:
+    daemon = RunnerDaemon(
+        policy=_policy(), systemd_cli=FakeSystemdCli(), allow_fault_injection=False
+    )
+    request = RunnerInfoRequest(
+        version=PROTOCOL_VERSION, operation=RunnerOperation.INFO
+    )
+
+    response = daemon.handle_request(request, peer_uid=2101, peer_gid=2101)
+
+    assert response["ok"] is True
+    assert response["peer_uid"] == 2101
+    assert response["peer_gid"] == 2101
+
+
+def test_malformed_peer_disconnect_does_not_break_next_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import tests.poc.s2_runner.runner_daemon as runner_daemon_module
+
+    daemon = RunnerDaemon(
+        policy=_policy(), systemd_cli=FakeSystemdCli(), allow_fault_injection=False
+    )
+    monkeypatch.setattr(
+        runner_daemon_module, "_peer_credentials", lambda connection: (1234, 2101, 2101)
+    )
+    original_send_frame = runner_daemon_module.send_frame
+    send_count = 0
+
+    def first_response_is_broken_pipe(connection: socket.socket, payload: bytes) -> None:
+        nonlocal send_count
+        send_count += 1
+        if send_count == 1:
+            raise BrokenPipeError("peer disappeared")
+        original_send_frame(connection, payload)
+
+    monkeypatch.setattr(runner_daemon_module, "send_frame", first_response_is_broken_pipe)
+
+    bad_client, bad_server = socket.socketpair()
+    try:
+        protocol_send_frame(bad_client, b"{")
+        daemon._serve_connection(bad_server)
+    finally:
+        bad_client.close()
+        bad_server.close()
+
+    good_client, good_server = socket.socketpair()
+    try:
+        request = RunnerInfoRequest(
+            version=PROTOCOL_VERSION, operation=RunnerOperation.INFO
+        )
+        protocol_send_frame(good_client, encode_request(request))
+        daemon._serve_connection(good_server)
+        response = decode_response(recv_frame(good_client))
+    finally:
+        good_client.close()
+        good_server.close()
+
+    assert response["ok"] is True
+    assert response["peer_uid"] == 2101
+    assert response["peer_gid"] == 2101
+
+
 def test_hash_mismatch_causes_zero_systemd_calls() -> None:
     systemd = FakeSystemdCli()
     daemon = RunnerDaemon(policy=_policy(), systemd_cli=systemd, allow_fault_injection=False)
@@ -232,6 +303,17 @@ def test_policy_file_must_be_root_owned_not_writable_and_use_fixed_identities(
     os.chmod(policy_path, 0o620)
     with pytest.raises(ValueError, match="policy_permissions_unsafe"):
         load_policy(policy_path)
+
+
+def test_policy_symlink_is_rejected_before_following_target(tmp_path: Path) -> None:
+    target = tmp_path / "policy-target.json"
+    target.write_text("{}")
+    os.chmod(target, 0o600)
+    link = tmp_path / "policy.json"
+    link.symlink_to(target)
+
+    with pytest.raises(ValueError, match="policy_symlink_denied"):
+        load_policy(link)
 
 
 def test_policy_rejects_identity_names_other_than_candidate_b_principals(
