@@ -51,13 +51,12 @@ def _spec(**changes: object) -> FrozenLaunchSpec:
         "working_directory": "/srv/labpilot",
         "environment": (("VISIBLE", "yes"),),
         "credential_slots": (),
-        "execution_user": "labpilot-train",
+        "launch_profile_version": "s2-poc-b1",
         "start_marker_path": "/var/lib/labpilot/start.jsonl",
         "sleep_seconds": 1.0,
         "exit_code": 0,
         "child_sleep_seconds": 0.0,
         "print_env_keys": ("VISIBLE",),
-        "collect_after_exit": False,
     }
     values.update(changes)
     return FrozenLaunchSpec(**values)  # type: ignore[arg-type]

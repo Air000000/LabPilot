@@ -261,12 +261,11 @@ class SystemdCli:
             "--property=StandardOutput=journal",
             "--property=StandardError=journal",
             "--property=KillMode=control-group",
-            f"--uid={spec.execution_user}",
+            "--uid=labpilot-train",
             f"--working-directory={spec.working_directory}",
         ]
         argv.extend(f"--setenv={key}={value}" for key, value in sorted(spec.environment))
-        if spec.collect_after_exit:
-            argv.append("--collect")
+        argv.append("--collect")
         argv.extend(
             [
                 "--",

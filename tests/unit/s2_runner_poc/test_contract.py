@@ -25,13 +25,12 @@ def _spec(**changes: object) -> FrozenLaunchSpec:
         "working_directory": "/opt/labpilot",
         "environment": (("BETA", "2"), ("ALPHA", "1")),
         "credential_slots": ("registry", "dataset"),
-        "execution_user": "labpilot-train",
+        "launch_profile_version": "s2-poc-b1",
         "start_marker_path": "/var/lib/labpilot/poc/start.jsonl",
         "sleep_seconds": 2.5,
         "exit_code": 17,
         "child_sleep_seconds": 1.0,
         "print_env_keys": ("BETA", "ALPHA"),
-        "collect_after_exit": False,
     }
     values.update(changes)
     return FrozenLaunchSpec(**values)  # type: ignore[arg-type]
@@ -87,9 +86,8 @@ def test_semantically_same_spec_hashes_identically_after_set_order_normalization
     [
         ("sleep_seconds", 3.0),
         ("exit_code", 18),
-        ("execution_user", "other-user"),
+        ("launch_profile_version", "s2-poc-b2"),
         ("start_marker_path", "/var/lib/labpilot/poc/other.jsonl"),
-        ("collect_after_exit", True),
     ],
 )
 def test_behavior_change_changes_hash(field_name: str, changed_value: object) -> None:
@@ -104,7 +102,7 @@ def test_runtime_path_change_changes_hash() -> None:
 
 def test_unsupported_schema_version_is_rejected() -> None:
     with pytest.raises(ValueError, match="unsupported_execution_spec_schema"):
-        canonical_execution_spec(_spec(schema_version="s2-poc-v2"))
+        canonical_execution_spec(_spec(schema_version="s2-poc-v1"))
 
 
 def test_hash_mismatch_is_rejected_locally() -> None:
@@ -127,3 +125,30 @@ def test_secret_value_field_is_not_part_of_frozen_spec_surface() -> None:
     forbidden = {"secret", "token", "password", "api_key", "authorization"}
 
     assert not forbidden.intersection(field.name.casefold() for field in fields(FrozenLaunchSpec))
+
+
+def test_v2_hash_includes_launch_profile_version() -> None:
+    assert execution_spec_hash(_spec()) != execution_spec_hash(
+        _spec(launch_profile_version="s2-poc-b2")
+    )
+
+
+def test_v2_spec_has_no_execution_user_field() -> None:
+    assert "execution_user" not in {field.name for field in fields(FrozenLaunchSpec)}
+
+
+def test_v2_spec_has_no_collect_after_exit_field() -> None:
+    assert "collect_after_exit" not in {field.name for field in fields(FrozenLaunchSpec)}
+
+
+def test_v2_hash_still_changes_when_runtime_or_behavior_changes() -> None:
+    baseline = execution_spec_hash(_spec())
+
+    assert baseline != execution_spec_hash(_spec(runtime_path="/opt/python/bin/python3.12"))
+    assert baseline != execution_spec_hash(_spec(sleep_seconds=3.0))
+    assert baseline != execution_spec_hash(_spec(exit_code=18))
+
+
+def test_v2_hash_validation_rejects_mismatch() -> None:
+    with pytest.raises(ValueError, match="execution_spec_hash_mismatch"):
+        validate_request_hash(_spec(), "0" * 64)

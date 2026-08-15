@@ -6,7 +6,7 @@ from enum import StrEnum
 from pathlib import Path
 from uuid import UUID
 
-EXECUTION_SPEC_SCHEMA_VERSION = "s2-poc-v1"
+EXECUTION_SPEC_SCHEMA_VERSION = "s2-poc-v2"
 _IDENTITY_PATTERN = re.compile(r"labpilot-poc-[0-9a-f]{64}-[0-9a-f]{32}")
 
 
@@ -41,13 +41,12 @@ class FrozenLaunchSpec:
     working_directory: str
     environment: tuple[tuple[str, str], ...]
     credential_slots: tuple[str, ...]
-    execution_user: str
+    launch_profile_version: str
     start_marker_path: str
     sleep_seconds: float
     exit_code: int
     child_sleep_seconds: float
     print_env_keys: tuple[str, ...]
-    collect_after_exit: bool
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,5 +1,25 @@
 # Slice 2 runner supervision PoC
 
+
+## Candidate A rejection checkpoint
+
+Candidate A is rejected by native P12 evidence. The decisive host facts are:
+
+```text
+Ubuntu 26.04 LTS
+systemd 259
+polkit manage-units details exposed the exact unit and verb
+an exact-unit + verb=start authorization still allowed caller-selected root execution
+the root-execution probe completed successfully as UID 0
+Candidate A = rejected by P12
+Candidate B = admitted for focused evaluation
+SELECT_B = not yet authorized
+```
+
+Do not broaden polkit, add passwordless sudo, switch to `systemd --user`, or rerun Candidate A as
+root to make the direct-control topology pass. Candidate B must prove a narrow privileged Runner
+boundary instead.
+
 This harness is evidence-only test infrastructure. Run deterministic tests anywhere supported by
 the project; run P0–P13 only on the intended native Linux + systemd host. WSL2 cannot supply the
 authoritative reboot evidence.

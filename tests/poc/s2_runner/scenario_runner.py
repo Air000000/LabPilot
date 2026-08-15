@@ -1202,13 +1202,12 @@ def _prepare_scenario(
         working_directory=str(Path.cwd().resolve()),
         environment=(("LABPILOT_POC_SCENARIO", name),),
         credential_slots=(),
-        execution_user=pwd.getpwuid(os.getuid()).pw_name,
+        launch_profile_version="s2-poc-b1",
         start_marker_path=str(marker_path),
         sleep_seconds=sleep_seconds,
         exit_code=exit_code,
         child_sleep_seconds=child_sleep_seconds,
         print_env_keys=("LABPILOT_POC_SCENARIO",),
-        collect_after_exit=collect_after_exit,
     )
     spec_hash = execution_spec_hash(spec)
     try:
