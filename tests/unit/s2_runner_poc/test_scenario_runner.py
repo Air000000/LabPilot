@@ -579,6 +579,74 @@ def test_candidate_b_characterize_requires_runner_and_denied_direct_systemd(
     assert any(call[0] == "systemd-run" and "--system" in call for call in calls)
 
 
+def test_candidate_b_characterize_does_not_require_controller_journal_read_access(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    persistent_journal = tmp_path / "journal"
+    persistent_journal.mkdir()
+
+    monkeypatch.setattr(
+        "tests.poc.s2_runner.scenario_runner.pwd.getpwuid",
+        lambda uid: SimpleNamespace(pw_name="labpilot-controller"),
+    )
+    monkeypatch.setattr("tests.poc.s2_runner.scenario_runner.os.getuid", lambda: 2101)
+    monkeypatch.setattr("tests.poc.s2_runner.scenario_runner.os.getgid", lambda: 2101)
+    monkeypatch.setattr(
+        "tests.poc.s2_runner.scenario_runner.pwd.getpwnam",
+        lambda name: SimpleNamespace(pw_uid=2102 if name == "labpilot-train" else 2101),
+    )
+    monkeypatch.setattr(
+        "tests.poc.s2_runner.scenario_runner.grp.getgrnam",
+        lambda name: SimpleNamespace(gr_gid=2102 if name == "labpilot-train" else 2101),
+    )
+
+    def command_runner(
+        argv: tuple[str, ...] | list[str], timeout: float
+    ) -> subprocess.CompletedProcess[str]:
+        assert timeout > 0
+        call = tuple(argv)
+        if call[:2] == ("systemctl", "--version"):
+            return subprocess.CompletedProcess(call, 0, "systemd 259\n", "")
+        if call[:2] == ("systemd-run", "--help"):
+            return subprocess.CompletedProcess(
+                call,
+                0,
+                "--service-type --expand-environment --uid --gid --working-directory --collect",
+                "",
+            )
+        if call[0] == "systemd-run":
+            return subprocess.CompletedProcess(call, 1, "", "Access denied")
+        if call[0] == "journalctl" and "--list-boots" in call:
+            return subprocess.CompletedProcess(call, 1, "", "Permission denied")
+        if call[0] == "findmnt":
+            return subprocess.CompletedProcess(call, 0, "/ ext4\n", "")
+        return subprocess.CompletedProcess(call, 0, "", "")
+
+    result = characterize_candidate_b_host(
+        state_root=tmp_path / "state",
+        evidence_root=tmp_path / "evidence",
+        command_runner=command_runner,
+        runner_info_call=lambda socket_path: {
+            "ok": True,
+            "protocol_version": "s2-runner-poc-v1",
+            "runner_version": "s2-runner-poc-b1",
+            "policy_identity": "a" * 64,
+            "peer_uid": 2101,
+            "peer_gid": 2101,
+        },
+        runner_socket=tmp_path / "control.sock",
+        persistent_journal_path=persistent_journal,
+        kernel_release="7.0.0-native",
+        executable_finder=lambda name: f"/usr/bin/{name}",
+    )
+
+    assert result.gap is None
+    assert result.capabilities["persistent_journal_available"] is True
+    assert result.facts["journalctl_controller_returncode"] == 1
+    assert result.facts["journalctl_controller_stderr"] == "Permission denied"
+    assert result.facts["journal_boots"] == []
+
+
 def test_characterize_checks_entire_required_systemd_profile() -> None:
     all_present = {name: True for name in REQUIRED_SYSTEMD_PROFILE_CAPABILITIES}
 

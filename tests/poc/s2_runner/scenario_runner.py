@@ -311,9 +311,9 @@ def characterize_candidate_b_host(
     if paths["journalctl"] is not None:
         boots = _run(command_runner, ("journalctl", "--list-boots", "-n", "2", "--no-pager"))
         facts["journal_boots"] = boots.stdout.splitlines() if boots.returncode == 0 else []
-        capabilities["persistent_journal_available"] = (
-            persistent_journal_path.is_dir() and boots.returncode == 0
-        )
+        facts["journalctl_controller_returncode"] = boots.returncode
+        facts["journalctl_controller_stderr"] = boots.stderr[-1000:]
+        capabilities["persistent_journal_available"] = persistent_journal_path.is_dir()
 
     state_root.mkdir(parents=True, exist_ok=True)
     evidence_root.mkdir(parents=True, exist_ok=True)
