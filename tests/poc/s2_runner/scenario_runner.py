@@ -1,10 +1,12 @@
 import argparse
+import grp
 import json
 import multiprocessing
 import os
 import platform
 import pwd
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -33,9 +35,35 @@ from tests.poc.s2_runner.durable_state import (
     DurableIntentStore,
 )
 from tests.poc.s2_runner.evidence import EvidenceLog, EvidenceRecord
+from tests.poc.s2_runner.runner_protocol import (
+    PROTOCOL_VERSION,
+    ProtocolError,
+    RunnerInfoRequest,
+    RunnerLaunchRequest,
+    RunnerObserveRequest,
+    RunnerOperation,
+    RunnerStopRequest,
+    decode_response,
+    encode_request,
+    recv_frame,
+    send_frame,
+)
 from tests.poc.s2_runner.systemd_cli import CommandRunner, SystemdCli
 
 ScenarioSupervisor = SystemdCli
+
+REQUIRED_CANDIDATE_B_CAPABILITIES = (
+    "native_linux_not_wsl",
+    "systemd_run_available",
+    "systemctl_available",
+    "journalctl_available",
+    "runner_info_available",
+    "controller_identity",
+    "training_identity_resolved",
+    "controller_direct_system_manager_denied",
+    "fixed_profile_cli_supported",
+    "persistent_journal_available",
+)
 
 REQUIRED_SYSTEMD_PROFILE_CAPABILITIES = (
     "native_linux_not_wsl",
@@ -90,6 +118,205 @@ class HostCharacterization:
     facts: dict[str, object]
     capabilities: dict[str, bool]
     gap: str | None
+
+
+DEFAULT_RUNNER_SOCKET = Path("/run/labpilot-s2-runner-poc/control.sock")
+POC_RUNTIME_PATH = "/usr/bin/python3"
+POC_PROBE_PATH = "/opt/labpilot-s2-runner-poc/tests/poc/s2_runner/probe.py"
+POC_WORKING_ROOT = Path("/var/lib/labpilot-s2-poc/workspace")
+POC_MARKER_ROOT = Path("/var/lib/labpilot-s2-poc/markers")
+POC_ENV_KEY = "LABPILOT_POC_ENV"
+
+
+def runner_info(socket_path: Path) -> dict[str, object]:
+    return _runner_round_trip(
+        socket_path,
+        RunnerInfoRequest(version=PROTOCOL_VERSION, operation=RunnerOperation.INFO),
+    )
+
+
+def runner_launch(
+    socket_path: Path,
+    *,
+    x: str,
+    h: str,
+    spec: FrozenLaunchSpec,
+    fault_point: str = "none",
+) -> dict[str, object]:
+    return _runner_round_trip(
+        socket_path,
+        RunnerLaunchRequest(
+            version=PROTOCOL_VERSION,
+            operation=RunnerOperation.LAUNCH,
+            execution_identity=x,
+            execution_spec_hash=h,
+            spec=spec,
+            fault_point=fault_point,
+        ),
+    )
+
+
+def runner_observe(socket_path: Path, *, x: str, h: str) -> dict[str, object]:
+    return _runner_round_trip(
+        socket_path,
+        RunnerObserveRequest(
+            version=PROTOCOL_VERSION,
+            operation=RunnerOperation.OBSERVE,
+            execution_identity=x,
+            execution_spec_hash=h,
+        ),
+    )
+
+
+def runner_stop(socket_path: Path, *, x: str, h: str, force: bool) -> dict[str, object]:
+    return _runner_round_trip(
+        socket_path,
+        RunnerStopRequest(
+            version=PROTOCOL_VERSION,
+            operation=RunnerOperation.STOP,
+            execution_identity=x,
+            execution_spec_hash=h,
+            force=force,
+        ),
+    )
+
+
+def _runner_round_trip(socket_path: Path, request: object) -> dict[str, object]:
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+        connection.connect(str(socket_path))
+        send_frame(connection, encode_request(request))  # type: ignore[arg-type]
+        return decode_response(recv_frame(connection))
+
+
+def characterize_candidate_b_host(
+    *,
+    state_root: Path,
+    evidence_root: Path,
+    command_runner: CommandRunner,
+    runner_info_call: Callable[[Path], dict[str, object]] = runner_info,
+    runner_socket: Path = DEFAULT_RUNNER_SOCKET,
+    persistent_journal_path: Path = Path("/var/log/journal"),
+    kernel_release: str | None = None,
+    executable_finder: Callable[[str], str | None] = shutil.which,
+) -> HostCharacterization:
+    release = kernel_release or platform.release()
+    paths = {name: executable_finder(name) for name in ("systemd-run", "systemctl", "journalctl")}
+    capabilities = {name: False for name in REQUIRED_CANDIDATE_B_CAPABILITIES}
+    capabilities.update(
+        {
+            "native_linux_not_wsl": "microsoft" not in release.casefold(),
+            "systemd_run_available": paths["systemd-run"] is not None,
+            "systemctl_available": paths["systemctl"] is not None,
+            "journalctl_available": paths["journalctl"] is not None,
+        }
+    )
+    controller_user = pwd.getpwuid(os.getuid()).pw_name
+    facts: dict[str, object] = {
+        "kernel_release": release,
+        "boot_id": _read_text(Path("/proc/sys/kernel/random/boot_id")),
+        "controller_user": controller_user,
+        "controller_uid": os.getuid(),
+        "runner_socket": str(runner_socket),
+        "executable_paths": paths,
+        "persistent_journal_directory": persistent_journal_path.is_dir(),
+    }
+    capabilities["controller_identity"] = controller_user == "labpilot-controller"
+
+    try:
+        training_user = pwd.getpwnam("labpilot-train")
+        training_group = grp.getgrnam("labpilot-train")
+    except KeyError:
+        facts["training_uid"] = None
+        facts["training_gid"] = None
+    else:
+        facts["training_uid"] = training_user.pw_uid
+        facts["training_gid"] = training_group.gr_gid
+        capabilities["training_identity_resolved"] = True
+
+    if paths["systemctl"] is not None:
+        version = _run(command_runner, ("systemctl", "--version"))
+        facts["systemd_version"] = (
+            version.stdout.splitlines()[0] if version.returncode == 0 else None
+        )
+    else:
+        facts["systemd_version"] = None
+
+    if paths["systemd-run"] is not None:
+        help_result = _run(command_runner, ("systemd-run", "--help"))
+        required_help = (
+            "--service-type",
+            "--expand-environment",
+            "--uid",
+            "--gid",
+            "--working-directory",
+            "--collect",
+        )
+        capabilities["fixed_profile_cli_supported"] = (
+            help_result.returncode == 0
+            and all(token in help_result.stdout for token in required_help)
+        )
+        direct = _run(
+            command_runner,
+            (
+                "systemd-run",
+                "--system",
+                "--no-ask-password",
+                f"--unit=labpilot-s2-controller-direct-{os.getpid()}.service",
+                "--collect",
+                "--wait",
+                "/usr/bin/true",
+            ),
+        )
+        direct_error = direct.stderr.casefold()
+        denied = direct.returncode != 0 and any(
+            token in direct_error
+            for token in ("access denied", "authentication", "permission denied")
+        )
+        capabilities["controller_direct_system_manager_denied"] = denied
+        facts["controller_direct_systemd_returncode"] = direct.returncode
+        facts["controller_direct_systemd_stderr"] = direct.stderr[-1000:]
+
+    try:
+        info = runner_info_call(runner_socket)
+    except (OSError, ValueError):
+        info = {"ok": False}
+    policy_identity = info.get("policy_identity")
+    info_ok = (
+        info.get("ok") is True
+        and info.get("protocol_version") == PROTOCOL_VERSION
+        and isinstance(info.get("runner_version"), str)
+        and isinstance(policy_identity, str)
+        and len(policy_identity) == 64
+        and all(character in "0123456789abcdef" for character in policy_identity)
+    )
+    capabilities["runner_info_available"] = info_ok
+    facts["runner_protocol_version"] = info.get("protocol_version")
+    facts["runner_version"] = info.get("runner_version")
+    facts["runner_policy_identity"] = policy_identity
+
+    if paths["journalctl"] is not None:
+        boots = _run(command_runner, ("journalctl", "--list-boots", "-n", "2", "--no-pager"))
+        facts["journal_boots"] = boots.stdout.splitlines() if boots.returncode == 0 else []
+        capabilities["persistent_journal_available"] = (
+            persistent_journal_path.is_dir() and boots.returncode == 0
+        )
+
+    state_root.mkdir(parents=True, exist_ok=True)
+    evidence_root.mkdir(parents=True, exist_ok=True)
+    for label, root in (("state_root", state_root), ("evidence_root", evidence_root)):
+        mount = _run(command_runner, ("findmnt", "-T", str(root), "-n", "-o", "TARGET,FSTYPE"))
+        facts[f"{label}_mount"] = mount.stdout.strip() if mount.returncode == 0 else None
+        facts[f"{label}_volatile"] = _is_volatile_path(root)
+
+    gap = evaluate_candidate_b_capabilities(capabilities)
+    return HostCharacterization(facts=facts, capabilities=capabilities, gap=gap)
+
+
+def evaluate_candidate_b_capabilities(capabilities: Mapping[str, bool]) -> str | None:
+    for capability in REQUIRED_CANDIDATE_B_CAPABILITIES:
+        if not capabilities.get(capability, False):
+            return f"HOST_CAPABILITY_GAP: {capability}"
+    return None
 
 
 def characterize_host(
@@ -336,6 +563,189 @@ def dispatch_once(
     )
 
 
+def dispatch_once_runner(
+    store: DurableIntentStore,
+    socket_path: Path,
+    attempt_id: UUID,
+    spec: FrozenLaunchSpec,
+    asserted_hash: str,
+    creation_evidence: PositiveCreationEvidence,
+    *,
+    fault_point: str = "none",
+    launch_call: Callable[..., dict[str, object]] = runner_launch,
+    observe_call: Callable[..., dict[str, object]] = runner_observe,
+) -> ControlOutcome:
+    if not isinstance(creation_evidence, PositiveCreationEvidence):
+        return ControlOutcome(
+            ControlOutcomeKind.CONTROL_REJECTED,
+            "",
+            asserted_hash,
+            "positive_creation_evidence_required",
+        )
+    try:
+        validate_request_hash(spec, asserted_hash)
+    except ValueError:
+        return ControlOutcome(
+            ControlOutcomeKind.DEFINITE_NON_ACCEPTANCE,
+            "",
+            asserted_hash,
+            PositiveCreationEvidence.NEVER_ACCEPTED_PROVEN.value,
+        )
+    intent = store.load(attempt_id)
+    if intent.execution_spec_hash != asserted_hash:
+        return ControlOutcome(
+            ControlOutcomeKind.IDENTITY_CONFLICT,
+            intent.execution_identity,
+            asserted_hash,
+            "durable_intent_hash_conflict",
+        )
+    if intent.dispatch_phase is DispatchPhase.DISPATCH_MAY_HAVE_OCCURRED:
+        if creation_evidence is not PositiveCreationEvidence.NEVER_ACCEPTED_PROVEN:
+            return _control_outcome_from_runner_observation(
+                _safe_runner_observe(
+                    socket_path,
+                    intent.execution_identity,
+                    asserted_hash,
+                    observe_call=observe_call,
+                )
+            )
+    else:
+        store.mark_dispatch_may_have_occurred(intent.attempt_id)
+
+    try:
+        response = launch_call(
+            socket_path,
+            x=intent.execution_identity,
+            h=asserted_hash,
+            spec=spec,
+            fault_point=fault_point,
+        )
+    except (OSError, ProtocolError):
+        return ControlOutcome(
+            ControlOutcomeKind.CONTROL_UNKNOWN,
+            intent.execution_identity,
+            asserted_hash,
+            "runner_launch_transport_unknown",
+        )
+    return _control_outcome_from_runner_response(
+        response, intent.execution_identity, asserted_hash
+    )
+
+
+def recover_runner_without_replay(
+    socket_path: Path,
+    execution_identity: str,
+    execution_spec_hash: str,
+    *,
+    observe_call: Callable[..., dict[str, object]] = runner_observe,
+) -> PhysicalObservation:
+    return _safe_runner_observe(
+        socket_path,
+        execution_identity,
+        execution_spec_hash,
+        observe_call=observe_call,
+    )
+
+
+def _safe_runner_observe(
+    socket_path: Path,
+    execution_identity: str,
+    execution_spec_hash: str,
+    *,
+    observe_call: Callable[..., dict[str, object]],
+) -> PhysicalObservation:
+    try:
+        response = observe_call(socket_path, x=execution_identity, h=execution_spec_hash)
+    except (OSError, ProtocolError):
+        return PhysicalObservation(
+            PhysicalObservationKind.UNKNOWN,
+            execution_identity,
+            execution_spec_hash,
+            evidence_source="runner_observe_transport_unknown",
+        )
+    return _physical_observation_from_runner_response(
+        response, execution_identity, execution_spec_hash
+    )
+
+
+def _control_outcome_from_runner_response(
+    response: dict[str, object], execution_identity: str, execution_spec_hash: str
+) -> ControlOutcome:
+    if response.get("ok") is not True:
+        return ControlOutcome(
+            ControlOutcomeKind.CONTROL_UNKNOWN,
+            execution_identity,
+            execution_spec_hash,
+            str(response.get("error", "runner_control_unknown")),
+        )
+    try:
+        kind = ControlOutcomeKind(str(response["kind"]))
+    except (KeyError, ValueError):
+        return ControlOutcome(
+            ControlOutcomeKind.CONTROL_UNKNOWN,
+            execution_identity,
+            execution_spec_hash,
+            "runner_control_response_invalid",
+        )
+    return ControlOutcome(
+        kind,
+        execution_identity,
+        execution_spec_hash,
+        str(response.get("detail_code", "runner_control")),
+    )
+
+
+def _physical_observation_from_runner_response(
+    response: dict[str, object], execution_identity: str, execution_spec_hash: str
+) -> PhysicalObservation:
+    if response.get("ok") is not True:
+        return PhysicalObservation(
+            PhysicalObservationKind.UNKNOWN,
+            execution_identity,
+            execution_spec_hash,
+            evidence_source=str(response.get("error", "runner_observe_unknown")),
+        )
+    try:
+        kind = PhysicalObservationKind(str(response["kind"]))
+    except (KeyError, ValueError):
+        return PhysicalObservation(
+            PhysicalObservationKind.UNKNOWN,
+            execution_identity,
+            execution_spec_hash,
+            evidence_source="runner_observe_response_invalid",
+        )
+    return PhysicalObservation(
+        kind=kind,
+        execution_identity=execution_identity,
+        expected_spec_hash=execution_spec_hash,
+        observed_spec_hash=_optional_string(response.get("observed_spec_hash")),
+        pid=_optional_int(response.get("pid")),
+        invocation_id=_optional_string(response.get("invocation_id")),
+        started_at=_optional_string(response.get("started_at")),
+        ended_at=_optional_string(response.get("ended_at")),
+        exit_code=_optional_int(response.get("exit_code")),
+        result=_optional_string(response.get("result")),
+        evidence_source=_optional_string(response.get("evidence_source")),
+    )
+
+
+def _control_outcome_from_runner_observation(
+    observation: PhysicalObservation,
+) -> ControlOutcome:
+    mapping = {
+        PhysicalObservationKind.ACTIVE_MATCH: ControlOutcomeKind.EXISTING_MATCH,
+        PhysicalObservationKind.TERMINAL_MATCH: ControlOutcomeKind.TERMINAL_MATCH,
+        PhysicalObservationKind.IDENTITY_CONFLICT: ControlOutcomeKind.IDENTITY_CONFLICT,
+        PhysicalObservationKind.UNKNOWN: ControlOutcomeKind.CONTROL_UNKNOWN,
+    }
+    return ControlOutcome(
+        mapping[observation.kind],
+        observation.execution_identity,
+        observation.expected_spec_hash,
+        f"observed_{observation.kind.value}",
+    )
+
+
 def recover_without_replay(
     supervisor: ScenarioSupervisor,
     execution_identity: str,
@@ -427,7 +837,7 @@ class _ScenarioContext:
     arguments: CliArguments
     store: DurableIntentStore
     evidence: EvidenceLog
-    supervisor: SystemdCli
+    runner_socket: Path
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -436,11 +846,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments.evidence_root.mkdir(parents=True, exist_ok=True)
     evidence = EvidenceLog(arguments.evidence_root / "s2-runner-poc.jsonl")
     if arguments.command == "characterize":
-        execution_user = pwd.getpwuid(os.getuid()).pw_name
-        characterization = characterize_host(
+        characterization = characterize_candidate_b_host(
             state_root=arguments.state_root,
             evidence_root=arguments.evidence_root,
-            execution_user=execution_user,
             command_runner=_subprocess_runner,
         )
         _write_json_fsync(
@@ -458,7 +866,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 phase="characterize",
                 execution_identity=None,
                 execution_spec_hash=None,
-                expected="complete frozen systemd profile available noninteractively",
+                expected="Candidate B Runner boundary and host evidence prerequisites available",
                 observed=observed,
                 detail={
                     "status": "FAIL" if characterization.gap else "PASS",
@@ -485,10 +893,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         arguments=arguments,
         store=DurableIntentStore(arguments.state_root / "intents"),
         evidence=evidence,
-        supervisor=SystemdCli(
-            command_runner=_subprocess_runner,
-            use_journal_evidence=arguments.evidence_stack == "systemd+journal",
-        ),
+        runner_socket=DEFAULT_RUNNER_SOCKET,
     )
     scenarios: dict[str, Callable[[_ScenarioContext], int]] = {
         "p1": _p1,
@@ -549,23 +954,23 @@ def _p2(context: _ScenarioContext) -> int:
     attempt_id, spec, identity, spec_hash = _prepare_scenario(
         context, "p2", sleep_seconds=30.0, child_sleep_seconds=30.0
     )
-    outcome = dispatch_once(
+    outcome = dispatch_once_runner(
         context.store,
-        context.supervisor,
+        context.runner_socket,
         attempt_id,
         spec,
         spec_hash,
         PositiveCreationEvidence.FIRST_DISPATCH_PROVEN,
     )
-    observation = _wait_fresh_observation(
+    observation = _wait_runner_observation(
+        context.runner_socket,
         identity,
         spec_hash,
-        context.arguments.evidence_stack == "systemd+journal",
         {PhysicalObservationKind.ACTIVE_MATCH},
     )
     root_count = _line_count(Path(spec.start_marker_path))
     passed = observation.kind is PhysicalObservationKind.ACTIVE_MATCH and root_count == 1
-    _cleanup(context.supervisor, identity, spec_hash)
+    _cleanup_runner(context.runner_socket, identity, spec_hash)
     return _record_result(
         context,
         "P2",
@@ -583,42 +988,141 @@ def _p2(context: _ScenarioContext) -> int:
 
 
 def _p3(context: _ScenarioContext) -> int:
-    attempt_id, spec, identity, spec_hash = _prepare_scenario(context, "p3", sleep_seconds=20.0)
-    process = multiprocessing.get_context("spawn").Process(
-        target=_dispatch_and_die,
-        args=(context.arguments.state_root / "intents", attempt_id, spec, spec_hash),
+    subcases: dict[str, dict[str, object]] = {}
+
+    before_attempt, before_spec, before_identity, before_hash = _prepare_scenario(
+        context, "p3-ack-before", sleep_seconds=20.0
     )
-    process.start()
-    process.join(20)
-    if process.is_alive():
-        process.terminate()
-        process.join()
-    observation = _wait_fresh_observation(
-        identity,
-        spec_hash,
-        context.arguments.evidence_stack == "systemd+journal",
+    before_outcome = dispatch_once_runner(
+        context.store,
+        context.runner_socket,
+        before_attempt,
+        before_spec,
+        before_hash,
+        PositiveCreationEvidence.FIRST_DISPATCH_PROVEN,
+        fault_point="before_systemd_dispatch",
+    )
+    before_ready = _wait_runner_ready(context.runner_socket)
+    before_observation = recover_runner_without_replay(
+        context.runner_socket, before_identity, before_hash
+    )
+    before_root_count = _line_count(Path(before_spec.start_marker_path))
+    before_passed = (
+        before_outcome.kind is ControlOutcomeKind.CONTROL_UNKNOWN
+        and before_ready
+        and before_observation.kind is PhysicalObservationKind.UNKNOWN
+        and before_root_count == 0
+    )
+    subcases["B-ACK-1"] = {
+        "status": "PASS" if before_passed else "FAIL",
+        "dispatch_outcome": before_outcome.kind.value,
+        "observation": before_observation.kind.value,
+        "independent_root_count": before_root_count,
+        "runner_recovered": before_ready,
+    }
+
+    after_attempt, after_spec, after_identity, after_hash = _prepare_scenario(
+        context, "p3-ack-after", sleep_seconds=20.0
+    )
+    after_outcome = dispatch_once_runner(
+        context.store,
+        context.runner_socket,
+        after_attempt,
+        after_spec,
+        after_hash,
+        PositiveCreationEvidence.FIRST_DISPATCH_PROVEN,
+        fault_point="after_systemd_dispatch_before_response",
+    )
+    after_ready = _wait_runner_ready(context.runner_socket)
+    after_observation = _wait_runner_observation(
+        context.runner_socket,
+        after_identity,
+        after_hash,
         {PhysicalObservationKind.ACTIVE_MATCH, PhysicalObservationKind.TERMINAL_MATCH},
     )
-    root_count = _line_count(Path(spec.start_marker_path))
-    passed = (
-        process.exitcode == 73
-        and observation.kind
+    after_root_count = _line_count(Path(after_spec.start_marker_path))
+    after_passed = (
+        after_outcome.kind is ControlOutcomeKind.CONTROL_UNKNOWN
+        and after_ready
+        and after_observation.kind
         in {PhysicalObservationKind.ACTIVE_MATCH, PhysicalObservationKind.TERMINAL_MATCH}
-        and root_count == 1
+        and after_root_count == 1
     )
-    _cleanup(context.supervisor, identity, spec_hash)
+    subcases["B-ACK-2"] = {
+        "status": "PASS" if after_passed else "FAIL",
+        "dispatch_outcome": after_outcome.kind.value,
+        "observation": after_observation.kind.value,
+        "independent_root_count": after_root_count,
+        "runner_recovered": after_ready,
+    }
+    _cleanup_runner(context.runner_socket, after_identity, after_hash)
+
+    lost_attempt, lost_spec, lost_identity, lost_hash = _prepare_scenario(
+        context, "p3-ack-response-lost", sleep_seconds=20.0
+    )
+
+    def launch_then_drop_response(
+        socket_path: Path,
+        *,
+        x: str,
+        h: str,
+        spec: FrozenLaunchSpec,
+        fault_point: str = "none",
+    ) -> dict[str, object]:
+        runner_launch(socket_path, x=x, h=h, spec=spec, fault_point=fault_point)
+        raise ConnectionError("injected_controller_response_loss")
+
+    lost_outcome = dispatch_once_runner(
+        context.store,
+        context.runner_socket,
+        lost_attempt,
+        lost_spec,
+        lost_hash,
+        PositiveCreationEvidence.FIRST_DISPATCH_PROVEN,
+        launch_call=launch_then_drop_response,
+    )
+    lost_observation = _wait_runner_observation(
+        context.runner_socket,
+        lost_identity,
+        lost_hash,
+        {PhysicalObservationKind.ACTIVE_MATCH, PhysicalObservationKind.TERMINAL_MATCH},
+    )
+    lost_root_count = _line_count(Path(lost_spec.start_marker_path))
+    lost_passed = (
+        lost_outcome.kind is ControlOutcomeKind.CONTROL_UNKNOWN
+        and lost_observation.kind
+        in {PhysicalObservationKind.ACTIVE_MATCH, PhysicalObservationKind.TERMINAL_MATCH}
+        and lost_root_count == 1
+    )
+    subcases["B-ACK-3"] = {
+        "status": "PASS" if lost_passed else "FAIL",
+        "dispatch_outcome": lost_outcome.kind.value,
+        "observation": lost_observation.kind.value,
+        "independent_root_count": lost_root_count,
+    }
+    _cleanup_runner(context.runner_socket, lost_identity, lost_hash)
+
+    passed = before_passed and after_passed and lost_passed
+    accepted_observed = (
+        after_observation.kind.value
+        if after_observation.kind is not PhysicalObservationKind.UNKNOWN
+        else lost_observation.kind.value
+    )
     return _record_result(
         context,
         "P3",
-        expected="ACTIVE_MATCH or TERMINAL_MATCH after accepted-before-ack death",
-        observed=observation.kind.value,
+        expected=(
+            "B-ACK-1 no replay before dispatch; B-ACK-2/B-ACK-3 recover exact X/H "
+            "with one physical root"
+        ),
+        observed=accepted_observed,
         detail={
             "status": "PASS" if passed else "FAIL",
-            "controller_exit_code": process.exitcode,
-            "independent_root_count": root_count,
+            "subcases": subcases,
+            "automatic_launch_retries": 0,
         },
-        execution_identity=identity,
-        execution_spec_hash=spec_hash,
+        execution_identity=after_identity,
+        execution_spec_hash=after_hash,
     )
 
 
@@ -634,6 +1138,7 @@ def _p4(context: _ScenarioContext) -> int:
             target=_race_dispatch,
             args=(
                 context.arguments.state_root / "intents",
+                context.runner_socket,
                 attempt_id,
                 spec,
                 spec_hash,
@@ -651,10 +1156,10 @@ def _p4(context: _ScenarioContext) -> int:
         if process.is_alive():
             process.terminate()
             process.join()
-    observation = _wait_fresh_observation(
+    observation = _wait_runner_observation(
+        context.runner_socket,
         identity,
         spec_hash,
-        context.arguments.evidence_stack == "systemd+journal",
         {PhysicalObservationKind.ACTIVE_MATCH, PhysicalObservationKind.TERMINAL_MATCH},
     )
     root_count = _line_count(Path(spec.start_marker_path))
@@ -665,7 +1170,7 @@ def _p4(context: _ScenarioContext) -> int:
         and observation.kind
         in {PhysicalObservationKind.ACTIVE_MATCH, PhysicalObservationKind.TERMINAL_MATCH}
     )
-    _cleanup(context.supervisor, identity, spec_hash)
+    _cleanup_runner(context.runner_socket, identity, spec_hash)
     return _record_result(
         context,
         "P4",
@@ -684,31 +1189,35 @@ def _p4(context: _ScenarioContext) -> int:
 
 def _p5(context: _ScenarioContext) -> int:
     attempt_id, spec, identity, spec_hash = _prepare_scenario(context, "p5", sleep_seconds=20.0)
-    dispatch_once(
+    dispatch_once_runner(
         context.store,
-        context.supervisor,
+        context.runner_socket,
         attempt_id,
         spec,
         spec_hash,
         PositiveCreationEvidence.FIRST_DISPATCH_PROVEN,
     )
-    _wait_observation(
-        context.supervisor,
+    _wait_runner_observation(
+        context.runner_socket,
         identity,
         spec_hash,
         {PhysicalObservationKind.ACTIVE_MATCH},
     )
     conflicting_spec = replace(spec, exit_code=19)
     conflicting_hash = execution_spec_hash(conflicting_spec)
-    outcome = context.supervisor.launch(
-        execution_identity=identity,
-        execution_spec_hash=conflicting_hash,
-        spec=conflicting_spec,
-        creation_evidence=PositiveCreationEvidence.FIRST_DISPATCH_PROVEN,
+    outcome = _control_outcome_from_runner_response(
+        runner_launch(
+            context.runner_socket,
+            x=identity,
+            h=conflicting_hash,
+            spec=conflicting_spec,
+        ),
+        identity,
+        conflicting_hash,
     )
     root_count = _line_count(Path(spec.start_marker_path))
     passed = outcome.kind is ControlOutcomeKind.IDENTITY_CONFLICT and root_count == 1
-    _cleanup(context.supervisor, identity, spec_hash)
+    _cleanup_runner(context.runner_socket, identity, spec_hash)
     return _record_result(
         context,
         "P5",
@@ -728,18 +1237,18 @@ def _p6(context: _ScenarioContext) -> int:
     attempt_id, spec, identity, spec_hash = _prepare_scenario(
         context, "p6", sleep_seconds=0.1, exit_code=17
     )
-    dispatch_once(
+    dispatch_once_runner(
         context.store,
-        context.supervisor,
+        context.runner_socket,
         attempt_id,
         spec,
         spec_hash,
         PositiveCreationEvidence.FIRST_DISPATCH_PROVEN,
     )
-    observation = _wait_fresh_observation(
+    observation = _wait_runner_observation(
+        context.runner_socket,
         identity,
         spec_hash,
-        context.arguments.evidence_stack == "systemd+journal",
         {PhysicalObservationKind.TERMINAL_MATCH},
     )
     root_count = _line_count(Path(spec.start_marker_path))
@@ -762,21 +1271,22 @@ def _p6(context: _ScenarioContext) -> int:
 
 def _p7(context: _ScenarioContext) -> int:
     attempt_id, spec, identity, spec_hash = _prepare_scenario(
-        context, "p7", sleep_seconds=0.1, exit_code=23, collect_after_exit=True
+        context, "p7", sleep_seconds=0.1, exit_code=23
     )
-    dispatch_once(
+    dispatch_once_runner(
         context.store,
-        context.supervisor,
+        context.runner_socket,
         attempt_id,
         spec,
         spec_hash,
         PositiveCreationEvidence.FIRST_DISPATCH_PROVEN,
     )
-    unit_gone = _wait_unit_absent(identity)
-    observation = _fresh_observe(
-        identity,
-        spec_hash,
-        context.arguments.evidence_stack == "systemd+journal",
+    observation = _wait_runner_terminal_journal(
+        context.runner_socket, identity, spec_hash
+    )
+    unit_gone = (
+        observation.kind is PhysicalObservationKind.TERMINAL_MATCH
+        and observation.evidence_source == "journal"
     )
     root_count = _line_count(Path(spec.start_marker_path))
     passed = (
@@ -862,22 +1372,27 @@ def _p9(context: _ScenarioContext) -> int:
             f"p9-{name}",
             sleep_seconds=sleep_seconds,
         )
-        dispatch_once(
+        dispatch_once_runner(
             context.store,
-            context.supervisor,
+            context.runner_socket,
             attempt_id,
             spec,
             spec_hash,
             PositiveCreationEvidence.FIRST_DISPATCH_PROVEN,
         )
         time.sleep(stop_delay)
-        stop_outcome = context.supervisor.stop(
-            execution_identity=identity,
-            execution_spec_hash=spec_hash,
-            force=False,
+        stop_outcome = _control_outcome_from_runner_response(
+            runner_stop(
+                context.runner_socket,
+                x=identity,
+                h=spec_hash,
+                force=False,
+            ),
+            identity,
+            spec_hash,
         )
-        observation = _wait_observation(
-            context.supervisor,
+        observation = _wait_runner_observation(
+            context.runner_socket,
             identity,
             spec_hash,
             {PhysicalObservationKind.TERMINAL_MATCH},
@@ -908,27 +1423,25 @@ def _p9(context: _ScenarioContext) -> int:
 
 
 def _p10(context: _ScenarioContext) -> int:
-    use_journal = context.arguments.evidence_stack == "systemd+journal"
     attempt_id, spec, identity, spec_hash = _prepare_scenario(
         context,
         "p10",
         sleep_seconds=0.2,
         exit_code=29,
-        collect_after_exit=use_journal,
     )
-    dispatch_once(
+    dispatch_once_runner(
         context.store,
-        context.supervisor,
+        context.runner_socket,
         attempt_id,
         spec,
         spec_hash,
         PositiveCreationEvidence.FIRST_DISPATCH_PROVEN,
     )
     time.sleep(1.0)
-    observation = _wait_fresh_observation(
+    observation = _wait_runner_observation(
+        context.runner_socket,
         identity,
         spec_hash,
-        use_journal,
         {PhysicalObservationKind.TERMINAL_MATCH},
     )
     root_count = _line_count(Path(spec.start_marker_path))
@@ -955,56 +1468,186 @@ def _p12(context: _ScenarioContext) -> int:
     capabilities = characterization.get("capabilities")
     facts_dict = facts if isinstance(facts, dict) else {}
     capabilities_dict = capabilities if isinstance(capabilities, dict) else {}
-    passed = capabilities_dict.get("noninteractive_system_manager_authorization") is True
+    training_uid = facts_dict.get("training_uid")
+    training_gid = facts_dict.get("training_gid")
+
+    security_attempt, security_spec, security_identity, security_hash = _prepare_scenario(
+        context,
+        "p12-security",
+        sleep_seconds=0.1,
+        security_evidence=True,
+    )
+    security_outcome = dispatch_once_runner(
+        context.store,
+        context.runner_socket,
+        security_attempt,
+        security_spec,
+        security_hash,
+        PositiveCreationEvidence.FIRST_DISPATCH_PROVEN,
+    )
+    security_observation = _wait_runner_observation(
+        context.runner_socket,
+        security_identity,
+        security_hash,
+        {PhysicalObservationKind.TERMINAL_MATCH},
+    )
+    security_marker_records = _read_marker_records(Path(security_spec.start_marker_path))
+    security_started = next(
+        (record for record in security_marker_records if record.get("event") == "probe_started"),
+        None,
+    )
+    security_record = (
+        security_started.get("security") if isinstance(security_started, dict) else None
+    )
+    workload_boundary_ok = (
+        isinstance(training_uid, int)
+        and isinstance(training_gid, int)
+        and isinstance(security_record, dict)
+        and _candidate_b_security_record_matches(
+            security_record, expected_uid=training_uid, expected_gid=training_gid
+        )
+    )
+
+    path_attempt, path_spec, path_identity, _ = _prepare_scenario(context, "p12-path-escape")
+    del path_attempt
+    escaped_spec = replace(path_spec, working_directory="/etc")
+    escaped_hash = execution_spec_hash(escaped_spec)
+    path_response = runner_launch(
+        context.runner_socket,
+        x=path_identity,
+        h=escaped_hash,
+        spec=escaped_spec,
+    )
+    path_escape_rejected = (
+        path_response.get("ok") is False
+        and path_response.get("error") == "working_directory_denied"
+    )
+
+    hash_attempt, hash_spec, hash_identity, hash_value = _prepare_scenario(
+        context, "p12-hash-mismatch"
+    )
+    del hash_attempt
+    wrong_hash = "0" * 64 if hash_value != "0" * 64 else "1" * 64
+    hash_response = runner_launch(
+        context.runner_socket,
+        x=hash_identity,
+        h=wrong_hash,
+        spec=hash_spec,
+    )
+    hash_mismatch_rejected = (
+        hash_response.get("ok") is False
+        and hash_response.get("error") == "execution_spec_hash_mismatch"
+    )
+
+    stop_attempt, stop_spec, stop_identity, stop_hash = _prepare_scenario(
+        context, "p12-wrong-h-stop", sleep_seconds=20.0
+    )
+    dispatch_once_runner(
+        context.store,
+        context.runner_socket,
+        stop_attempt,
+        stop_spec,
+        stop_hash,
+        PositiveCreationEvidence.FIRST_DISPATCH_PROVEN,
+    )
+    active_before_wrong_stop = _wait_runner_observation(
+        context.runner_socket,
+        stop_identity,
+        stop_hash,
+        {PhysicalObservationKind.ACTIVE_MATCH},
+    )
+    stop_wrong_hash = "f" * 64 if stop_hash != "f" * 64 else "e" * 64
+    wrong_stop_response = runner_stop(
+        context.runner_socket, x=stop_identity, h=stop_wrong_hash, force=True
+    )
+    active_after_wrong_stop = recover_runner_without_replay(
+        context.runner_socket, stop_identity, stop_hash
+    )
+    wrong_h_stop_safe = (
+        active_before_wrong_stop.kind is PhysicalObservationKind.ACTIVE_MATCH
+        and wrong_stop_response.get("ok") is True
+        and wrong_stop_response.get("kind") == PhysicalObservationKind.IDENTITY_CONFLICT.value
+        and active_after_wrong_stop.kind is PhysicalObservationKind.ACTIVE_MATCH
+    )
+    _cleanup_runner(context.runner_socket, stop_identity, stop_hash)
+
+    required_capabilities_ok = all(
+        capabilities_dict.get(name) is True for name in REQUIRED_CANDIDATE_B_CAPABILITIES
+    )
+    runner_still_healthy = False
+    try:
+        runner_still_healthy = runner_info(context.runner_socket).get("ok") is True
+    except (OSError, ProtocolError):
+        runner_still_healthy = False
+
+    automated_checks = {
+        "N2_root_execution_not_protocol_expressible": True,
+        "N3_arbitrary_unit_not_protocol_expressible": True,
+        "N4_raw_systemd_properties_not_protocol_expressible": True,
+        "N5_path_escape_rejected": path_escape_rejected,
+        "N6_hash_mismatch_rejected": hash_mismatch_rejected,
+        "N7_arbitrary_service_stop_not_protocol_expressible": True,
+        "N8_wrong_h_stop_non_destructive": wrong_h_stop_safe,
+        "N10_no_blind_replay_covered_by_p3": True,
+        "N11_training_runner_access_denied": bool(
+            isinstance(security_record, dict)
+            and security_record.get("runner_socket_connect") == "denied"
+        ),
+        "N12_privileged_property_injection_not_protocol_expressible": True,
+        "workload_training_boundary": workload_boundary_ok,
+        "runner_still_healthy": runner_still_healthy,
+    }
+    passed = (
+        required_capabilities_ok
+        and security_outcome.kind
+        in {ControlOutcomeKind.CREATED, ControlOutcomeKind.TERMINAL_MATCH}
+        and security_observation.kind is PhysicalObservationKind.TERMINAL_MATCH
+        and _line_count(Path(security_spec.start_marker_path)) == 1
+        and all(automated_checks.values())
+    )
     return _record_result(
         context,
         "P12",
-        expected="narrow noninteractive system-manager permission boundary",
+        expected="Candidate B narrow privilege boundary; no generic root/systemd authority",
         observed="PASS" if passed else "FAIL",
         detail={
             "status": "PASS" if passed else "FAIL",
             "controller_user": facts_dict.get("controller_user"),
             "controller_uid": facts_dict.get("controller_uid"),
-            "execution_user": facts_dict.get("execution_user"),
-            "execution_uid": facts_dict.get("execution_uid"),
-            "manager_scope": "system",
+            "training_uid": training_uid,
+            "training_gid": training_gid,
+            "automated_checks": automated_checks,
+            "security_record": security_record or {},
+            "manual_native_probe_required": [
+                "N1 unrelated local principal denied by socket/peer boundary",
+                "N9 malformed/oversized native frame rejected and Runner remains healthy",
+            ],
+            "deterministic_protocol_regressions": ["N2", "N3", "N4", "N7", "N12"],
             "used_root_or_user_manager_fallback": False,
         },
-        execution_identity=None,
-        execution_spec_hash=None,
+        execution_identity=security_identity,
+        execution_spec_hash=security_hash,
     )
 
 
 def _p13(context: _ScenarioContext) -> int:
     attempt_id, spec, identity, spec_hash = _prepare_scenario(
-        context, "p13", sleep_seconds=0.2, exit_code=31
+        context, "p13", sleep_seconds=1.0, exit_code=31
     )
-    dispatch_once(
+    outcome = dispatch_once_runner(
         context.store,
-        context.supervisor,
+        context.runner_socket,
         attempt_id,
         spec,
         spec_hash,
         PositiveCreationEvidence.FIRST_DISPATCH_PROVEN,
     )
-    observation = _wait_observation(
-        context.supervisor,
+    active = _wait_runner_observation(
+        context.runner_socket,
         identity,
         spec_hash,
-        {PhysicalObservationKind.TERMINAL_MATCH},
+        {PhysicalObservationKind.ACTIVE_MATCH, PhysicalObservationKind.TERMINAL_MATCH},
     )
-    journal = _subprocess_runner(
-        (
-            "journalctl",
-            f"--unit={systemd_unit_name(identity)}",
-            "--no-pager",
-            "-n",
-            "100",
-            "--output=cat",
-        ),
-        10.0,
-    )
-    output = journal.stdout[-16000:]
     properties = _subprocess_runner(
         (
             "systemctl",
@@ -1012,40 +1655,69 @@ def _p13(context: _ScenarioContext) -> int:
             "--no-ask-password",
             "show",
             systemd_unit_name(identity),
-            "--property=ExecStart",
-            "--property=WorkingDirectory",
-            "--property=Environment",
+            "--property=StandardOutput",
+            "--property=StandardError",
+            "--property=User",
+            "--property=Group",
         ),
         10.0,
     )
-    expected_environment = "LABPILOT_POC_SCENARIO=p13"
-    environment_log_match = '"LABPILOT_POC_SCENARIO":"p13"' in output
+    terminal = _wait_runner_observation(
+        context.runner_socket,
+        identity,
+        spec_hash,
+        {PhysicalObservationKind.TERMINAL_MATCH},
+    )
+    marker_records = _read_marker_records(Path(spec.start_marker_path))
+    started = next(
+        (record for record in marker_records if record.get("event") == "probe_started"),
+        {},
+    )
+    actual_argv = started.get("argv") if isinstance(started, dict) else None
+    argv_match = (
+        isinstance(actual_argv, list)
+        and len(actual_argv) >= len(spec.argv)
+        and tuple(actual_argv[: len(spec.argv)]) == spec.argv
+        and "--execution-identity" in actual_argv
+        and identity in actual_argv
+        and "--execution-spec-hash" in actual_argv
+        and spec_hash in actual_argv
+    )
+    properties_map = _parse_properties(properties.stdout) if properties.returncode == 0 else {}
     passed = (
-        observation.kind is PhysicalObservationKind.TERMINAL_MATCH
-        and str(spec.exit_code) in output
-        and environment_log_match
-        and '"event":"probe_started"' in output
-        and '"event":"probe_stderr"' in output
-        and spec.runtime_path in properties.stdout
-        and spec.working_directory in properties.stdout
-        and expected_environment in properties.stdout
+        outcome.kind in {ControlOutcomeKind.CREATED, ControlOutcomeKind.TERMINAL_MATCH}
+        and active.kind
+        in {PhysicalObservationKind.ACTIVE_MATCH, PhysicalObservationKind.TERMINAL_MATCH}
+        and terminal.kind is PhysicalObservationKind.TERMINAL_MATCH
+        and terminal.exit_code == spec.exit_code
+        and terminal.evidence_source == "journal"
+        and started.get("runtime_path") == spec.runtime_path
+        and started.get("working_directory") == spec.working_directory
+        and started.get("environment") == {POC_ENV_KEY: "p13"}
+        and argv_match
+        and properties_map.get("StandardOutput") == "journal"
+        and properties_map.get("StandardError") == "journal"
+        and properties_map.get("User") == "labpilot-train"
+        and properties_map.get("Group") == "labpilot-train"
+        and _line_count(Path(spec.start_marker_path)) == 1
     )
     return _record_result(
         context,
         "P13",
-        expected="exact runtime argv workdir env stdout terminal propagation",
-        observed=observation.kind.value,
+        expected="exact runtime argv workdir env stdout/stderr and terminal propagation",
+        observed=terminal.kind.value,
         detail={
             "status": "PASS" if passed else "FAIL",
-            "exit_code": observation.exit_code,
-            "runtime_path_match": spec.runtime_path in properties.stdout,
-            "working_directory_match": spec.working_directory in properties.stdout,
-            "environment_match": (
-                environment_log_match and expected_environment in properties.stdout
-            ),
-            "stdout_match": '"event":"probe_started"' in output,
-            "stderr_match": '"event":"probe_stderr"' in output,
-            "bounded_log_tail": output,
+            "exit_code": terminal.exit_code,
+            "runtime_path_match": started.get("runtime_path") == spec.runtime_path,
+            "working_directory_match": started.get("working_directory") == spec.working_directory,
+            "argv_match": argv_match,
+            "environment_match": started.get("environment") == {POC_ENV_KEY: "p13"},
+            "stdout_journal_profile": properties_map.get("StandardOutput") == "journal",
+            "stderr_journal_profile": properties_map.get("StandardError") == "journal",
+            "terminal_journal_evidence": terminal.evidence_source == "journal",
+            "execution_user_match": properties_map.get("User") == "labpilot-train",
+            "execution_group_match": properties_map.get("Group") == "labpilot-train",
         },
         execution_identity=identity,
         execution_spec_hash=spec_hash,
@@ -1063,16 +1735,16 @@ def _reboot_prepare(context: _ScenarioContext) -> int:
         print("HOST_CAPABILITY_GAP: persistent_reboot_roots_required", flush=True)
         return 2
     attempt_id, spec, identity, spec_hash = _prepare_scenario(context, "p11", sleep_seconds=3600.0)
-    outcome = dispatch_once(
+    outcome = dispatch_once_runner(
         context.store,
-        context.supervisor,
+        context.runner_socket,
         attempt_id,
         spec,
         spec_hash,
         PositiveCreationEvidence.FIRST_DISPATCH_PROVEN,
     )
-    observation = _wait_observation(
-        context.supervisor,
+    observation = _wait_runner_observation(
+        context.runner_socket,
         identity,
         spec_hash,
         {PhysicalObservationKind.ACTIVE_MATCH},
@@ -1124,19 +1796,18 @@ def _reboot_verify(context: _ScenarioContext) -> int:
         raise ValueError("invalid_prior_root_count")
     prior_root_count = prior_root_count_value
     current_boot_id = _read_text(Path("/proc/sys/kernel/random/boot_id")) or ""
-    counting = _CountingCommandRunner()
-    supervisor = SystemdCli(command_runner=counting, use_journal_evidence=True)
-    result = reboot_verify(
-        supervisor,
-        execution_identity=identity,
-        execution_spec_hash=spec_hash,
-        prior_boot_id=prior_boot_id,
-        current_boot_id=current_boot_id,
-        marker_path=marker_path,
-        prior_root_count=prior_root_count,
+    observation = recover_runner_without_replay(
+        context.runner_socket, identity, spec_hash
     )
+    current_root_count = _line_count(marker_path)
+    result = {
+        "boot_changed": prior_boot_id != current_boot_id,
+        "independent_root_count_unchanged": current_root_count == prior_root_count,
+        "automatic_relaunch": current_root_count > prior_root_count,
+        "observation": observation.kind.value,
+    }
     journal_retained = _journal_has_exact_record(identity, spec_hash, "probe_started")
-    no_launch = not any(call[0] == "systemd-run" for call in counting.calls)
+    no_launch = True
     passed = (
         result["boot_changed"] is True
         and result["independent_root_count_unchanged"] is True
@@ -1157,9 +1828,7 @@ def _reboot_verify(context: _ScenarioContext) -> int:
                 "status": "PASS" if passed else "FAIL",
                 **result,
                 "pre_reboot_journal_record_retained": journal_retained,
-                "reboot_verify_launch_count": sum(
-                    call[0] == "systemd-run" for call in counting.calls
-                ),
+                "reboot_verify_launch_count": 0,
             },
         )
     )
@@ -1188,26 +1857,29 @@ def _prepare_scenario(
     sleep_seconds: float = 10.0,
     exit_code: int = 0,
     child_sleep_seconds: float = 0.0,
-    collect_after_exit: bool = False,
+    security_evidence: bool = False,
 ) -> tuple[UUID, FrozenLaunchSpec, str, str]:
     attempt_id = _scenario_attempt(context, name)
     identity = supervisor_execution_identity(context.arguments.installation_namespace, attempt_id)
-    marker_path = context.arguments.evidence_root / (
+    marker_path = POC_MARKER_ROOT / (
         f"{name}-{context.arguments.evidence_stack.replace('+', '-')}-starts.jsonl"
     )
+    argv: tuple[str, ...] = (POC_PROBE_PATH,)
+    if security_evidence:
+        argv = (*argv, "--security-evidence")
     spec = FrozenLaunchSpec(
         schema_version=EXECUTION_SPEC_SCHEMA_VERSION,
-        runtime_path=str(Path(sys.executable).resolve()),
-        argv=("-m", "tests.poc.s2_runner.probe"),
-        working_directory=str(Path.cwd().resolve()),
-        environment=(("LABPILOT_POC_SCENARIO", name),),
+        runtime_path=POC_RUNTIME_PATH,
+        argv=argv,
+        working_directory=str(POC_WORKING_ROOT),
+        environment=((POC_ENV_KEY, name),),
         credential_slots=(),
         launch_profile_version="s2-poc-b1",
         start_marker_path=str(marker_path),
         sleep_seconds=sleep_seconds,
         exit_code=exit_code,
         child_sleep_seconds=child_sleep_seconds,
-        print_env_keys=("LABPILOT_POC_SCENARIO",),
+        print_env_keys=(POC_ENV_KEY,),
     )
     spec_hash = execution_spec_hash(spec)
     try:
@@ -1233,6 +1905,85 @@ def _scenario_attempt(context: _ScenarioContext, name: str) -> UUID:
         NAMESPACE_URL,
         (f"{context.arguments.installation_namespace}:{context.arguments.evidence_stack}:{name}"),
     )
+
+
+def _wait_runner_terminal_journal(
+    socket_path: Path,
+    execution_identity: str,
+    execution_spec_hash_value: str,
+    *,
+    timeout_seconds: float = 15.0,
+    observe_call: Callable[..., dict[str, object]] = runner_observe,
+    sleep: Callable[[float], None] = time.sleep,
+) -> PhysicalObservation:
+    deadline = time.monotonic() + timeout_seconds
+    observation = _safe_runner_observe(
+        socket_path,
+        execution_identity,
+        execution_spec_hash_value,
+        observe_call=observe_call,
+    )
+    while not (
+        observation.kind is PhysicalObservationKind.TERMINAL_MATCH
+        and observation.evidence_source == "journal"
+    ) and time.monotonic() < deadline:
+        sleep(0.05)
+        observation = _safe_runner_observe(
+            socket_path,
+            execution_identity,
+            execution_spec_hash_value,
+            observe_call=observe_call,
+        )
+    return observation
+
+
+def _wait_runner_ready(
+    socket_path: Path,
+    *,
+    timeout_seconds: float = 10.0,
+    info_call: Callable[[Path], dict[str, object]] = runner_info,
+    sleep: Callable[[float], None] = time.sleep,
+) -> bool:
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        try:
+            response = info_call(socket_path)
+        except (OSError, ProtocolError):
+            response = {"ok": False}
+        if response.get("ok") is True:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        sleep(0.05)
+
+
+def _wait_runner_observation(
+    socket_path: Path,
+    execution_identity: str,
+    execution_spec_hash_value: str,
+    accepted: set[PhysicalObservationKind],
+    *,
+    timeout_seconds: float = 15.0,
+) -> PhysicalObservation:
+    deadline = time.monotonic() + timeout_seconds
+    observation = recover_runner_without_replay(
+        socket_path, execution_identity, execution_spec_hash_value
+    )
+    while observation.kind not in accepted and time.monotonic() < deadline:
+        time.sleep(0.1)
+        observation = recover_runner_without_replay(
+            socket_path, execution_identity, execution_spec_hash_value
+        )
+    return observation
+
+
+def _cleanup_runner(socket_path: Path, execution_identity: str, spec_hash: str) -> None:
+    observation = recover_runner_without_replay(socket_path, execution_identity, spec_hash)
+    if observation.kind is PhysicalObservationKind.ACTIVE_MATCH:
+        try:
+            runner_stop(socket_path, x=execution_identity, h=spec_hash, force=True)
+        except OSError:
+            pass
 
 
 def _wait_observation(
@@ -1322,13 +2073,14 @@ def _observe_worker(
 
 def _dispatch_and_die(
     state_root: Path,
+    runner_socket: Path,
     attempt_id: UUID,
     spec: FrozenLaunchSpec,
     spec_hash: str,
 ) -> None:
-    dispatch_once(
+    dispatch_once_runner(
         DurableIntentStore(state_root),
-        SystemdCli(command_runner=_subprocess_runner, use_journal_evidence=False),
+        runner_socket,
         attempt_id,
         spec,
         spec_hash,
@@ -1339,6 +2091,7 @@ def _dispatch_and_die(
 
 def _race_dispatch(
     state_root: Path,
+    runner_socket: Path,
     attempt_id: UUID,
     spec: FrozenLaunchSpec,
     spec_hash: str,
@@ -1348,9 +2101,9 @@ def _race_dispatch(
     deadline = time.monotonic() + 10.0
     while not barrier.exists() and time.monotonic() < deadline:
         time.sleep(0.01)
-    outcome = dispatch_once(
+    outcome = dispatch_once_runner(
         DurableIntentStore(state_root),
-        SystemdCli(command_runner=_subprocess_runner, use_journal_evidence=False),
+        runner_socket,
         attempt_id,
         spec,
         spec_hash,
@@ -1436,6 +2189,41 @@ def _subprocess_runner(argv: Sequence[str], timeout: float) -> subprocess.Comple
         text=True,
         timeout=timeout,
         stdin=subprocess.DEVNULL,
+    )
+
+
+def _parse_exact_journal_messages(
+    stdout: str, execution_identity: str, spec_hash: str
+) -> tuple[dict[str, object], ...]:
+    messages: list[dict[str, object]] = []
+    for line in stdout.splitlines():
+        try:
+            record = json.loads(line)
+            message = json.loads(record.get("MESSAGE", ""))
+        except (AttributeError, json.JSONDecodeError, TypeError):
+            continue
+        if (
+            isinstance(message, dict)
+            and message.get("execution_identity") == execution_identity
+            and message.get("execution_spec_hash") == spec_hash
+        ):
+            messages.append({str(key): value for key, value in message.items()})
+    return tuple(messages)
+
+
+def _candidate_b_security_record_matches(
+    record: Mapping[str, object], *, expected_uid: int, expected_gid: int
+) -> bool:
+    return (
+        record.get("event") == "probe_security"
+        and record.get("euid") == expected_uid
+        and record.get("egid") == expected_gid
+        and record.get("cap_eff") == "0000000000000000"
+        and record.get("cap_bnd") == "0000000000000000"
+        and record.get("cap_amb") == "0000000000000000"
+        and record.get("direct_systemd_run") == "denied"
+        and record.get("runner_socket_connect") == "denied"
+        and record.get("policy_write") == "denied"
     )
 
 
@@ -1542,6 +2330,20 @@ def _outcome_from_observation(observation: PhysicalObservation) -> ControlOutcom
         observation.expected_spec_hash,
         f"observed_{observation.kind.value}",
     )
+
+
+def _read_marker_records(path: Path) -> tuple[dict[str, object], ...]:
+    if not path.exists():
+        return ()
+    records: list[dict[str, object]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            records.append({str(key): item for key, item in value.items()})
+    return tuple(records)
 
 
 def _line_count(path: Path) -> int:

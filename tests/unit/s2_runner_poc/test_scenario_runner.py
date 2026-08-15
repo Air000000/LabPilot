@@ -1,12 +1,16 @@
+import json
 import os
 import pwd
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 from uuid import UUID
 
 import pytest
+import tests.poc.s2_runner.probe as probe_module
+import tests.poc.s2_runner.scenario_runner as scenario_module
 from tests.poc.s2_runner.contract import (
     EXECUTION_SPEC_SCHEMA_VERSION,
     ControlOutcome,
@@ -25,14 +29,19 @@ from tests.poc.s2_runner.durable_state import (
 )
 from tests.poc.s2_runner.evidence import EvidenceLog, EvidenceRecord
 from tests.poc.s2_runner.probe import main as probe_main
+from tests.poc.s2_runner.runner_protocol import ProtocolError
 from tests.poc.s2_runner.scenario_runner import (
+    REQUIRED_CANDIDATE_B_CAPABILITIES,
     REQUIRED_SYSTEMD_PROFILE_CAPABILITIES,
     ScenarioSupervisor,
+    characterize_candidate_b_host,
     characterize_host,
     dispatch_once,
+    dispatch_once_runner,
     evaluate_capabilities,
     parse_args,
     reboot_verify,
+    recover_runner_without_replay,
     recover_without_replay,
     run_after_capability_gate,
     stop_and_observe,
@@ -152,9 +161,115 @@ def test_probe_start_marker_is_one_independent_root_record(
     assert '"event":"probe_started"' in records[0]
     assert X in records[0]
     captured = capsys.readouterr()
+    started = next(
+        json.loads(line)
+        for line in captured.out.splitlines()
+        if '"event":"probe_started"' in line
+    )
+    assert started["runtime_path"]
+    assert started["working_directory"] == os.getcwd()
+    assert isinstance(started["argv"], list)
     assert '"event":"probe_stderr"' in captured.err
     assert X in captured.err
 
+
+def test_probe_security_evidence_emits_only_bounded_fixed_facts(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    marker = tmp_path / "probe-starts.jsonl"
+    monkeypatch.setattr(
+        probe_module,
+        "security_facts",
+        lambda: {
+            "euid": 2102,
+            "egid": 2102,
+            "cap_eff": "0000000000000000",
+            "cap_bnd": "0000000000000000",
+            "cap_amb": "0000000000000000",
+            "direct_systemd_run": "denied",
+            "runner_socket_connect": "denied",
+            "policy_write": "denied",
+        },
+    )
+
+    result = probe_main(
+        [
+            "--execution-identity",
+            X,
+            "--execution-spec-hash",
+            "a" * 64,
+            "--start-marker",
+            str(marker),
+            "--sleep-seconds",
+            "0",
+            "--exit-code",
+            "0",
+            "--child-sleep-seconds",
+            "0",
+            "--security-evidence",
+        ]
+    )
+
+    assert result == 0
+    records = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    security = next(record for record in records if record.get("event") == "probe_security")
+    marker_record = json.loads(marker.read_text(encoding="utf-8").strip())
+    assert marker_record["security"] == {
+        "euid": 2102,
+        "egid": 2102,
+        "cap_eff": "0000000000000000",
+        "cap_bnd": "0000000000000000",
+        "cap_amb": "0000000000000000",
+        "direct_systemd_run": "denied",
+        "runner_socket_connect": "denied",
+        "policy_write": "denied",
+    }
+    assert set(security) == {
+        "event",
+        "execution_identity",
+        "execution_spec_hash",
+        "euid",
+        "egid",
+        "cap_eff",
+        "cap_bnd",
+        "cap_amb",
+        "direct_systemd_run",
+        "runner_socket_connect",
+        "policy_write",
+    }
+
+
+
+
+def test_probe_start_marker_records_only_requested_non_secret_environment(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    marker = tmp_path / "probe-starts.jsonl"
+    monkeypatch.setenv("LABPILOT_POC_ENV", "p13")
+
+    assert probe_main(
+        [
+            "--execution-identity",
+            X,
+            "--execution-spec-hash",
+            "a" * 64,
+            "--start-marker",
+            str(marker),
+            "--sleep-seconds",
+            "0",
+            "--exit-code",
+            "0",
+            "--child-sleep-seconds",
+            "0",
+            "--print-env",
+            "LABPILOT_POC_ENV",
+        ]
+    ) == 0
+
+    marker_record = json.loads(marker.read_text(encoding="utf-8").strip())
+    assert marker_record["environment"] == {"LABPILOT_POC_ENV": "p13"}
+    assert len(marker.read_text(encoding="utf-8").splitlines()) == 1
+    capsys.readouterr()
 
 def test_cli_accepts_exact_public_scenario_commands(tmp_path: Path) -> None:
     commands = (
@@ -386,6 +501,75 @@ def test_reboot_verify_does_not_invent_lost_observation_kind(tmp_path: Path) -> 
     assert "lost" not in {kind.value for kind in PhysicalObservationKind}
 
 
+def test_candidate_b_characterize_requires_runner_and_denied_direct_systemd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    persistent_journal = tmp_path / "journal"
+    persistent_journal.mkdir()
+    calls: list[tuple[str, ...]] = []
+
+    monkeypatch.setattr(
+        "tests.poc.s2_runner.scenario_runner.pwd.getpwuid",
+        lambda uid: SimpleNamespace(pw_name="labpilot-controller"),
+    )
+    monkeypatch.setattr(
+        "tests.poc.s2_runner.scenario_runner.pwd.getpwnam",
+        lambda name: SimpleNamespace(pw_uid=2102 if name == "labpilot-train" else 2101),
+    )
+    monkeypatch.setattr(
+        "tests.poc.s2_runner.scenario_runner.grp.getgrnam",
+        lambda name: SimpleNamespace(gr_gid=2102 if name == "labpilot-train" else 2101),
+    )
+
+    def command_runner(
+        argv: tuple[str, ...] | list[str], timeout: float
+    ) -> subprocess.CompletedProcess[str]:
+        assert timeout > 0
+        call = tuple(argv)
+        calls.append(call)
+        if call[:2] == ("systemctl", "--version"):
+            return subprocess.CompletedProcess(call, 0, "systemd 259\n", "")
+        if call[:2] == ("systemd-run", "--help"):
+            return subprocess.CompletedProcess(
+                call,
+                0,
+                "--service-type --expand-environment --uid --gid --working-directory --collect",
+                "",
+            )
+        if call[0] == "systemd-run":
+            return subprocess.CompletedProcess(call, 1, "", "Access denied")
+        if call[0] == "journalctl" and "--list-boots" in call:
+            return subprocess.CompletedProcess(call, 0, "0 boot-id\n-1 old-boot-id\n", "")
+        if call[0] == "findmnt":
+            return subprocess.CompletedProcess(call, 0, "/ ext4\n", "")
+        return subprocess.CompletedProcess(call, 0, "", "")
+
+    result = characterize_candidate_b_host(
+        state_root=tmp_path / "state",
+        evidence_root=tmp_path / "evidence",
+        command_runner=command_runner,
+        runner_info_call=lambda socket_path: {
+            "ok": True,
+            "protocol_version": "s2-runner-poc-v1",
+            "runner_version": "s2-runner-poc-b1",
+            "policy_identity": "a" * 64,
+        },
+        runner_socket=tmp_path / "control.sock",
+        persistent_journal_path=persistent_journal,
+        kernel_release="7.0.0-native",
+        executable_finder=lambda name: f"/usr/bin/{name}",
+    )
+
+    assert result.gap is None
+    assert set(result.capabilities) == set(REQUIRED_CANDIDATE_B_CAPABILITIES)
+    assert all(result.capabilities.values())
+    assert result.facts["controller_user"] == "labpilot-controller"
+    assert result.facts["training_uid"] == 2102
+    assert result.facts["training_gid"] == 2102
+    assert result.facts["runner_policy_identity"] == "a" * 64
+    assert any(call[0] == "systemd-run" and "--system" in call for call in calls)
+
+
 def test_characterize_checks_entire_required_systemd_profile() -> None:
     all_present = {name: True for name in REQUIRED_SYSTEMD_PROFILE_CAPABILITIES}
 
@@ -500,3 +684,317 @@ def test_evidence_writer_rejects_secret_shaped_keys(tmp_path: Path) -> None:
         log.append(record)
 
     assert not (tmp_path / "evidence.jsonl").exists()
+
+
+
+
+def test_candidate_b_native_spec_matches_fixed_host_policy(tmp_path: Path) -> None:
+    arguments = scenario_module.CliArguments(
+        state_root=tmp_path / "state",
+        evidence_root=tmp_path / "evidence",
+        installation_namespace="native-test",
+        evidence_stack="systemd+journal",
+        command="p2",
+    )
+    context = scenario_module._ScenarioContext(
+        arguments=arguments,
+        store=DurableIntentStore(tmp_path / "state" / "intents"),
+        evidence=EvidenceLog(tmp_path / "evidence" / "records.jsonl"),
+        runner_socket=Path("/run/labpilot-s2-runner-poc/control.sock"),
+    )
+
+    _, spec, _, _ = scenario_module._prepare_scenario(
+        context, "native-policy", security_evidence=True
+    )
+
+    assert spec.runtime_path == "/usr/bin/python3"
+    assert spec.argv == (
+        "/opt/labpilot-s2-runner-poc/tests/poc/s2_runner/probe.py",
+        "--security-evidence",
+    )
+    assert spec.working_directory == "/var/lib/labpilot-s2-poc/workspace"
+    assert Path(spec.start_marker_path).parent == Path("/var/lib/labpilot-s2-poc/markers")
+    assert spec.environment == (("LABPILOT_POC_ENV", "native-policy"),)
+    assert spec.print_env_keys == ("LABPILOT_POC_ENV",)
+
+def test_candidate_b_dispatch_persists_uncertainty_before_runner_launch(tmp_path: Path) -> None:
+    spec = _spec()
+    spec_hash = execution_spec_hash(spec)
+    store = DurableIntentStore(tmp_path)
+    store.create(_intent(spec, DispatchPhase.FIRST_DISPATCH_AVAILABLE))
+    calls: list[str] = []
+
+    def launch_call(
+        socket_path: Path, *, x: str, h: str, spec: FrozenLaunchSpec, fault_point: str = "none"
+    ) -> dict[str, object]:
+        del socket_path, x, h, spec, fault_point
+        assert store.load(ATTEMPT_ID).dispatch_phase is DispatchPhase.DISPATCH_MAY_HAVE_OCCURRED
+        calls.append("launch")
+        return {
+            "ok": True,
+            "kind": ControlOutcomeKind.CREATED.value,
+            "execution_identity": X,
+            "execution_spec_hash": spec_hash,
+            "detail_code": "created",
+        }
+
+    outcome = dispatch_once_runner(
+        store,
+        Path("/run/labpilot-s2-runner-poc/control.sock"),
+        ATTEMPT_ID,
+        spec,
+        spec_hash,
+        PositiveCreationEvidence.FIRST_DISPATCH_PROVEN,
+        launch_call=launch_call,
+    )
+
+    assert outcome.kind is ControlOutcomeKind.CREATED
+    assert calls == ["launch"]
+
+
+def test_candidate_b_ack_response_loss_has_no_automatic_resend(tmp_path: Path) -> None:
+    spec = _spec()
+    spec_hash = execution_spec_hash(spec)
+    store = DurableIntentStore(tmp_path)
+    store.create(_intent(spec, DispatchPhase.FIRST_DISPATCH_AVAILABLE))
+    launch_calls = 0
+
+    def launch_call(
+        socket_path: Path, *, x: str, h: str, spec: FrozenLaunchSpec, fault_point: str = "none"
+    ) -> dict[str, object]:
+        nonlocal launch_calls
+        del socket_path, x, h, spec, fault_point
+        launch_calls += 1
+        raise ConnectionError("response lost")
+
+    outcome = dispatch_once_runner(
+        store,
+        Path("/run/labpilot-s2-runner-poc/control.sock"),
+        ATTEMPT_ID,
+        spec,
+        spec_hash,
+        PositiveCreationEvidence.FIRST_DISPATCH_PROVEN,
+        launch_call=launch_call,
+    )
+
+    assert outcome.kind is ControlOutcomeKind.CONTROL_UNKNOWN
+    assert launch_calls == 1
+    assert store.load(ATTEMPT_ID).dispatch_phase is DispatchPhase.DISPATCH_MAY_HAVE_OCCURRED
+
+
+
+
+def test_candidate_b_ack_before_dispatch_crash_is_unknown_without_resend(tmp_path: Path) -> None:
+    spec = _spec()
+    spec_hash = execution_spec_hash(spec)
+    store = DurableIntentStore(tmp_path)
+    store.create(_intent(spec, DispatchPhase.FIRST_DISPATCH_AVAILABLE))
+    calls: list[str] = []
+
+    def launch_call(
+        socket_path: Path, *, x: str, h: str, spec: FrozenLaunchSpec, fault_point: str = "none"
+    ) -> dict[str, object]:
+        del socket_path, x, h, spec
+        calls.append(fault_point)
+        raise ProtocolError("truncated_frame")
+
+    outcome = dispatch_once_runner(
+        store,
+        Path("/run/labpilot-s2-runner-poc/control.sock"),
+        ATTEMPT_ID,
+        spec,
+        spec_hash,
+        PositiveCreationEvidence.FIRST_DISPATCH_PROVEN,
+        fault_point="before_systemd_dispatch",
+        launch_call=launch_call,
+    )
+
+    assert outcome.kind is ControlOutcomeKind.CONTROL_UNKNOWN
+    assert calls == ["before_systemd_dispatch"]
+    assert store.load(ATTEMPT_ID).dispatch_phase is DispatchPhase.DISPATCH_MAY_HAVE_OCCURRED
+
+
+def test_candidate_b_ack_after_possible_acceptance_is_unknown_without_resend(
+    tmp_path: Path,
+) -> None:
+    spec = _spec()
+    spec_hash = execution_spec_hash(spec)
+    store = DurableIntentStore(tmp_path)
+    store.create(_intent(spec, DispatchPhase.FIRST_DISPATCH_AVAILABLE))
+    calls: list[str] = []
+
+    def launch_call(
+        socket_path: Path, *, x: str, h: str, spec: FrozenLaunchSpec, fault_point: str = "none"
+    ) -> dict[str, object]:
+        del socket_path, x, h, spec
+        calls.append(fault_point)
+        raise ProtocolError("truncated_frame")
+
+    outcome = dispatch_once_runner(
+        store,
+        Path("/run/labpilot-s2-runner-poc/control.sock"),
+        ATTEMPT_ID,
+        spec,
+        spec_hash,
+        PositiveCreationEvidence.FIRST_DISPATCH_PROVEN,
+        fault_point="after_systemd_dispatch_before_response",
+        launch_call=launch_call,
+    )
+
+    assert outcome.kind is ControlOutcomeKind.CONTROL_UNKNOWN
+    assert calls == ["after_systemd_dispatch_before_response"]
+    assert store.load(ATTEMPT_ID).dispatch_phase is DispatchPhase.DISPATCH_MAY_HAVE_OCCURRED
+
+
+
+
+
+
+def test_candidate_b_p7_waits_past_loaded_terminal_until_journal_evidence() -> None:
+    responses = iter(
+        (
+            {
+                "ok": True,
+                "kind": PhysicalObservationKind.TERMINAL_MATCH.value,
+                "observed_spec_hash": "a" * 64,
+                "evidence_source": "systemd_unit",
+            },
+            {
+                "ok": True,
+                "kind": PhysicalObservationKind.TERMINAL_MATCH.value,
+                "observed_spec_hash": "a" * 64,
+                "evidence_source": "journal",
+            },
+        )
+    )
+    calls = 0
+
+    def observe_call(socket_path: Path, *, x: str, h: str) -> dict[str, object]:
+        nonlocal calls
+        del socket_path, x, h
+        calls += 1
+        return next(responses)
+
+    observation = scenario_module._wait_runner_terminal_journal(
+        Path("/run/labpilot-s2-runner-poc/control.sock"),
+        X,
+        "a" * 64,
+        timeout_seconds=0.2,
+        observe_call=observe_call,
+        sleep=lambda _: None,
+    )
+
+    assert observation.kind is PhysicalObservationKind.TERMINAL_MATCH
+    assert observation.evidence_source == "journal"
+    assert calls == 2
+
+def test_candidate_b_wait_runner_ready_retries_info_without_launch() -> None:
+    calls = 0
+
+    def info_call(socket_path: Path) -> dict[str, object]:
+        nonlocal calls
+        del socket_path
+        calls += 1
+        if calls < 3:
+            raise ConnectionRefusedError("runner restarting")
+        return {"ok": True}
+
+    assert scenario_module._wait_runner_ready(
+        Path("/run/labpilot-s2-runner-poc/control.sock"),
+        timeout_seconds=0.2,
+        info_call=info_call,
+        sleep=lambda _: None,
+    ) is True
+    assert calls == 3
+
+def test_candidate_b_security_record_requires_exact_training_boundary() -> None:
+    record = {
+        "event": "probe_security",
+        "euid": 2102,
+        "egid": 2102,
+        "cap_eff": "0000000000000000",
+        "cap_bnd": "0000000000000000",
+        "cap_amb": "0000000000000000",
+        "direct_systemd_run": "denied",
+        "runner_socket_connect": "denied",
+        "policy_write": "denied",
+    }
+
+    assert scenario_module._candidate_b_security_record_matches(
+        record, expected_uid=2102, expected_gid=2102
+    ) is True
+    assert scenario_module._candidate_b_security_record_matches(
+        {**record, "cap_bnd": "0000000000000001"}, expected_uid=2102, expected_gid=2102
+    ) is False
+
+
+def test_candidate_b_journal_parser_keeps_only_exact_x_h_json_messages() -> None:
+    exact = json.dumps(
+        {
+            "MESSAGE": json.dumps(
+                {
+                    "event": "probe_security",
+                    "execution_identity": X,
+                    "execution_spec_hash": "a" * 64,
+                    "euid": 2102,
+                }
+            )
+        }
+    )
+    wrong_h = json.dumps(
+        {
+            "MESSAGE": json.dumps(
+                {
+                    "event": "probe_security",
+                    "execution_identity": X,
+                    "execution_spec_hash": "b" * 64,
+                    "euid": 0,
+                }
+            )
+        }
+    )
+
+    messages = scenario_module._parse_exact_journal_messages(
+        exact + "\n" + wrong_h + "\n", X, "a" * 64
+    )
+
+    assert messages == (
+        {
+            "event": "probe_security",
+            "execution_identity": X,
+            "execution_spec_hash": "a" * 64,
+            "euid": 2102,
+        },
+    )
+
+def test_candidate_b_recovery_observes_without_launch() -> None:
+    observe_calls = 0
+
+    def observe_call(socket_path: Path, *, x: str, h: str) -> dict[str, object]:
+        nonlocal observe_calls
+        del socket_path
+        observe_calls += 1
+        return {
+            "ok": True,
+            "kind": PhysicalObservationKind.ACTIVE_MATCH.value,
+            "execution_identity": x,
+            "execution_spec_hash": h,
+            "observed_spec_hash": h,
+            "pid": 1234,
+            "invocation_id": "abcd",
+            "started_at": None,
+            "ended_at": None,
+            "exit_code": None,
+            "result": None,
+            "evidence_source": "systemd_unit",
+        }
+
+    observation = recover_runner_without_replay(
+        Path("/run/labpilot-s2-runner-poc/control.sock"),
+        X,
+        "a" * 64,
+        observe_call=observe_call,
+    )
+
+    assert observation.kind is PhysicalObservationKind.ACTIVE_MATCH
+    assert observe_calls == 1

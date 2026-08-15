@@ -131,9 +131,22 @@ def test_user_group_or_raw_systemd_properties_are_not_wire_expressible() -> None
         ))["spec"],
         "fault_point": "none",
     }
-    for forbidden in ("user", "group", "systemd_properties"):
+    forbidden_values: dict[str, object] = {
+        "user": "root",
+        "group": "root",
+        "systemd_properties": {"User": "root"},
+        "ambient_capabilities": ["CAP_SYS_ADMIN"],
+        "capability_bounding_set": ["CAP_SYS_ADMIN"],
+        "supplementary_groups": ["root"],
+        "pam_name": "login",
+        "root_directory": "/",
+        "bind_paths": ["/:/host"],
+        "device_allow": ["/dev/sda rw"],
+        "environment_file": "/etc/environment",
+    }
+    for forbidden, value in forbidden_values.items():
         payload = dict(base)
-        payload[forbidden] = "root" if forbidden != "systemd_properties" else {"User": "root"}
+        payload[forbidden] = value
         with pytest.raises(ProtocolError, match="unknown_request_field"):
             decode_request(json.dumps(payload).encode())
 

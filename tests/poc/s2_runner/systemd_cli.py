@@ -273,6 +273,7 @@ class SystemdCli:
             "--property=AmbientCapabilities=",
             "--property=CapabilityBoundingSet=",
             f"--property=TimeoutStopSec={_seconds_property(self._stop_timeout_seconds)}",
+            "--property=UMask=0022",
             f"--uid={self._execution_user}",
             f"--gid={self._execution_group}",
             f"--working-directory={spec.working_directory}",

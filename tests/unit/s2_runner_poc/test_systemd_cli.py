@@ -236,6 +236,7 @@ def test_launch_sets_no_new_privileges_and_empty_capabilities() -> None:
     assert "--property=AmbientCapabilities=" in launch
     assert "--property=CapabilityBoundingSet=" in launch
     assert "--property=TimeoutStopSec=5s" in launch
+    assert "--property=UMask=0022" in launch
 
 
 def test_launch_does_not_use_user_manager_or_shell() -> None:
