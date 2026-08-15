@@ -1005,6 +1005,28 @@ def test_candidate_b_security_record_requires_exact_training_boundary() -> None:
     ) is False
 
 
+def test_candidate_b_security_record_accepts_nested_marker_security_payload() -> None:
+    nested_security = {
+        "euid": 2102,
+        "egid": 2102,
+        "cap_eff": "0000000000000000",
+        "cap_bnd": "0000000000000000",
+        "cap_amb": "0000000000000000",
+        "direct_systemd_run": "denied",
+        "runner_socket_connect": "denied",
+        "policy_write": "denied",
+    }
+
+    assert scenario_module._candidate_b_security_record_matches(
+        nested_security, expected_uid=2102, expected_gid=2102
+    ) is True
+    assert scenario_module._candidate_b_security_record_matches(
+        {**nested_security, "event": "not_probe_security"},
+        expected_uid=2102,
+        expected_gid=2102,
+    ) is False
+
+
 def test_candidate_b_journal_parser_keeps_only_exact_x_h_json_messages() -> None:
     exact = json.dumps(
         {

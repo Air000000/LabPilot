@@ -2228,8 +2228,9 @@ def _parse_exact_journal_messages(
 def _candidate_b_security_record_matches(
     record: Mapping[str, object], *, expected_uid: int, expected_gid: int
 ) -> bool:
+    event = record.get("event")
     return (
-        record.get("event") == "probe_security"
+        event in {None, "probe_security"}
         and record.get("euid") == expected_uid
         and record.get("egid") == expected_gid
         and record.get("cap_eff") == "0000000000000000"
