@@ -1,104 +1,73 @@
-# Slice 2 runner supervision PoC
+# Slice 2 Runner supervision PoC
 
+This directory is evidence-only infrastructure for the S2.0 supervision decision. It is not a
+production Runner package.
 
-## Candidate A rejection checkpoint
+## Candidate A rejection
 
-Candidate A is rejected by native P12 evidence. The decisive host facts are:
+Candidate A is rejected by native P12 evidence:
 
 ```text
 Ubuntu 26.04 LTS
 systemd 259
-polkit manage-units details exposed the exact unit and verb
-an exact-unit + verb=start authorization still allowed caller-selected root execution
-the root-execution probe completed successfully as UID 0
-Candidate A = rejected by P12
+polkit manage-units exposed exact unit + verb
+exact-unit + verb=start authorization still allowed caller-selected User=root / ExecStart
+root probe completed as UID 0
+Candidate A = REJECTED
 Candidate B = admitted for focused evaluation
 SELECT_B = not yet authorized
 ```
 
-Do not broaden polkit, add passwordless sudo, switch to `systemd --user`, or rerun Candidate A as
-root to make the direct-control topology pass. Candidate B must prove a narrow privileged Runner
-boundary instead.
+Do not broaden polkit, add NOPASSWD sudo, use `systemd --user`, or run the controller as root to
+make Candidate A pass.
 
-This harness is evidence-only test infrastructure. Run deterministic tests anywhere supported by
-the project; run P0–P13 only on the intended native Linux + systemd host. WSL2 cannot supply the
-authoritative reboot evidence.
+## Candidate B PoC boundary
 
-Use persistent, non-secret roots. Do not use `/tmp` or `/run` for P11:
-
-```bash
-export LABPILOT_POC_STATE="$HOME/.local/state/labpilot-s2-poc/state"
-export LABPILOT_POC_EVIDENCE="$HOME/.local/state/labpilot-s2-poc/evidence"
-export LABPILOT_POC_NAMESPACE="labpilot-s2-poc-native"
-mkdir -p "$LABPILOT_POC_STATE" "$LABPILOT_POC_EVIDENCE"
+```text
+labpilot-controller (non-root)
+        |
+        | AF_UNIX + SO_PEERCRED
+        v
+root-owned narrow Runner
+        |
+        | fixed Runner-derived systemd profile
+        v
+systemd system manager
+        |
+        v
+labpilot-train workload (non-root, no capabilities)
 ```
 
-The harness always targets the system manager. It never invokes `sudo`, changes host policy,
-switches to `systemd --user`, or prompts for a password. Run P0 first:
+`H` binds execution identity/integrity; it is not domain launch authorization. The Runner owns no
+Experiment/Trial/Attempt authorization, scheduler, retry policy, durable Attempt ledger, or blind
+launch-retry authority. Ambiguous launch outcomes recover through `OBSERVE(X,H)`, never automatic
+LAUNCH replay.
 
-```bash
-uv run python -m tests.poc.s2_runner.scenario_runner \
-  --state-root "$LABPILOT_POC_STATE" \
-  --evidence-root "$LABPILOT_POC_EVIDENCE" \
-  --installation-namespace "$LABPILOT_POC_NAMESPACE" \
-  --evidence-stack systemd characterize
+The initial physical evidence stack is `systemd + persistent journald`. P3/P6/P7/P10 must not end
+as `UNKNOWN`; P11 may be `UNKNOWN` only under the already-approved reboot rule and must never
+resurrect the same X automatically.
+
+## Native Ubuntu 26.04 runbook
+
+The privileged setup is deliberately manual. Follow:
+
+```text
+tests/poc/s2_runner/host/README.md
 ```
 
-Stop if P0 prints `HOST_CAPABILITY_GAP`. After P0 passes, run the A1 baseline:
+That runbook installs only a root-owned fixed policy, a root-owned local Runner service, the
+`labpilot-controller`/`labpilot-train` principals, and persistent PoC roots. The Python harness does
+not invoke sudo, edit `/etc`, provision users, or reboot the host.
 
-```bash
-for scenario in p1 p2 p12 p13 p3 p4 p5 p8 p6 p7 p10; do
-  uv run python -m tests.poc.s2_runner.scenario_runner \
-    --state-root "$LABPILOT_POC_STATE" \
-    --evidence-root "$LABPILOT_POC_EVIDENCE" \
-    --installation-namespace "$LABPILOT_POC_NAMESPACE" \
-    --evidence-stack systemd "$scenario" || break
-done
+Run P0 and P12 first. If either fails, Candidate B stops. Only then run the remaining B-dependent
+P1-P10/P13 campaign and the explicit human P11 reboot gate.
+
+Final S2.0 output remains exactly one of:
+
+```text
+SELECT_B
+BLOCKED
 ```
 
-Proceed to A2 only if A1's sole gap is terminal X/H retention after exit/unit GC. Verify persistent
-journald on the target host, then run:
-
-```bash
-for scenario in p6 p7 p10 p9; do
-  uv run python -m tests.poc.s2_runner.scenario_runner \
-    --state-root "$LABPILOT_POC_STATE" \
-    --evidence-root "$LABPILOT_POC_EVIDENCE" \
-    --installation-namespace "$LABPILOT_POC_NAMESPACE" \
-    --evidence-stack systemd+journal "$scenario" || break
-done
-```
-
-P11 is deliberately split. Prepare and stop at the printed evidence path:
-
-```bash
-uv run python -m tests.poc.s2_runner.scenario_runner \
-  --state-root "$LABPILOT_POC_STATE" \
-  --evidence-root "$LABPILOT_POC_EVIDENCE" \
-  --installation-namespace "$LABPILOT_POC_NAMESPACE" \
-  --evidence-stack systemd+journal reboot-prepare
-```
-
-The human operator now reboots the native host. After login, run only:
-
-```bash
-uv run python -m tests.poc.s2_runner.scenario_runner \
-  --state-root "$LABPILOT_POC_STATE" \
-  --evidence-root "$LABPILOT_POC_EVIDENCE" \
-  --installation-namespace "$LABPILOT_POC_NAMESPACE" \
-  --evidence-stack systemd+journal reboot-verify
-```
-
-Finally print the bounded evidence table:
-
-```bash
-uv run python -m tests.poc.s2_runner.scenario_runner \
-  --state-root "$LABPILOT_POC_STATE" \
-  --evidence-root "$LABPILOT_POC_EVIDENCE" \
-  --installation-namespace "$LABPILOT_POC_NAMESPACE" \
-  --evidence-stack systemd+journal summarize
-```
-
-Any duplicate independent root, exact X/different H replacement, P3/P6/P7/P10 `UNKNOWN`, unsafe
-privilege requirement, or A2 terminal-retention failure is a stop condition. Do not add A3 or
-Candidate B without a focused plan amendment.
+Do not add a Runner DB/receipt ledger, generic HostPolicy framework, backend registry, network
+transport, scheduler, or production Task 2-5 code to make the PoC pass.
