@@ -90,7 +90,14 @@ def _unit_state(
 
 
 def _cli(runner: ScriptedRunner, *, journal: bool = False) -> SystemdCli:
-    return SystemdCli(command_runner=cast(CommandRunner, runner), use_journal_evidence=journal)
+    return SystemdCli(
+        command_runner=cast(CommandRunner, runner),
+        use_journal_evidence=journal,
+        execution_user="labpilot-train",
+        execution_group="labpilot-train",
+        collect_after_exit=True,
+        stop_timeout_seconds=5.0,
+    )
 
 
 def test_hash_mismatch_performs_zero_commands() -> None:
@@ -124,6 +131,29 @@ def test_launch_requires_positive_creation_evidence() -> None:
 
     assert outcome.kind is ControlOutcomeKind.CONTROL_REJECTED
     assert runner.calls == []
+
+
+def test_raw_lookup_targets_exact_derived_unit_once() -> None:
+    runner = ScriptedRunner(_absent(), _result())
+    spec = _spec()
+
+    _cli(runner).launch(
+        execution_identity=X,
+        execution_spec_hash=execution_spec_hash(spec),
+        spec=spec,
+        creation_evidence=PositiveCreationEvidence.FIRST_DISPATCH_PROVEN,
+    )
+
+    preflight = runner.calls[0]
+    assert preflight == (
+        "systemctl",
+        "--system",
+        "--no-ask-password",
+        "show",
+        systemd_unit_name(X),
+        "--property=LoadState",
+        "--value",
+    )
 
 
 def test_launch_uses_only_hashed_runtime_path() -> None:
@@ -172,6 +202,40 @@ def test_launch_uses_system_manager_exec_profile_and_structured_argv() -> None:
         "--collect",
     ):
         assert expected in launch
+
+
+def test_launch_uses_fixed_labpilot_train_uid_gid() -> None:
+    runner = ScriptedRunner(_absent(), _result())
+    spec = _spec()
+
+    _cli(runner).launch(
+        execution_identity=X,
+        execution_spec_hash=execution_spec_hash(spec),
+        spec=spec,
+        creation_evidence=PositiveCreationEvidence.FIRST_DISPATCH_PROVEN,
+    )
+
+    launch = runner.calls[-1]
+    assert "--uid=labpilot-train" in launch
+    assert "--gid=labpilot-train" in launch
+
+
+def test_launch_sets_no_new_privileges_and_empty_capabilities() -> None:
+    runner = ScriptedRunner(_absent(), _result())
+    spec = _spec()
+
+    _cli(runner).launch(
+        execution_identity=X,
+        execution_spec_hash=execution_spec_hash(spec),
+        spec=spec,
+        creation_evidence=PositiveCreationEvidence.FIRST_DISPATCH_PROVEN,
+    )
+
+    launch = runner.calls[-1]
+    assert "--property=NoNewPrivileges=yes" in launch
+    assert "--property=AmbientCapabilities=" in launch
+    assert "--property=CapabilityBoundingSet=" in launch
+    assert "--property=TimeoutStopSec=5s" in launch
 
 
 def test_launch_does_not_use_user_manager_or_shell() -> None:

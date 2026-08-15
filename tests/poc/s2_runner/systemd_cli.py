@@ -30,9 +30,17 @@ class SystemdCli:
         *,
         command_runner: CommandRunner,
         use_journal_evidence: bool,
+        execution_user: str = "labpilot-train",
+        execution_group: str = "labpilot-train",
+        collect_after_exit: bool = True,
+        stop_timeout_seconds: float = 5.0,
     ) -> None:
         self._command_runner = command_runner
         self._use_journal_evidence = use_journal_evidence
+        self._execution_user = execution_user
+        self._execution_group = execution_group
+        self._collect_after_exit = collect_after_exit
+        self._stop_timeout_seconds = stop_timeout_seconds
 
     def launch(
         self,
@@ -261,11 +269,17 @@ class SystemdCli:
             "--property=StandardOutput=journal",
             "--property=StandardError=journal",
             "--property=KillMode=control-group",
-            "--uid=labpilot-train",
+            "--property=NoNewPrivileges=yes",
+            "--property=AmbientCapabilities=",
+            "--property=CapabilityBoundingSet=",
+            f"--property=TimeoutStopSec={_seconds_property(self._stop_timeout_seconds)}",
+            f"--uid={self._execution_user}",
+            f"--gid={self._execution_group}",
             f"--working-directory={spec.working_directory}",
         ]
         argv.extend(f"--setenv={key}={value}" for key, value in sorted(spec.environment))
-        argv.append("--collect")
+        if self._collect_after_exit:
+            argv.append("--collect")
         argv.extend(
             [
                 "--",
@@ -396,3 +410,7 @@ def _json_object(value: object) -> dict[str, object] | None:
     except json.JSONDecodeError:
         return None
     return decoded if isinstance(decoded, dict) else None
+
+
+def _seconds_property(value: float) -> str:
+    return f"{int(value)}s" if value.is_integer() else f"{value}s"
