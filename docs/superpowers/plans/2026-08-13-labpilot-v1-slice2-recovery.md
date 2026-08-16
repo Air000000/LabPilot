@@ -22,7 +22,7 @@
 
 **Native S2.0 evidence:** `docs/superpowers/evidence/2026-08-13-labpilot-v1-slice2-runner-supervision-poc.md`
 
-**Status:** Draft r4.1 direct-regression remediation after finding-specific review of r4 commit `962a156f5456c8903722e52c74882249734243fc`. Task 1 is complete and must not be rerun merely for familiarity. Tasks 2–5 remain **NOT AUTHORIZED FOR IMPLEMENTATION** until R4-D1 receives final finding-specific G0 approval.
+**Status:** r4.1 is **APPROVED AT G0**. Task 1 remains **COMPLETE / SELECT_B**, and Task 2 implementation is **AUTHORIZED**. Tasks 3–5 remain **NOT AUTHORIZED FOR IMPLEMENTATION**. This governance-only approval does not imply Slice 2 acceptance. `DOCUMENT-STATUS.md` remains unchanged and may be updated only after full Slice 2 acceptance.
 
 **Historical governance note:** Candidate B was admitted and implemented before a separate focused pre-implementation amendment was committed. This plan records the post-S2.0 production contract and does not backdate or rewrite that history.
 
@@ -77,10 +77,10 @@ The final G0 re-review checks R4-D1 and direct consistency edits only. A second 
 
 ```text
 Task 1 — S2.0 Runner Supervision PoC + ADR                        COMPLETE / SELECT_B
-Task 2 — S2.1 Attempt Preparation + Exact Source Materialization  PLANNED
-Task 3 — S2.2 Durable Launch / Observe / Stop                     PLANNED
-Task 4 — S2.3 Coordinator Reconciliation + S2.4 API Composition  PLANNED
-Task 5 — S2.5 Real Recovery / Fault-Injection Acceptance         PLANNED
+Task 2 — S2.1 Attempt Preparation + Exact Source Materialization  AUTHORIZED AT G0
+Task 3 — S2.2 Durable Launch / Observe / Stop                     NOT AUTHORIZED
+Task 4 — S2.3 Coordinator Reconciliation + S2.4 API Composition  NOT AUTHORIZED
+Task 5 — S2.5 Real Recovery / Fault-Injection Acceptance         NOT AUTHORIZED
 ```
 
 Task 1's accepted evidence stack is the ADR plus S2.0 evidence document above. Do not rerun P0–P13 unless a later approved production change materially changes a physical invariant that those scenarios established.
