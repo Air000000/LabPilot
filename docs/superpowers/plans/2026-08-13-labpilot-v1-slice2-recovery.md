@@ -2,25 +2,29 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:executing-plans` to execute this plan task-by-task. Do **not** dispatch implementation subagents for this repository. Every production change uses TDD and stops at the review/authorization gates below.
 
-**Goal:** Build one controlled V1 path from an approved `ExperimentVersion` to exact source materialization, real systemd-supervised training, durable restart reconciliation, bounded cancellation, and no duplicate physical launch.
+**Goal:** Build one controlled V1 path from an approved `ExperimentVersion` to exact source materialization, real systemd-supervised training, durable restart reconciliation, bounded cancellation, environment observation, and no duplicate physical launch.
 
 **Architecture:** PostgreSQL is the durable execution ledger; the selected Candidate B root Runner is a narrow privileged adapter; systemd plus persistent journald are the physical supervision/evidence authority; Coordinator is the only component that compares durable expectation with physical observation and advances domain state. Task 2 creates only logical/prepared execution state, Task 3 introduces the first production physical side effect, Task 4 composes scheduling/reconciliation/API, and Task 5 proves the combined recovery contract on a real native Linux host.
 
 **Tech Stack:** Python 3.12, FastAPI, SQLAlchemy 2.x async, PostgreSQL 16, Alembic, pytest, Ruff, mypy, AF_UNIX + `SO_PEERCRED`, native Linux systemd/systemctl/systemd-run/journalctl, Docker Compose for API/Coordinator composition.
 
-**Post-S2.0 amendment baseline:** `536ad6e38c66c667014beb1ac214271452dfd42d`
+**Planning baseline — R0 authority root:** `032dd87d3366dc6edd66fb75451d44047e49f7dd`
 
-**Plan-branch CI portability fix:** `5fe5f5aa5ae349504ec360665762caccb6c338d2`
+**Accepted Slice 1 baseline:** `ff7909503c3b755bffb564423de3a56ce5bb9b4a`
 
 **Accepted S2.0 implementation/evidence baseline:** `4109afa9f871ae45cf32c301040bcff6f109939d`
 
+**Post-S2.0 handoff/amendment base:** `536ad6e38c66c667014beb1ac214271452dfd42d`
+
+**Plan-branch CI portability history:** `5fe5f5aa5ae349504ec360665762caccb6c338d2`
+
 **Selected supervision ADR:** `docs/superpowers/specs/2026-08-13-labpilot-v1-slice2-runner-supervision-adr.md`
 
-**Native evidence:** `docs/superpowers/evidence/2026-08-13-labpilot-v1-slice2-runner-supervision-poc.md`
+**Native S2.0 evidence:** `docs/superpowers/evidence/2026-08-13-labpilot-v1-slice2-runner-supervision-poc.md`
 
-**Status:** Draft r3 post-S2.0 production amendment. Task 1 is complete and must not be rerun merely for familiarity. Tasks 2–5 are specified below at execution precision but remain **NOT AUTHORIZED FOR IMPLEMENTATION** until this amendment is reviewed and approved.
+**Status:** Draft r4 targeted remediation after focused review of r3 commit `53c2601105d8ecb90021fc2343b3f20b8eeceea9`. Task 1 is complete and must not be rerun merely for familiarity. Tasks 2–5 remain **NOT AUTHORIZED FOR IMPLEMENTATION** until r4 receives finding-specific G0 approval.
 
-**Historical governance note:** Candidate B was admitted and implemented before a separate focused pre-implementation amendment was committed. This r3 records the post-S2.0 production plan and does not backdate or rewrite that history.
+**Historical governance note:** Candidate B was admitted and implemented before a separate focused pre-implementation amendment was committed. This plan records the post-S2.0 production contract and does not backdate or rewrite that history.
 
 ---
 
@@ -31,32 +35,54 @@
 - Task 1 is evidence infrastructure only. Production code must not import `tests/poc/s2_runner/**`.
 - PostgreSQL is the only durable business/execution ledger. Runner owns no DB, receipt ledger, retry policy, Trial state, Attempt state, or workflow engine.
 - Candidate B topology is fixed: non-root controller → narrow AF_UNIX protocol + `SO_PEERCRED` → root-owned narrow Runner → fixed Runner-derived systemd profile → non-root `labpilot-train` workload.
-- Runner protocol surface is only `INFO`, `LAUNCH`, `OBSERVE`, `STOP`. No shell, arbitrary exec, raw unit name, raw systemd property, arbitrary PID/signal, scheduler, plugin, or remote host surface.
+- Runner protocol surface is only `INFO`, `LAUNCH`, `OBSERVE`, `STOP`. No shell, arbitrary exec, raw unit name, raw systemd property, arbitrary PID/signal, scheduler, plugin, or remote-host surface.
 - `X` is one stable persisted supervisor execution identity per Attempt. PID, start time, boot ID, InvocationID, journal cursor, and systemd object lifetime are observation facts only.
-- `H` is the versioned canonical SHA-256 of the concrete `FrozenLaunchSpec`. Same X/H reconciles; same X/different H is `IDENTITY_CONFLICT` and fails closed.
+- `H` is the versioned canonical SHA-256 identity of the concrete `FrozenLaunchSpec`. Same X/H reconciles; same X/different H is durable `IDENTITY_CONFLICT` and fails closed.
+- `IDENTITY_CONFLICT` is **not** `UNKNOWN`, is never downgraded to `UNKNOWN`, remains nonterminal with `terminal_at = NULL`, consumes physical capacity, and prohibits stop/retry/relaunch. Slice 2 implements no operator conflict-clear API.
 - `NOT_FOUND` is not `NEVER_ACCEPTED_PROVEN`. Possible prior acceptance means observe-only recovery; never blind-create the same Attempt.
 - A launch/control response that becomes unknown after any request bytes may have been sent triggers reconciliation, not automatic resend.
 - Destructive control requires fresh exact `ACTIVE_MATCH`. `TERMINAL_MATCH`, `IDENTITY_CONFLICT`, and `UNKNOWN` never authorize stop/kill.
 - `UNKNOWN` never releases an active physical slot and never authorizes retry.
 - V1 has one Coordinator, one local host, and a fixed maximum of four physical-intent Attempts. Do not add leases/claims/fencing unless a demonstrated race proves they are required.
 - DB transactions remain short. Git/filesystem/systemd/socket operations happen outside the UoW; after external work, reopen a short transaction and revalidate authority before committing state.
-- `RuntimeEvent` remains immutable audit/history. Existing Outbox behavior remains available, but Outbox delivery must never be the mechanism that invokes Runner `LAUNCH` or reconstructs first-dispatch authority.
+- `RuntimeEvent` remains immutable audit/history. Existing Outbox behavior remains available, but Outbox delivery must never invoke Runner `LAUNCH`, reconstruct first-dispatch authority, or become a physical-execution queue.
 - `DOCUMENT-STATUS.md` is updated once, only after full Slice 2 acceptance.
-- Do not implement a generic Runner backend registry, remote/SSH runner, multi-host scheduler, worker pool/resource allocator, generic workflow engine, Runner DB, Docker/systemd privileged socket exposure, generic shell/exec protocol, chaos platform, or production fault-injection API.
+- Do not implement a generic Runner backend registry, remote/SSH runner, multi-host scheduler, worker pool/resource allocator, generic workflow engine, Runner DB, Docker/systemd privileged socket exposure, generic shell/exec protocol, chaos platform, production fault-injection API, or generic environment platform.
+
+---
+
+# 0. r4 targeted remediation scope
+
+This revision closes the focused review of r3 only. It does not reopen accepted architecture choices.
+
+```text
+R4-1  record exact R0 Planning baseline and exact Slice 1 acceptance baseline
+R4-2  make IDENTITY_CONFLICT a distinct durable Attempt state, never UNKNOWN
+R4-3  carry full EnvironmentExpectation into execution and persist bounded observed environment
+R4-4  map Task 5 explicitly to API restart, failed launch, timeout, restart-during-reconciliation
+R4-5  define the production root-owned Runner deployment/service/socket contract
+R4-6  freeze byte-level Trial/X/workspace/SourceManifest/FrozenSpec identities
+R4-7  define durable launch/start/restart-reconcile/terminal audit events
+R4-8  clarify retry eligibility wording
+R4-9  define ArtifactDeclaration.relative_path relative to Attempt runtime/output
+R4-10 freeze final ExecStart composition and argv safety budgets
+```
+
+Finding-specific re-review after this revision should check R4-1 through R4-10 and direct regressions only. A second broad architecture review is not required unless this revision materially widens the accepted Candidate B authority surface.
 
 ---
 
 # 1. Formal Slice 2 task status
 
 ```text
-Task 1 — S2.0 Runner Supervision PoC + ADR                    COMPLETE / SELECT_B
+Task 1 — S2.0 Runner Supervision PoC + ADR                        COMPLETE / SELECT_B
 Task 2 — S2.1 Attempt Preparation + Exact Source Materialization  PLANNED
-Task 3 — S2.2 Durable Launch / Observe / Stop                    PLANNED
-Task 4 — S2.3 Coordinator Reconciliation + S2.4 API Composition PLANNED
-Task 5 — S2.5 Real Recovery / Fault-Injection Acceptance        PLANNED
+Task 3 — S2.2 Durable Launch / Observe / Stop                     PLANNED
+Task 4 — S2.3 Coordinator Reconciliation + S2.4 API Composition  PLANNED
+Task 5 — S2.5 Real Recovery / Fault-Injection Acceptance         PLANNED
 ```
 
-Task 1's accepted evidence stack is the ADR plus evidence document above. Do not rerun P0–P13 unless a later approved production change materially changes a physical invariant that those scenarios established.
+Task 1's accepted evidence stack is the ADR plus S2.0 evidence document above. Do not rerun P0–P13 unless a later approved production change materially changes a physical invariant that those scenarios established.
 
 ---
 
@@ -67,23 +93,24 @@ The current dependency guard intentionally keeps `labpilot.execution` independen
 **Create in `src/labpilot/execution/`:**
 
 - `__init__.py` — package marker only.
-- `types.py` — closed execution enums/value objects, Trial/Attempt identity helpers, logical/concrete spec types.
+- `types.py` — closed execution enums/value objects, canonical Trial/Attempt identities, manifest/spec types.
 - `models.py` — SQLAlchemy `BatchRow`, `TrialRow`, `AttemptRow`.
 - `repository.py` — DB queries/CAS/locks for Batch/Trial/Attempt.
 - `ports.py` — narrow protocols consumed by preparation/execution without importing `experiments` or `context`.
 - `preparation_service.py` — Task 2 exact-source preparation and crash-safe resume.
 - `runner_protocol.py` — production INFO/LAUNCH/OBSERVE/STOP wire contract.
 - `runner_client.py` — non-root AF_UNIX client and send-boundary outcome classification.
-- `runner_policy.py` — root-owned production host policy parsing/validation.
+- `runner_policy.py` — root-owned production host-policy parsing/validation and policy identity.
+- `runtime_probe.py` — fixed non-shell Python runtime/environment probe source and bounded parser; no user-provided code.
 - `systemd_supervisor.py` — exact X/H systemd/journal adapter.
-- `runner_daemon.py` — privileged narrow adapter; no DB/domain imports.
+- `runner_daemon.py` — privileged narrow adapter and service entrypoint; no DB/domain imports.
 - `execution_service.py` — Task 3 dispatch/reconcile/stop application primitives.
 - `batch_service.py` — Task 4 user command service for Create/Start/Cancel.
 - `query_service.py` — derived Batch/Trial/Attempt reads; no persisted Batch status projection.
 
 **Create in `src/labpilot/coordinator/`:**
 
-- `execution_adapters.py` — the composition-layer adapters that translate accepted `experiments`/`context` authority into the narrow `execution.ports` contracts.
+- `execution_adapters.py` — composition-layer adapters translating accepted `experiments`/`context` authority into `execution.ports`.
 - `service.py` — startup barrier and deterministic scan ordering.
 
 **Modify existing production files:**
@@ -91,6 +118,7 @@ The current dependency guard intentionally keeps `labpilot.execution` independen
 - `src/labpilot/experiments/proposal_types.py`
 - `src/labpilot/experiments/proposal_service.py`
 - `src/labpilot/experiments/proposal_verifier.py`
+- `src/labpilot/observability/events.py`
 - `src/labpilot/observability/payloads.py`
 - `src/labpilot/db/model_registry.py`
 - `src/labpilot/settings.py`
@@ -101,6 +129,11 @@ The current dependency guard intentionally keeps `labpilot.execution` independen
 - `src/labpilot/api/routers/experiments.py`
 - `src/labpilot/main.py`
 - `compose.yaml`
+
+**Create host deployment files:**
+
+- `deploy/systemd/labpilot-runner.service` — fixed root-managed service unit.
+- `scripts/install_labpilot_runner_host.sh` — narrow root install/update script for an exact committed source tree plus an explicit policy file; not a general installer platform.
 
 **Create API files:**
 
@@ -135,6 +168,7 @@ Runner = privileged adapter only
 INFO / LAUNCH / OBSERVE / STOP only
 same X/H = reconcile
 same X/different H = IDENTITY_CONFLICT
+IDENTITY_CONFLICT != UNKNOWN
 NOT_FOUND != NEVER_ACCEPTED_PROVEN
 possible acceptance -> observe, never blind LAUNCH replay
 stop only ACTIVE_MATCH
@@ -151,9 +185,60 @@ reboot never resurrects same X automatically
 
 **Deliverable:** Approved immutable `ExperimentVersion` → deterministic Batch/Trial identity → non-launchable Attempt → exact snapshot materialization → verified immutable source manifest → host-independent `FrozenExecutionSpec` → `LAUNCH_READY`. No Runner call and no physical process.
 
-## 4.1 Interfaces produced by Task 2
+## 4.1 Canonical identity and path contract
 
-`src/labpilot/execution/types.py` must expose these public concepts:
+Use the existing `labpilot.common.hashing.namespaced_sha256()` and `canonical_json_bytes()` semantics. Do not invent a second JSON canonicalizer.
+
+Freeze these namespaces:
+
+```text
+Trial identity                 labpilot-trial:v1
+Supervisor installation digest labpilot-supervisor-installation:v1
+SourceManifest                 labpilot-source-manifest:v1
+FrozenExecutionSpec            labpilot-frozen-execution-spec:v1
+FrozenLaunchSpec / H           labpilot-frozen-launch-spec:v1
+Runner host policy             labpilot-runner-policy:v1
+```
+
+Trial identity is exactly:
+
+```python
+trial_identity = namespaced_sha256(
+    "labpilot-trial:v1",
+    {
+        "experiment_version_identity": experiment_version_identity,
+        "resolved_parameters": canonical_resolved_parameters,
+        "seed": seed,
+    },
+)
+```
+
+`canonical_resolved_parameters` uses the existing scalar semantics: `None`, `str`, `int`, `bool`, and finite float converted through `Decimal(str(value))`. Object keys are therefore ordered by the existing canonical JSON UTF-8 byte ordering.
+
+Supervisor execution identity is exactly:
+
+```python
+installation_digest = namespaced_sha256(
+    "labpilot-supervisor-installation:v1",
+    {"installation_identity": settings.installation_identity},
+)
+X = f"labpilot-v1-{installation_digest}-{attempt_id.hex}"
+unit_name = f"{X}.service"
+```
+
+`X` is generated and persisted when the Attempt row is created. Historical X is never recomputed from a later `installation_identity` setting.
+
+Production workspace root must be an existing absolute canonical directory with no symlink component (`Path.resolve(strict=True) == configured_path`). Per Attempt:
+
+```python
+workspace_path = attempt_workspace_root / attempt_id.hex
+```
+
+The exact absolute string is persisted at Attempt creation and never recomputed for historical Attempts.
+
+## 4.2 Interfaces produced by Task 2
+
+`src/labpilot/execution/types.py` exposes at least:
 
 ```python
 from dataclasses import dataclass
@@ -171,11 +256,13 @@ class AttemptStatus(StrEnum):
     LAUNCH_PENDING = "launch_pending"
     RUNNING = "running"
     UNKNOWN = "unknown"
+    IDENTITY_CONFLICT = "identity_conflict"
     TERMINAL = "terminal"
 
 
 @dataclass(frozen=True, slots=True)
 class VersionExecutionSemantics:
+    project_id: UUID
     experiment_version_id: UUID
     experiment_version_identity: str
     proposal_revision_id: UUID
@@ -190,7 +277,11 @@ class VersionExecutionSemantics:
     dataset_reference_type: str
     dataset_path_or_uri: str
     dataset_reference_hash: str
-    runtime_profile: str
+    environment_expectation_hash: str
+    python_profile: str
+    framework_requirements: tuple[str, ...]
+    device_requirement: str | None
+    cuda_requirement: str | None
     artifact_relative_paths: tuple[str, ...]
     timeout_seconds: int
     max_retries: int
@@ -199,14 +290,14 @@ class VersionExecutionSemantics:
 @dataclass(frozen=True, slots=True)
 class SourceManifestEntry:
     relative_path: str
-    file_type: str
-    file_mode: str
-    content_sha256: str
+    file_type: str       # regular | symlink
+    file_mode: str       # 100644 | 100755 | 120000
+    content_sha256: str  # SHA-256 of raw blob bytes; symlink = raw link-target bytes
 
 
 @dataclass(frozen=True, slots=True)
 class SourceManifest:
-    schema_version: str
+    schema_version: str  # "v1"
     repository_snapshot_id: UUID
     repository_snapshot_identity: str
     entries: tuple[SourceManifestEntry, ...]
@@ -214,23 +305,28 @@ class SourceManifest:
 
 @dataclass(frozen=True, slots=True)
 class FrozenExecutionSpec:
-    schema_version: str
+    schema_version: str  # "v1"
     experiment_version_id: UUID
     experiment_version_identity: str
     trial_identity: str
     train_entrypoint_relative_path: str
     workdir_relative_path: str
-    runtime_profile: str
+    python_profile: str
     argv: tuple[str, ...]
     dataset_reference_type: str
     dataset_argument: str
     dataset_reference_hash: str
+    environment_expectation_hash: str
+    framework_requirements: tuple[str, ...]
+    framework_distribution_names: tuple[str, ...]
+    device_requirement: str | None
+    cuda_requirement: str | None
     timeout_seconds: int
 ```
 
 `FrozenExecutionSpec.argv` is fully resolved for parameter/seed/dataset semantics, except the literal token `"{output_dir}"` remains as the only host-dependent substitution for Task 3. No other unresolved template token is legal.
 
-`src/labpilot/execution/ports.py` must define dependency-inversion contracts; concrete adapters live in Coordinator:
+`src/labpilot/execution/ports.py` defines dependency-inversion contracts; concrete adapters live in Coordinator:
 
 ```python
 class VersionExecutionSemanticsPort(Protocol):
@@ -249,7 +345,7 @@ class SnapshotMaterializationPort(Protocol):
         raise NotImplementedError
 ```
 
-## 4.2 Proposal execution semantics extension
+## 4.3 Proposal execution semantics extension
 
 `ProposalPayload` gains one optional persisted field placed at the end of the dataclass:
 
@@ -257,7 +353,7 @@ class SnapshotMaterializationPort(Protocol):
 train_argv_template: tuple[str, ...] | None = None
 ```
 
-Legacy revisions where the JSON key is physically absent remain readable and keep their existing stored `payload_hash`; the deserializer must not materialize the missing key into a rehashed legacy payload. Legacy Versions are queryable but Task 2 rejects them as `EXECUTION_SEMANTICS_UNSUPPORTED`.
+Legacy revisions where the JSON key is physically absent remain readable and keep their existing stored `payload_hash`; the deserializer must not materialize the missing key into a rehashed legacy payload. Legacy Versions remain queryable but Task 2 rejects them as `EXECUTION_SEMANTICS_UNSUPPORTED`.
 
 New/revised proposals must supply `train_argv_template` before verification can pass. Only these placeholders are valid:
 
@@ -275,9 +371,10 @@ Rules:
 - `{seed}` and `{dataset}` appear at least once;
 - `{output_dir}` appears when at least one Artifact is declared;
 - unknown/malformed placeholders fail verification;
-- string parameter values render unchanged; non-string scalars render using the existing canonical scalar semantics (`true`, `false`, `null`, canonical integer/finite decimal text), not inferred CLI flag conventions.
+- string parameter values render unchanged; non-string scalars use the canonical scalar semantics above, not inferred CLI flag conventions;
+- `framework_requirements` are preserved exactly from the approved `EnvironmentExpectation`; for bounded observation, execution derives the maximal leading ASCII distribution-name token matching `[A-Za-z0-9][A-Za-z0-9._-]{0,127}` from each requirement. If a non-empty framework requirement has no such leading token, preparation fails `EXECUTION_ENVIRONMENT_UNSUPPORTED` rather than guessing a package name.
 
-The verifier's trial-count check becomes:
+The verifier's Trial count becomes:
 
 ```python
 expanded_trial_count = parameter_combination_count * len(payload.seeds)
@@ -285,13 +382,45 @@ if not 1 <= expanded_trial_count <= 20:
     findings.append("expanded_trial_count")
 ```
 
-## 4.3 Task 2 persistence
+### Argv safety contract
+
+Proposal template literals and rendered values must be valid UTF-8 without isolated surrogates and must not contain NUL. The final Task 3 `ExecStart` vector is exactly:
+
+```text
+(runtime_path, absolute_source_entrypoint, *rendered_argv)
+```
+
+Budgets are fixed for V1:
+
+```text
+rendered_argv tokens                 <= 256
+final ExecStart tokens               <= 258
+one token UTF-8 bytes                <= 8192
+sum(len(token_utf8) + 1) for ExecStart <= 32768
+NUL                                  forbidden
+```
+
+Proposal verification rejects an already-invalid literal template token. Task 2 rechecks the fully rendered argv budget before `LAUNCH_READY`, because parameter/dataset substitutions may be larger than template literals.
+
+### Artifact path contract
+
+For every `ArtifactDeclaration`:
+
+```text
+ArtifactDeclaration.relative_path
+= path relative to <workspace_path>/runtime/output
+```
+
+It is never relative to source cwd and may never be absolute or escape the output root. Slice 3 collection must use this same interpretation.
+
+## 4.4 Task 2 persistence
 
 `0009_execution_preparation.py` creates:
 
 ```text
 batches
 - batch_id UUID PK
+- project_id UUID FK projects RESTRICT
 - experiment_version_id UUID FK experiment_versions RESTRICT
 - start_requested_at timestamptz NULL
 - cancel_requested_at timestamptz NULL
@@ -328,9 +457,15 @@ attempts
 - UNIQUE(trial_id) WHERE terminal_at IS NULL
 ```
 
-`supervisor_execution_identity` and `workspace_path` are persisted at Attempt creation and are never recomputed for historical Attempts from later settings.
+`project_id` is immutable Batch owner context used by execution audit events; it is not a second authority for ExperimentVersion semantics.
 
-## 4.4 Workspace and source authority
+`frozen_execution_spec_hash` is:
+
+```python
+namespaced_sha256("labpilot-frozen-execution-spec:v1", canonical_spec_value)
+```
+
+## 4.5 Workspace and source authority
 
 Production setting:
 
@@ -338,7 +473,7 @@ Production setting:
 LABPILOT_ATTEMPT_WORKSPACE_ROOT
 ```
 
-is required outside test mode, must be absolute, and has no guessed default. The PoC path `/var/lib/labpilot-s2-poc/*` is never used as a production default.
+is required outside test mode, absolute/canonical as specified in §4.1, and has no guessed default. The PoC path `/var/lib/labpilot-s2-poc/*` is never a production default.
 
 Per Attempt:
 
@@ -349,36 +484,49 @@ Per Attempt:
     └── output/
 ```
 
-`Proposal.workdir` stays repository-relative. Task 3 physical cwd is later resolved to `<workspace_path>/source/<workdir>`.
+`Proposal.workdir` stays repository-relative. Task 3 physical cwd is `<workspace_path>/source/<workdir>`.
 
 After successful materialization:
 
 ```text
 source directories: readable/executable as needed by labpilot-train, not writable
-source regular files: read-only to labpilot-train, preserving executable bit where approved
+source regular files: read-only to labpilot-train, preserving approved executable bit
 runtime/output: writable by labpilot-train
 ```
 
 Task 2 does not add logs/artifacts/checkpoints/metrics directories and does not implement retention or a janitor.
 
-Submodules and Git LFS pointers fail closed as `SOURCE_SUBMODULE_UNSUPPORTED` and `SOURCE_LFS_UNSUPPORTED`; Task 2 never runs `git submodule update`, `git lfs pull`, network download, or worktree fallback.
+### SourceManifest byte contract
 
-## 4.5 Crash-safe preparation algorithm
+- Git directories are implicit and are not manifest entries because Git has no tracked empty-directory semantic.
+- Manifest entries contain only regular files (`100644`/`100755`) and symlinks (`120000`).
+- Entry order is ascending `relative_path.encode("utf-8")`.
+- `content_sha256` is plain SHA-256 of the exact Git blob bytes.
+- For a symlink, the Git blob bytes are the raw link-target bytes and are hashed before any filesystem creation.
+- A symlink target must decode as UTF-8, must not be absolute, and lexical resolution relative to the symlink's parent must remain within `source/`; otherwise preparation fails `SOURCE_SYMLINK_ESCAPE`.
+- Gitlink/submodule mode `160000` fails `SOURCE_SUBMODULE_UNSUPPORTED`.
+- A Git LFS pointer blob fails `SOURCE_LFS_UNSUPPORTED`; Task 2 never runs `git lfs pull`.
+- Manifest hash is `namespaced_sha256("labpilot-source-manifest:v1", manifest_value)` over `schema_version="v1"`, exact snapshot id/identity, and the ordered entries.
+- Current worktree bytes are never used as fallback source.
 
-`AttemptPreparationService.prepare_attempt(attempt_id)` uses this sequence:
+## 4.6 Crash-safe preparation algorithm
+
+`AttemptPreparationService.prepare_attempt(attempt_id)`:
 
 ```text
 short UoW:
     load Attempt PREPARING
-    persist/reuse workspace_path
+    persist/reuse exact X and workspace_path
     load immutable logical inputs
 commit
 
 outside UoW:
     materialize exact source into <workspace_path>.staging
     create runtime/output
-    compute SourceManifest
+    compute SourceManifest with §4.5 byte contract
     verify manifest and source identity
+    render logical argv and enforce §4.3 budgets
+    build FrozenExecutionSpec including full EnvironmentExpectation + hash
     set source permissions
     atomic rename staging -> final workspace
 
@@ -397,12 +545,12 @@ Resume rules:
 ```text
 PREPARING + no final workspace       -> delete exact staging if present; rematerialize
 PREPARING + staging only             -> staging is non-authoritative; delete/rebuild
-PREPARING + final workspace present  -> verify final manifest; finalize same Attempt; do not rematerialize
+PREPARING + final workspace present  -> verify exact final manifest; finalize same Attempt; do not rematerialize
 process interruption                 -> remain PREPARING
 safety/deterministic preparation failure -> PREPARATION_FAILED + terminal_at
 ```
 
-## 4.6 Task 2 TDD execution steps
+## 4.7 Task 2 TDD execution steps
 
 - [ ] **Step 1: Extend Proposal semantics with red tests first.**
 
@@ -417,7 +565,7 @@ Test:   tests/unit/experiments/test_proposal_verifier.py
 Test:   tests/integration/test_proposal_lifecycle.py
 ```
 
-Add failing tests for: new argv template hash participation; legacy missing-key round trip preserving stored hash; placeholder validation; full `parameter_matrix × seeds <= 20` enforcement.
+Add failing tests for: argv-template hash participation; legacy missing-key round trip preserving stored hash; placeholder validation; NUL/UTF-8/literal-token bounds; full `parameter_matrix × seeds <= 20` enforcement.
 
 Run:
 
@@ -425,28 +573,19 @@ Run:
 uv run pytest tests/unit/experiments/test_proposal_types.py tests/unit/experiments/test_proposal_verifier.py -v
 ```
 
-Expected before implementation: the new tests fail only for missing argv-template behavior/trial-count behavior.
-
-Implement the minimum changes, rerun the same command, then:
+Implement the minimum changes and rerun, then:
 
 ```bash
 uv run pytest tests/integration/test_proposal_lifecycle.py -v -m integration
 ```
 
-Commit:
-
-```bash
-git add src/labpilot/experiments tests/unit/experiments tests/integration/test_proposal_lifecycle.py
-git commit --file=.git/S2_TASK2_STEP1_MSG --cleanup=verbatim
-```
-
-Commit-message file content:
+Commit message:
 
 ```text
 feat: bind proposal execution argv semantics
 ```
 
-- [ ] **Step 2: Add execution persistence and identity types.**
+- [ ] **Step 2: Add execution persistence and exact identity types.**
 
 Files:
 
@@ -464,9 +603,9 @@ Create: tests/unit/execution/test_repository.py
 Create: tests/integration/test_execution_schema.py
 ```
 
-Red tests must prove: Trial identity changes with Version identity/parameters/seed; Attempt X is stable and persisted; unique active Attempt per Trial; `workspace_path` is persisted, not recomputed; fresh migration creates all constraints.
+Red tests must assert exact golden vectors for `trial_identity`, installation digest/X, workspace path, SourceManifest hash, and FrozenExecutionSpec hash; also prove unique active Attempt per Trial and fresh migration constraints.
 
-Run red/green cycle:
+Run:
 
 ```bash
 uv run pytest tests/unit/execution/test_types.py tests/unit/execution/test_repository.py tests/architecture/test_model_registry.py -v
@@ -489,9 +628,9 @@ Create: src/labpilot/coordinator/execution_adapters.py
 Create: tests/unit/coordinator/test_execution_adapters.py
 ```
 
-`VersionExecutionSemanticsAdapter` must re-read `ExperimentVersionRow` plus its exact bound `ProposalRevisionRow`, verify the stored proposal hash and repository snapshot binding, and return `VersionExecutionSemantics`. `RepositorySnapshotMaterializationAdapter` must reuse the accepted snapshot source machinery; it may call `RepositorySnapshotSourceService`/GitAdapter/content store but must never read mutable current worktree bytes as authoritative source.
+`VersionExecutionSemanticsAdapter` re-reads `ExperimentVersionRow` plus its exact bound `ProposalRevisionRow`, verifies proposal hash, repository snapshot binding, DatasetReference hash, and full EnvironmentExpectation hash, and returns all fields in `VersionExecutionSemantics`. `RepositorySnapshotMaterializationAdapter` reuses accepted snapshot source machinery and never reads mutable current worktree bytes as authoritative source.
 
-Red tests must prove wrong bound revision/hash/snapshot fails closed and that `execution` itself imports neither `experiments` nor `context`.
+Red tests prove wrong revision/hash/snapshot/dataset/environment binding fails closed and `execution` imports neither `experiments` nor `context`.
 
 Run:
 
@@ -517,7 +656,7 @@ Modify: src/labpilot/settings.py
 Modify: tests/unit/test_settings.py
 ```
 
-The first red tests must cover exact source, read-only source permissions, output root, manifest determinism, tamper detection, interruption leaving PREPARING, final-workspace crash resume, submodule/LFS rejection, legacy Version rejection, and cancel revalidation before `LAUNCH_READY`.
+Red tests cover exact source, regular/symlink manifest golden vectors, symlink escape, submodule/LFS rejection, read-only source permissions, output root, rendered argv limits, tamper detection, interruption leaving PREPARING, final-workspace crash resume, legacy Version rejection, full EnvironmentExpectation carry-through, and cancel revalidation before `LAUNCH_READY`.
 
 Run:
 
@@ -544,7 +683,7 @@ uv run mypy src scripts
 git diff --check
 ```
 
-Acceptance requires zero Runner/systemd calls in all Task 2 tests. Stop for review before Task 3.
+Acceptance requires zero Runner/systemd calls in all Task 2 tests. Stop for G1 review before Task 3.
 
 ---
 
@@ -552,11 +691,11 @@ Acceptance requires zero Runner/systemd calls in all Task 2 tests. Stop for revi
 
 **Risk:** Safety / recovery critical.
 
-**Deliverable:** `LAUNCH_READY` → durable `LAUNCH_PENDING` → one first physical dispatch through Candidate B → observation-driven `RUNNING`/terminal/UNKNOWN → exact-match stop. PostgreSQL remains the durable ledger; Runner remains stateless with respect to domain workflow.
+**Deliverable:** `LAUNCH_READY` → durable `LAUNCH_PENDING` → one first physical dispatch through Candidate B → observation-driven `RUNNING`/terminal/UNKNOWN/IDENTITY_CONFLICT → exact-match stop. Persist bounded observed environment before first dispatch. PostgreSQL remains the durable ledger; Runner remains stateless with respect to domain workflow.
 
 ## 5.1 Production physical state contract
 
-Allowed physical lifecycle:
+Allowed lifecycle:
 
 ```text
 LAUNCH_READY -> LAUNCH_PENDING -> RUNNING -> TERMINAL
@@ -564,7 +703,10 @@ LAUNCH_PENDING -> TERMINAL
 LAUNCH_PENDING/RUNNING -> UNKNOWN
 UNKNOWN -> RUNNING
 UNKNOWN -> TERMINAL
+LAUNCH_PENDING/RUNNING/UNKNOWN -> IDENTITY_CONFLICT
 ```
+
+`IDENTITY_CONFLICT` is sticky for Slice 2: no automatic transition out, no operator clear endpoint, `terminal_at` remains NULL, and it continues to consume capacity. External test/admin cleanup may remove a conflicting physical fixture only after evidence is sealed; it must not rewrite the Attempt row.
 
 Pre-launch terminal states remain `PREPARATION_FAILED` and `CANCELLED_PRE_LAUNCH`.
 
@@ -589,6 +731,8 @@ Add to `attempts`:
 frozen_launch_spec_json JSONB NULL
 execution_spec_hash char(64) NULL
 launch_intent_committed_at timestamptz NULL
+observed_environment_json JSONB NULL
+observed_environment_recorded_at timestamptz NULL
 physical_started_at timestamptz NULL
 physical_ended_at timestamptz NULL
 exit_code integer NULL
@@ -602,17 +746,55 @@ supervisor_invocation_id varchar(200) NULL
 physical_boot_id varchar(200) NULL
 ```
 
-Do not add Runner receipt tables, launch-delivery tables, lease tables, or reconciliation-case tables.
+Do not add Runner receipt tables, launch-delivery tables, lease tables, reconciliation-case tables, or environment inventory tables.
 
-## 5.3 Production `FrozenLaunchSpec` and H
+## 5.3 Bounded observed environment
 
-Task 3 resolves the Task 2 logical spec against Runner `INFO` and persisted Attempt workspace facts. `FrozenLaunchSpec` binds at least:
+Scope/Architecture require each Attempt to retain enough observed environment to later validate the approved `EnvironmentExpectation`; Slice 2 records the observation but does not implement Slice 3 scientific validation.
+
+`ObservedEnvironment` is an Attempt-owned versioned JSON value object:
 
 ```text
-schema_version
+schema_version = "v1"
+environment_expectation_hash
+python_profile
+runtime_path
+python_version
+framework_versions: ordered [{distribution_name, installed_version|null}]
+cuda_runtime_version: integer|null
+cuda_device_count: integer|null
+probe_issue_codes: ordered bounded list
+```
+
+The observation is collected by Runner `INFO` immediately before `FrozenLaunchSpec` construction. It is persisted once with the `LAUNCH_PENDING` commit and is not overwritten by later restart reconciliation.
+
+`INFO` remains the same Runner operation; it accepts an optional bounded inspection request:
+
+```text
+python_profile
+framework_distribution_names <= 32
+one normalized ASCII distribution name <= 128 bytes
+```
+
+Runner resolves only root-policy-admitted `python_profile`. It executes a fixed Runner-owned Python `-c` probe under `labpilot-train` using the selected absolute runtime and exact policy environment, with `shell=False`. The fixed probe uses Python stdlib only:
+
+- `sys.version` for Python observation;
+- `importlib.metadata.version(name)` for only the requested distribution names;
+- `ctypes` best-effort loading of `libcudart.so` for CUDA runtime version/device count; failure is represented by bounded issue codes, not arbitrary stderr.
+
+Caller cannot provide probe source, module names to import, executable path, shell text, or filesystem path.
+
+If the selected `python_profile` does not exist in current Runner policy, dispatch fails before launch. Other observed framework/CUDA mismatches are recorded for later deterministic Validation; Task 3 does not silently rewrite the approved expectation.
+
+## 5.4 Production `FrozenLaunchSpec` and H
+
+Task 3 resolves Task 2 logical semantics against Runner `INFO` and persisted workspace facts. `FrozenLaunchSpec` binds exactly:
+
+```text
+schema_version = "v1"
 workspace_path
 source_manifest_sha256
-runtime_profile
+python_profile
 runtime_path
 train_entrypoint_relative_path
 workdir_relative_path
@@ -620,6 +802,7 @@ argv with concrete output path
 dataset_reference_type
 dataset_argument
 dataset_reference_hash
+environment: exact non-secret root-policy environment pairs
 timeout_seconds
 execution_user
 execution_group
@@ -634,13 +817,37 @@ source_root = <workspace>/source
 entrypoint  = <workspace>/source/<train_entrypoint>
 cwd         = <workspace>/source/<workdir>
 output_dir  = <workspace>/runtime/output
+ExecStart   = (runtime_path, entrypoint, *argv)
 ```
 
-`H = SHA256(canonical FrozenLaunchSpec)` using the project canonical hashing conventions. Every caller-controlled behavior-changing launch semantic is inside H.
+Task 3 rechecks the §4.3 final ExecStart token/byte budget after `{output_dir}` substitution.
 
-## 5.4 Runner INFO and host policy
+The only V1 policy environment keys admitted are:
 
-Production Runner policy is root-owned, regular-file only, not group/world writable, strict-schema, and fails startup on unknown fields. It contains exactly the bounded host authority required for V1:
+```text
+PATH
+PYTHONPATH
+LD_LIBRARY_PATH
+CUDA_HOME
+CUDA_VISIBLE_DEVICES
+OMP_NUM_THREADS
+MKL_NUM_THREADS
+TOKENIZERS_PARALLELISM
+```
+
+The policy may omit any/all of them. Caller cannot add or override environment keys. Secret/credential environment injection is not part of Slice 2. Exact admitted key/value pairs are included in `FrozenLaunchSpec` and therefore H.
+
+`ObservedEnvironment` is evidence and is **not** part of H. H remains identity/integrity of the frozen physical launch request, not a mutable host-inventory fingerprint.
+
+H is exactly:
+
+```python
+H = namespaced_sha256("labpilot-frozen-launch-spec:v1", canonical_launch_spec_value)
+```
+
+## 5.5 Runner INFO and host policy
+
+Production Runner policy is root-owned, regular-file only, not group/world writable, strict-schema, and fails startup on unknown fields. It contains exactly:
 
 ```text
 controller_user
@@ -649,36 +856,112 @@ execution_user
 execution_group
 socket_path
 workspace_root
-runtime_profiles: profile -> absolute executable
+runtime_profiles:
+    profile -> {
+        runtime_path: absolute executable,
+        environment: exact subset of the fixed safe keys in §5.4
+    }
 allowed_local_dataset_roots
 launch_profile_version
 max_runtime_seconds
 stop_timeout_seconds
 ```
 
-`INFO` returns bounded non-secret facts including protocol/runner version, launch profile/policy identity, execution identity names, workspace root, supported runtime profiles/runtime paths, boot ID, and readiness reason.
+Policy identity is:
 
-Coordinator/controller does not maintain a second runtime-profile-to-executable map. If policy identity changes between INFO and LAUNCH, Runner rejects before creation with definite non-acceptance.
+```python
+namespaced_sha256("labpilot-runner-policy:v1", canonical_nonsecret_policy_value)
+```
 
-## 5.5 First-dispatch authority
+`INFO` returns bounded non-secret facts including protocol/runner version, launch profile/policy identity, execution identity names, canonical workspace root, supported runtime profiles/runtime paths/policy environments, boot ID, readiness reason, and the optional bounded environment observation from §5.3.
 
-`dispatch_attempt(attempt_id)` sequence is fixed:
+Coordinator does not maintain a second runtime-profile map. Runner LAUNCH recomputes/validates the policy identity; if policy changes after INFO and before any systemd creation, LAUNCH returns definite non-acceptance.
+
+## 5.6 Production root Runner deployment contract
+
+Repository deployment artifacts:
+
+```text
+deploy/systemd/labpilot-runner.service
+scripts/install_labpilot_runner_host.sh
+```
+
+Installed host contract:
+
+```text
+application tree: /opt/labpilot-runner/app
+owner/mode:       recursively root:root; no group/world write
+python:           /opt/labpilot-runner/app/.venv/bin/python
+policy:           /etc/labpilot/runner-policy.json
+policy owner/mode root:root 0600; regular file; no symlink
+service unit:     /etc/systemd/system/labpilot-runner.service
+unit owner/mode:  root:root 0644
+runtime dir:      /run/labpilot-runner
+runtime owner:    root:labpilot-control
+runtime mode:     0750
+socket:           /run/labpilot-runner/control.sock
+socket owner:     root:labpilot-control
+socket mode:      0660
+```
+
+`deploy/systemd/labpilot-runner.service` freezes:
+
+```ini
+[Unit]
+Description=LabPilot Candidate B Runner
+After=local-fs.target
+
+[Service]
+Type=simple
+User=root
+Group=labpilot-control
+UMask=0007
+RuntimeDirectory=labpilot-runner
+RuntimeDirectoryMode=0750
+ExecStart=/opt/labpilot-runner/app/.venv/bin/python -m labpilot.execution.runner_daemon --policy /etc/labpilot/runner-policy.json
+Restart=on-failure
+RestartSec=1s
+
+[Install]
+WantedBy=multi-user.target
+```
+
+The installer is intentionally narrow:
+
+1. must run as root;
+2. accepts an exact committed Git SHA and an explicit policy source file path;
+3. uses `git archive <sha>` to populate `/opt/labpilot-runner/app` so the daemon never imports a controller-writable checkout;
+4. runs `uv sync --locked --no-dev` in the root-owned install tree;
+5. installs policy/service with the exact ownership/modes above;
+6. `systemctl daemon-reload` then `systemctl enable --now labpilot-runner.service`;
+7. verifies service is active, runtime directory ownership/mode, socket ownership/mode, and `INFO` readiness.
+
+No site-specific `workspace_root` or runtime path is guessed by the repository. The explicit policy source supplied to the installer owns those deployment values.
+
+## 5.7 First-dispatch authority
+
+`dispatch_attempt(attempt_id)`:
 
 ```text
 outside UoW:
     read logical data
     verify source manifest
-    Runner.INFO
-    resolve runtime + dataset policy
+    Runner.INFO with bounded environment-inspection request
+    require Runner canonical workspace_root == configured/persisted root authority
+    resolve runtime + local-dataset policy
+    capture ObservedEnvironment
     build FrozenLaunchSpec + H
+    enforce final ExecStart budget
 
 short UoW:
     lock/reload Attempt
     require LAUNCH_READY
     require parent Batch started and not cancelled
     verify workspace/manifest/logical spec unchanged
+    persist ObservedEnvironment once
     persist FrozenLaunchSpec + H
     set LAUNCH_PENDING + launch_intent_committed_at
+    append attempt.launch_intent_committed RuntimeEvent with enqueue_outbox=False
 commit
 
 in process memory only:
@@ -698,9 +981,61 @@ failure before any request byte can be sent -> positive NEVER_ACCEPTED_PROVEN ma
 any partial/full send followed by timeout/EOF/unknown response -> CONTROL_UNKNOWN -> OBSERVE only
 ```
 
-## 5.6 Production Runner/systemd profile
+## 5.8 Durable audit contract and non-destructive Outbox bridge
 
-Runner derives an exact unit name from X and exact `Description` metadata from H. It uses the system manager with:
+Architecture 10 requires durable history for launch intent, physical start, restart reconciliation, and terminal observation.
+
+Modify the accepted foundation compatibly:
+
+```python
+async def append_runtime_event(
+    uow: UnitOfWork,
+    envelope: RuntimeEventEnvelope,
+    *,
+    enqueue_outbox: bool = True,
+) -> RuntimeEventRow:
+    ...
+```
+
+Default remains `True`, so all historical call sites keep accepted behavior. Slice 2 uses `enqueue_outbox=False` for audit-only events because no asynchronous consumer is required for physical execution.
+
+Minimum immutable Attempt events:
+
+```text
+attempt.launch_intent_committed
+attempt.physical_started_observed
+attempt.reconciled_after_restart
+attempt.identity_conflict_observed
+attempt.terminal_observed
+```
+
+Event rules:
+
+- `launch_intent_committed` is appended in the same UoW as `LAUNCH_PENDING`.
+- `physical_started_observed` is appended only on the first authoritative transition to RUNNING, same UoW.
+- `reconciled_after_restart` is appended once per Attempt per Coordinator startup-barrier pass, even if the current durable status does not change.
+- `identity_conflict_observed` is appended in the same UoW that sets durable `IDENTITY_CONFLICT`.
+- `terminal_observed` is appended in the same UoW that sets terminal fields.
+
+`attempt.reconciled_after_restart` payload contains bounded fields only:
+
+```text
+attempt_id
+X
+H
+coordinator_start_id
+pre_reconciliation_status
+physical_observation_kind
+post_reconciliation_status
+physical_boot_id if observed
+supervisor_invocation_id if observed
+```
+
+No event contains secret/full environment/raw journal. The authoritative current row plus immutable selected RuntimeEvents must answer both “what is true now?” and “what happened across restart?”.
+
+## 5.9 Production Runner/systemd profile
+
+Runner derives unit name only from X and `Description` metadata only from H. It uses the system manager with:
 
 ```text
 Type=exec
@@ -719,9 +1054,9 @@ TimeoutStopSec=<fixed root-owned policy>
 
 Current loaded unit evidence is preferred. After unit GC/controller loss, bounded persistent journald PID-1 manager evidence may establish exact X/H start/terminal facts. Workload stdout is never authoritative physical evidence.
 
-## 5.7 Task 3 TDD execution steps
+## 5.10 Task 3 TDD execution steps
 
-- [ ] **Step 1: Add physical persistence fields and closed spec/observation types.**
+- [ ] **Step 1: Add physical persistence, closed state types, and audit bridge.**
 
 Files:
 
@@ -729,17 +1064,20 @@ Files:
 Modify: src/labpilot/execution/types.py
 Modify: src/labpilot/execution/models.py
 Modify: src/labpilot/execution/repository.py
+Modify: src/labpilot/observability/events.py
+Modify: src/labpilot/observability/payloads.py
 Create: migrations/versions/0010_attempt_physical_execution.py
 Create: tests/unit/execution/test_physical_types.py
+Modify: tests/unit/observability/test_events.py
 Create: tests/integration/test_attempt_physical_schema.py
 ```
 
-Red tests: H changes for any behavior-changing concrete launch field; PID/InvocationID/boot ID are excluded from identity; terminal-unclassified permits terminal_at without fabricated exit code.
+Red tests assert: exact H golden vector; behavior-changing launch fields change H; observation-only fields do not; `IDENTITY_CONFLICT` is distinct from UNKNOWN; terminal-unclassified permits terminality without invented exit code; `enqueue_outbox=False` appends RuntimeEvent without Outbox while default behavior remains unchanged.
 
 Run:
 
 ```bash
-uv run pytest tests/unit/execution/test_physical_types.py -v
+uv run pytest tests/unit/execution/test_physical_types.py tests/unit/observability/test_events.py -v
 uv run pytest tests/integration/test_attempt_physical_schema.py -v -m integration
 ```
 
@@ -760,9 +1098,9 @@ Create: tests/unit/execution/test_runner_protocol.py
 Create: tests/unit/execution/test_runner_client.py
 ```
 
-Wire requirements: AF_UNIX, length-prefixed bounded JSON, strict protocol version, exact field-set rejection, one request per connection, no automatic reconnect/retry, no raw unit/user/group/systemd properties on LAUNCH/STOP.
+Wire requirements: AF_UNIX, length-prefixed bounded JSON, strict protocol version, exact field-set rejection, one request per connection, no automatic reconnect/retry, INFO inspection bounded as §5.3, and no raw unit/user/group/systemd property selection on LAUNCH/STOP.
 
-Red tests must distinguish connect/encode failure before send from partial-send/response-loss uncertainty.
+Red tests distinguish connect/encode failure before send from partial-send/response-loss uncertainty.
 
 Run:
 
@@ -776,26 +1114,28 @@ Commit message:
 feat: add narrow production runner protocol
 ```
 
-- [ ] **Step 3: Implement root policy, systemd supervisor, and daemon.**
+- [ ] **Step 3: Implement root policy, fixed runtime probe, systemd supervisor, and daemon.**
 
 Files:
 
 ```text
 Create: src/labpilot/execution/runner_policy.py
+Create: src/labpilot/execution/runtime_probe.py
 Create: src/labpilot/execution/systemd_supervisor.py
 Create: src/labpilot/execution/runner_daemon.py
 Create: tests/unit/execution/test_runner_policy.py
+Create: tests/unit/execution/test_runtime_probe.py
 Create: tests/unit/execution/test_systemd_supervisor.py
 Create: tests/unit/execution/test_runner_daemon.py
 Create: tests/architecture/test_execution_privilege_boundary.py
 ```
 
-Red tests must prove: peer credential mismatch performs zero systemd calls; policy symlink/owner/write checks; same-X/different-H conflict; `NOT_FOUND` does not create without positive creation authority; workload journal stdout cannot fabricate terminal; STOP only after exact active observation; protocol cannot select arbitrary service/property/runtime outside policy.
+Red tests prove: policy symlink/owner/write checks; exact policy hash; safe environment-key allowlist; peer credential mismatch performs zero systemd calls; INFO runtime probe cannot select arbitrary executable/code; same-X/different-H returns conflict; NOT_FOUND does not create without positive creation authority; workload stdout cannot fabricate terminal; STOP only after exact active observation.
 
 Run:
 
 ```bash
-uv run pytest tests/unit/execution/test_runner_policy.py tests/unit/execution/test_systemd_supervisor.py tests/unit/execution/test_runner_daemon.py tests/architecture/test_execution_privilege_boundary.py -v
+uv run pytest tests/unit/execution/test_runner_policy.py tests/unit/execution/test_runtime_probe.py tests/unit/execution/test_systemd_supervisor.py tests/unit/execution/test_runner_daemon.py tests/architecture/test_execution_privilege_boundary.py -v
 ```
 
 Commit message:
@@ -804,7 +1144,32 @@ Commit message:
 feat: add candidate b production runner
 ```
 
-- [ ] **Step 4: Implement `AttemptExecutionService`.**
+- [ ] **Step 4: Install the real root-owned host Runner boundary.**
+
+Files:
+
+```text
+Create: deploy/systemd/labpilot-runner.service
+Create: scripts/install_labpilot_runner_host.sh
+Create: tests/unit/execution/test_runner_deployment.py
+```
+
+Static tests assert exact service directives and reject a service that runs from repository/controller-writable paths. Script tests exercise non-root refusal and argument validation without mutating host systemd. Native Task 5 performs the real root install/start checks.
+
+Run:
+
+```bash
+uv run pytest tests/unit/execution/test_runner_deployment.py -v
+bash -n scripts/install_labpilot_runner_host.sh
+```
+
+Commit message:
+
+```text
+feat: define production runner deployment
+```
+
+- [ ] **Step 5: Implement `AttemptExecutionService`.**
 
 Files:
 
@@ -818,13 +1183,20 @@ Public application primitives:
 
 ```python
 async def dispatch_attempt(attempt_id: UUID) -> None
-async def reconcile_attempt(attempt_id: UUID) -> None
+async def reconcile_attempt(
+    attempt_id: UUID,
+    *,
+    reason: ReconciliationReason,
+    coordinator_start_id: UUID | None = None,
+) -> None
 async def request_stop(attempt_id: UUID) -> None
 ```
 
-`request_stop()` always observes first and issues STOP only on exact `ACTIVE_MATCH`. There is no public arbitrary force-kill API in Slice 2; systemd's fixed `TimeoutStopSec`/control-group semantics provide bounded shutdown after the durable Batch cancel intent.
+`ReconciliationReason` is `PERIODIC | STARTUP`; STARTUP requires `coordinator_start_id` and emits `attempt.reconciled_after_restart`.
 
-Red tests must cover: exactly one CAS winner dispatch; pre-existing LAUNCH_PENDING never LAUNCHes; CREATED does not set RUNNING; ack loss observes without resend; terminal short job; immediate identity-conflict attention; transient UNKNOWN grace; STOP ACK does not terminalize; natural terminal truth is preserved during cancel race.
+`request_stop()` observes first and issues STOP only on exact `ACTIVE_MATCH`. There is no public arbitrary force-kill API in Slice 2; fixed systemd `TimeoutStopSec`/control-group semantics provide bounded shutdown after durable Batch cancel intent.
+
+Red tests cover: exactly one CAS winner dispatch; observed environment persisted before dispatch; pre-existing LAUNCH_PENDING never LAUNCHes; CREATED does not set RUNNING; ack loss observes without resend; short terminal job; distinct sticky IDENTITY_CONFLICT; transient UNKNOWN grace; STOP ACK does not terminalize; natural terminal truth is preserved during cancel race; required audit events occur in the same UoW; Outbox never delivers LAUNCH.
 
 Run:
 
@@ -839,19 +1211,20 @@ Commit message:
 feat: reconcile durable attempts with runner
 ```
 
-- [ ] **Step 5: Task 3 gate.**
+- [ ] **Step 6: Task 3 gate.**
 
 Run:
 
 ```bash
-uv run pytest tests/unit/execution tests/architecture -v
+uv run pytest tests/unit/execution tests/unit/observability tests/architecture -v
 uv run pytest tests/integration/test_attempt_physical_schema.py tests/integration/test_attempt_execution_service.py -v -m integration
 uv run ruff check src tests scripts
 uv run mypy src scripts
+bash -n scripts/install_labpilot_runner_host.sh
 git diff --check
 ```
 
-Stop for review before Task 4. The gate fails if any test path reconstructs first-dispatch authority from durable state or invokes Runner LAUNCH from Outbox processing.
+Stop for G2 review before Task 4. The gate fails if any test reconstructs first-dispatch authority from durable state, aliases IDENTITY_CONFLICT to UNKNOWN, or invokes Runner LAUNCH from Outbox processing.
 
 ---
 
@@ -859,7 +1232,7 @@ Stop for review before Task 4. The gate fails if any test path reconstructs firs
 
 **Risk:** Workflow / race critical.
 
-**Deliverable:** Thin durable user commands, deterministic single-Coordinator recovery/scheduling, fixed concurrency ≤4 including UNKNOWN, startup reconciliation barrier, and production composition where API has no Runner socket/workspace authority.
+**Deliverable:** Thin durable user commands, deterministic single-Coordinator recovery/scheduling, fixed concurrency ≤4 including UNKNOWN and IDENTITY_CONFLICT, startup reconciliation barrier with durable restart audit, and production composition where API has no Runner socket/workspace authority.
 
 ## 6.1 Batch command contract
 
@@ -900,13 +1273,23 @@ Batch started
 Batch not cancelled
 no active Attempt for Trial
 Trial not already successful
-attempt count < 1 + max_retries
-latest terminal outcome is explicitly retryable when attempt_number > 1
+next_attempt_number <= 1 + max_retries
+if next_attempt_number > 1:
+    latest Attempt must be terminal
+    latest Attempt outcome must be explicitly retryable infrastructure failure
 ```
 
 Automatic success is only `PROCESS_EXITED` with `exit_code == 0`.
 
-Automatic retry is limited to explicit infrastructure evidence such as proven executor-start failure, temporary filesystem failure, or explicitly proven preemption. Do not automatically retry command non-zero exit, OOM/resource exhaustion, user cancellation, unclassified external termination, `PROCESS_TERMINAL_UNCLASSIFIED`, `UNKNOWN`, or `IDENTITY_CONFLICT`.
+The V1 retryable infrastructure allowlist is finite:
+
+```text
+PREPARATION_TEMPORARY_IO
+RUNNER_UNAVAILABLE_BEFORE_SEND
+PHYSICAL_PREEMPTION_PROVEN
+```
+
+Do not automatically retry command non-zero exit, OOM/resource exhaustion, user cancellation, unclassified external termination, `PROCESS_TERMINAL_UNCLASSIFIED`, `UNKNOWN`, or `IDENTITY_CONFLICT`.
 
 A retry always creates a new Attempt and therefore a new X. Same-Attempt relaunch is forbidden.
 
@@ -914,32 +1297,42 @@ First Attempts are admitted before retries so one repeatedly failing Trial canno
 
 ## 6.3 Startup barrier and scan order
 
-On every Coordinator process start, before any new physical dispatch:
+At every Coordinator process start, generate one in-memory `coordinator_start_id: UUID`. Before any new physical dispatch:
 
 ```text
-scan all nonterminal Attempts with status LAUNCH_PENDING/RUNNING/UNKNOWN
-for each: apply parent cancel control if possible, then reconcile exact X/H at least once
-only after every such Attempt receives one pass may new dispatch occur
+scan all nonterminal Attempts with status:
+    LAUNCH_PENDING
+    RUNNING
+    UNKNOWN
+    IDENTITY_CONFLICT
+
+for each:
+    apply parent-cancel control only when exact ACTIVE_MATCH permits it
+    call reconcile_attempt(..., reason=STARTUP, coordinator_start_id=...)
+    persist attempt.reconciled_after_restart event
+
+only after every such Attempt receives one startup pass may new dispatch occur
 ```
 
-An existing UNKNOWN need not become known for the barrier to complete; it remains UNKNOWN and keeps its slot.
+An existing UNKNOWN/IDENTITY_CONFLICT need not resolve for the barrier to complete; both keep their slot. IDENTITY_CONFLICT remains sticky.
 
 Every normal scan uses fixed priority:
 
 ```text
 1. control existing physical/prelaunch work
-2. reconcile LAUNCH_PENDING/RUNNING/UNKNOWN
+2. reconcile LAUNCH_PENDING/RUNNING/UNKNOWN/IDENTITY_CONFLICT
 3. resume PREPARING and create/prepare eligible Attempts
 4. admit LAUNCH_READY in durable FIFO order
 ```
 
-Physical active count is:
+Physical active count is exactly:
 
 ```text
-terminal_at IS NULL AND status IN ('launch_pending', 'running', 'unknown')
+terminal_at IS NULL
+AND status IN ('launch_pending', 'running', 'unknown', 'identity_conflict')
 ```
 
-Maximum is exactly 4. UNKNOWN counts as 1.
+Maximum is exactly 4.
 
 FIFO is `LAUNCH_READY ORDER BY created_at, attempt_id`. If the oldest candidate remains unchanged because Runner/DB/observation is transiently unavailable, stop admission for that scan; do not skip it and launch younger work.
 
@@ -952,11 +1345,12 @@ Coordinator behavior:
 ```text
 PREPARING/LAUNCH_READY + parent cancel -> CANCELLED_PRE_LAUNCH + terminal_at, no Runner
 LAUNCH_PENDING/RUNNING/UNKNOWN + parent cancel -> observe; STOP only if fresh ACTIVE_MATCH
+IDENTITY_CONFLICT + parent cancel -> preserve cancel intent; no STOP/kill/retry
 TERMINAL_MATCH during cancel race -> persist observed natural terminal truth
-IDENTITY_CONFLICT/UNKNOWN -> preserve cancel intent, no destructive action, no fabricated terminal
+UNKNOWN -> preserve cancel intent, no destructive action, no fabricated terminal
 ```
 
-## 6.5 UNKNOWN projection
+## 6.5 UNKNOWN and IDENTITY_CONFLICT projection
 
 First ordinary unknown observation:
 
@@ -971,10 +1365,23 @@ After configured grace (`LABPILOT_UNKNOWN_ATTENTION_GRACE_SECONDS`, default 60 s
 status = UNKNOWN
 attention_required_at = now
 execution_issue_code = PHYSICAL_STATE_UNKNOWN
-terminal_at remains NULL
+terminal_at = NULL
 ```
 
-`IDENTITY_CONFLICT` becomes UNKNOWN with immediate attention and `execution_issue_code = IDENTITY_CONFLICT`; later generic UNKNOWN cannot downgrade that issue. Only authoritative ACTIVE_MATCH or TERMINAL_MATCH resolves the current attention episode.
+A later exact ACTIVE_MATCH or TERMINAL_MATCH may resolve an ordinary UNKNOWN episode.
+
+`IDENTITY_CONFLICT` is different:
+
+```text
+status = IDENTITY_CONFLICT immediately
+attention_required_at = now
+execution_issue_code = IDENTITY_CONFLICT
+terminal_at = NULL
+```
+
+Generic UNKNOWN observations never replace or downgrade this status. Slice 2 provides no automatic or public operator transition out of `IDENTITY_CONFLICT`.
+
+Derived Trial/Batch reads may map both UNKNOWN and IDENTITY_CONFLICT to a higher-level `needs_attention` / `failed_to_coordinate` presentation, but Attempt API must expose the exact distinct durable status.
 
 ## 6.6 API and runtime authority split
 
@@ -992,13 +1399,15 @@ Coordinator process/container:
 ```text
 PostgreSQL
 snapshot/content-store access needed for Task 2
-Attempt workspace mounted at the SAME absolute path as host policy
+Attempt workspace mounted at the SAME canonical absolute path as host policy
 Runner AF_UNIX socket
 host-compatible labpilot-controller UID/GID
 labpilot-train supplementary GID for workspace preparation
 ```
 
 Do not create a container-path ↔ host-path translation table.
+
+The host Runner itself is **not** containerized and is managed only by the root-owned service contract in §5.6.
 
 ## 6.7 Task 4 TDD execution steps
 
@@ -1015,7 +1424,7 @@ Create: tests/unit/execution/test_query_service.py
 Create: tests/integration/test_batch_commands.py
 ```
 
-Red tests: create all Trials/zero Attempts; idempotent replay; stale new key returns conflict; row_version only user commands; cancel-before-start prevents later start; derived state reverses from failed-to-coordinate to running after authoritative recovery.
+Red tests: create all Trials/zero Attempts; idempotent replay; stale new key returns conflict; row_version only user commands; cancel-before-start prevents later start; distinct Attempt identity_conflict is preserved while derived Batch presentation becomes failed_to_coordinate.
 
 Run:
 
@@ -1045,11 +1454,11 @@ Create: tests/integration/test_coordinator_reconciliation.py
 Expose:
 
 ```python
-async def run_startup_barrier() -> None
+async def run_startup_barrier(*, coordinator_start_id: UUID) -> None
 async def run_scan() -> None
 ```
 
-Red tests must mechanically prove: startup barrier before dispatch; priority control > reconcile > prepare > admit; capacity ≤4 including UNKNOWN; strict FIFO no bypass; restart reads PostgreSQL, not RAM; retries create new Attempt/X; first Attempts before retries.
+Red tests mechanically prove: startup barrier before dispatch; one `attempt.reconciled_after_restart` audit event per startup pass; priority control > reconcile > prepare > admit; capacity ≤4 including UNKNOWN/IDENTITY_CONFLICT; strict FIFO no bypass; restart reads PostgreSQL not RAM; retries create new Attempt/X; first Attempts before retries.
 
 Run:
 
@@ -1079,9 +1488,9 @@ Create: tests/unit/api/test_execution_routes.py
 Create: tests/integration/test_execution_api.py
 ```
 
-Attempt GET may return identifiers/state/timestamps/terminal/UNKNOWN fields but not full `FrozenLaunchSpec`, full environment, secrets, raw journal, or raw systemd properties.
+Attempt GET returns identifiers/state/timestamps/terminal/UNKNOWN/conflict fields plus bounded observed environment summary sufficient for UI/trace; it does not return full `FrozenLaunchSpec`, policy environment values, secrets, raw journal, or raw systemd properties.
 
-Red tests must prove API handlers call Batch/query services only and cannot import/call `runner_client`, `runner_daemon`, `systemd_supervisor`, or `AttemptExecutionService` physical methods.
+Red tests prove API handlers call Batch/query services only and cannot import/call `runner_client`, `runner_daemon`, `systemd_supervisor`, or physical methods of `AttemptExecutionService`.
 
 Run:
 
@@ -1112,13 +1521,13 @@ Create: tests/integration/test_execution_composition.py
 Required settings/contracts:
 
 ```text
-LABPILOT_ATTEMPT_WORKSPACE_ROOT      required outside tests, absolute, no guessed default
-LABPILOT_RUNNER_SOCKET_PATH          required for Coordinator execution composition
+LABPILOT_ATTEMPT_WORKSPACE_ROOT          required outside tests, canonical absolute, no guessed default
+LABPILOT_RUNNER_SOCKET_PATH              required for Coordinator; production value /run/labpilot-runner/control.sock
 LABPILOT_RUNNER_REQUEST_TIMEOUT_SECONDS  positive bounded value, default 10
 LABPILOT_UNKNOWN_ATTENTION_GRACE_SECONDS positive bounded value, default 60
 ```
 
-Compose must mount `${LABPILOT_ATTEMPT_WORKSPACE_ROOT}` into Coordinator at the same absolute path and mount the Runner socket only into Coordinator. API receives neither.
+Compose mounts `${LABPILOT_ATTEMPT_WORKSPACE_ROOT}` into Coordinator at the same absolute path and mounts `/run/labpilot-runner/control.sock` only into Coordinator. API receives neither.
 
 Run:
 
@@ -1144,7 +1553,7 @@ uv run pytest tests/integration -v -m integration
 git diff --check
 ```
 
-Stop for review before native Task 5. The gate fails if API can reach the Runner socket, Coordinator can parse raw systemd/journal evidence directly, UNKNOWN releases a slot, or startup dispatch happens before the barrier.
+Stop for G3 review before native Task 5. The gate fails if API can reach Runner authority, Coordinator parses raw systemd/journal evidence directly, UNKNOWN/IDENTITY_CONFLICT releases a slot, IDENTITY_CONFLICT aliases to UNKNOWN, or startup dispatch occurs before audited barrier completion.
 
 ---
 
@@ -1152,7 +1561,7 @@ Stop for review before native Task 5. The gate fails if API can reach the Runner
 
 **Risk:** Release critical.
 
-**Deliverable:** Real native-Linux evidence that the production Tasks 2–4 path survives process/database/controller failures and preserves no-duplicate-launch, exact-source, exact-X/H, cancellation, UNKNOWN, capacity, and reboot invariants.
+**Deliverable:** Real native-Linux evidence that production Tasks 2–4 survive process/database/control-plane failures and preserve exact source, environment observation, exact X/H, no duplicate launch, cancellation, UNKNOWN/conflict, capacity, timeout, and reboot invariants.
 
 ## 7.1 Test-only files
 
@@ -1169,16 +1578,16 @@ scripts/run_slice2_native_acceptance.py
 docs/superpowers/evidence/2026-08-16-labpilot-v1-slice2-production-acceptance.md
 ```
 
-Test fault decorators may delay/fail communication or delegate and drop a response, but must never fabricate `ACTIVE_MATCH`, `TERMINAL_MATCH`, wrong-H evidence, journal records, Attempt state, or terminal state. Privileged setup/teardown actions are external test-admin actions and are not exposed through production APIs.
+Test fault decorators may delay/fail communication or delegate and drop a response, but must never fabricate `ACTIVE_MATCH`, `TERMINAL_MATCH`, wrong-H evidence, journal records, Attempt state, environment observation, or terminal state. Privileged setup/teardown actions are external test-admin actions and are not exposed through production APIs.
 
 The tiny training fixture accepts deterministic argv for seed/value/dataset/output/duration/exit behavior, writes bounded test-oracle records under `runtime/output`, and may spawn a child for control-group cancellation testing. Those records are acceptance oracles only; production reconciliation never trusts them as physical authority.
 
+Each native scenario installs/starts the exact committed root-owned Runner using §5.6 or verifies the already-installed service matches the tested commit/policy identity before running.
+
 ## 7.2 Required native scenarios
 
-The native suite implements and names these exact cases:
-
 ```text
-F01 happy vertical approved Version -> real terminal training
+F01 happy vertical approved Version -> real terminal training; observed environment persisted
 F02 exact approved source; dirty worktree ignored; prelaunch source tamper blocks launch
 F03 physical concurrency <= 4 and durable FIFO
 F04 Coordinator down: Start persists, zero Attempt/process until restart
@@ -1192,31 +1601,52 @@ F11 cancellation kills whole systemd control group; no orphan child
 F12 cancel vs natural-exit race preserves proven natural terminal truth
 F13 STOP acknowledgement lost: no direct terminalization; observe to terminal
 F14 observation unavailable beyond grace: UNKNOWN, attention, slot retained, no retry
-F15 real same-X/different-H systemd fixture: immediate IDENTITY_CONFLICT, no destructive action
+F15 real same-X/different-H systemd fixture: durable IDENTITY_CONFLICT, never UNKNOWN, no destructive action
 F16 one UNKNOWN plus queued work: UNKNOWN consumes one of four physical slots
-F17 mixed restart barrier: existing RUNNING/LAUNCH_PENDING/UNKNOWN reconciled before new dispatch
+F17 mixed restart barrier: existing RUNNING/LAUNCH_PENDING/UNKNOWN/IDENTITY_CONFLICT reconciled/audited before new dispatch
 F18 real host reboot: no same-X resurrection; old X/H ends terminal or ADR-bounded UNKNOWN
+F19 kill API while real training runs; training remains; restart API; same Attempt remains queryable; zero physical relaunch
+F20 stop root Runner before first socket connect after LAUNCH_PENDING commit: definite pre-send non-acceptance -> LAUNCH_NOT_ACCEPTED; no physical unit created
+F21 real RuntimeMaxSec timeout: long fixture exceeds approved timeout; systemd terminal evidence records timeout; no duplicate launch
+F22 crash Coordinator after real OBSERVE result is obtained but before reconciliation UoW commit; restart Coordinator; repeat observation and converge original Attempt; restart audit remains coherent
+```
+
+Roadmap acceptance mapping is explicit:
+
+```text
+kill/restart API                         F19
+kill/restart Coordinator                 F07
+failed launch / definite non-acceptance  F20
+timeout                                  F21
+process exits while Coordinator down     F08
+restart during reconciliation            F22
+unknown physical identity/evidence        F14 + F15
+physical process count = 1 recovery      F06 + F07 + F19 + F22
 ```
 
 Every scenario uses a disposable DB/schema/workspace/evidence root and a stable installation identity for the entire scenario. Assertions poll bounded DB/physical predicates; arbitrary `sleep(N)` is not an acceptance oracle.
 
 ## 7.3 Critical failure classes
 
-Any one is an automatic Slice 2 failure:
+Any one is automatic Slice 2 failure:
 
 ```text
 C1  same X starts more than one physical workload
-C2  UNKNOWN releases capacity
-C3  UNKNOWN causes automatic retry
+C2  UNKNOWN or IDENTITY_CONFLICT releases capacity
+C3  UNKNOWN or IDENTITY_CONFLICT causes automatic retry
 C4  insufficient evidence fabricates TERMINAL
-C5  IDENTITY_CONFLICT causes launch/stop/kill
-C6  cancel overwrites proven natural terminal result
-C7  new dispatch occurs before startup barrier completes
-C8  more than four physical-intent Attempts are admitted
-C9  mutable current worktree executes instead of approved source
-C10 accepted/possibly-accepted same Attempt is relaunched
-C11 installation namespace changes within one recovery scenario
-C12 API gains Runner/systemd physical-control authority
+C5  IDENTITY_CONFLICT is persisted/exposed as UNKNOWN
+C6  IDENTITY_CONFLICT causes launch/stop/kill
+C7  cancel overwrites proven natural terminal result
+C8  new dispatch occurs before startup barrier completes
+C9  more than four physical-intent Attempts are admitted
+C10 mutable current worktree executes instead of approved source
+C11 accepted/possibly-accepted same Attempt is relaunched
+C12 installation identity changes within one recovery scenario
+C13 API gains Runner/systemd physical-control authority
+C14 Attempt lacks bounded observed environment for its approved EnvironmentExpectation
+C15 restart reconciliation lacks its immutable audit event
+C16 production Runner imports/executes from controller-writable checkout
 ```
 
 ## 7.4 Evidence package
@@ -1228,16 +1658,18 @@ scenario.json
 db-before.json
 db-after.json
 runner-info.json
+observed-environment.json
 physical-observations.jsonl
+runtime-events.jsonl
 systemd-exact-unit.json
 journal-exact-unit.jsonl
 workload-test-oracle.json
 verdict.json
 ```
 
-Evidence includes installation-identity hash, Runner policy identity/version/protocol, boot ID(s), X, H, workspace path, and source manifest hash. It excludes secrets, full environment, unbounded journal, and full DB dumps.
+Evidence includes R0/S1/S2.0/implementation commit identities, installation-identity digest, Runner policy identity/version/protocol, boot ID(s), X, H, workspace path, SourceManifest hash, and selected bounded RuntimeEvents. It excludes secrets, full process environment, unbounded journal, and full DB dumps.
 
-For scenarios intentionally ending UNKNOWN, seal/hash the verdict before external administrator teardown. Teardown must not write fake `terminal_at`, clear UNKNOWN, or mark domain success.
+For scenarios intentionally ending UNKNOWN or IDENTITY_CONFLICT, seal/hash the verdict before external administrator teardown. Teardown must not write fake `terminal_at`, clear attention state, rewrite conflict as UNKNOWN, or mark domain success.
 
 ## 7.5 Task 5 execution steps
 
@@ -1257,15 +1689,15 @@ Commit message:
 test: add slice two production acceptance harness
 ```
 
-- [ ] **Step 2: Run non-disruptive native F01–F17.**
+- [ ] **Step 2: Run non-reboot native scenarios.**
 
-Run on the dedicated Candidate B native host:
+On the dedicated Candidate B VM, install/verify the exact committed Runner, then run:
 
 ```bash
-uv run python scripts/run_slice2_native_acceptance.py --scenarios F01-F17
+uv run python scripts/run_slice2_native_acceptance.py --scenarios F01-F17,F19-F22
 ```
 
-Expected: every scenario verdict passes according to its explicit terminal/UNKNOWN oracle; no critical failure class appears.
+Expected: every scenario verdict passes according to its explicit terminal/UNKNOWN/conflict oracle; no critical failure class appears.
 
 - [ ] **Step 3: Human/admin reboot gate for F18.**
 
@@ -1275,7 +1707,7 @@ Prepare:
 uv run python scripts/run_slice2_native_acceptance.py --scenario F18 --phase prepare
 ```
 
-After the script reports the exact evidence path and X/H, an authorized human/admin reboots the dedicated VM outside LabPilot.
+After the script reports exact evidence path and X/H, an authorized human/admin reboots the dedicated VM outside LabPilot.
 
 Verify after reboot:
 
@@ -1285,9 +1717,9 @@ uv run python scripts/run_slice2_native_acceptance.py --scenario F18 --phase ver
 
 The verifier must never call LAUNCH for the old Attempt.
 
-- [ ] **Step 4: Seal the production acceptance evidence document.**
+- [ ] **Step 4: Seal production acceptance evidence.**
 
-The document records exact host/runtime versions, commit SHA, F01–F18 verdicts, critical-failure scan, evidence archive checksum, and any ADR-bounded UNKNOWN. Do not claim full Slice 2 acceptance if any scenario lacks its required evidence.
+The evidence document records exact host/runtime versions, tested commit SHA, Runner installed commit/policy identity, F01–F22 verdicts, Roadmap mapping, critical-failure scan, archive checksum, and any ADR-bounded UNKNOWN. Do not claim full Slice 2 acceptance if any scenario lacks required evidence.
 
 Commit message:
 
@@ -1297,18 +1729,19 @@ docs: record slice two production acceptance
 
 - [ ] **Step 5: Final repository release gate.**
 
-Run in a fully supported Python 3.12 environment with PostgreSQL drivers installed:
+Run in a supported Python 3.12 environment with PostgreSQL drivers installed:
 
 ```bash
 ./scripts/check_ci.sh
 uv run pytest tests/acceptance/slice2 -v -k "not native"
 uv run python -m compileall -q src tests scripts
+bash -n scripts/install_labpilot_runner_host.sh
 git diff --check
 ```
 
 Create a fresh PostgreSQL database and verify migrations from zero through `0010_attempt_physical_execution.py`, then rerun integration tests against that fresh DB.
 
-Perform one independent deep review focused on authority boundaries, replay/ack-loss safety, UNKNOWN semantics, and API privilege isolation.
+Perform one independent deep review focused on authority boundaries, replay/ack-loss safety, distinct IDENTITY_CONFLICT semantics, observed environment, audit history, Runner deployment, UNKNOWN semantics, and API privilege isolation.
 
 Only after this gate passes update `DOCUMENT-STATUS.md` once to mark Slice 2 accepted.
 
@@ -1316,51 +1749,63 @@ Only after this gate passes update `DOCUMENT-STATUS.md` once to mark Slice 2 acc
 
 # 8. Review / stop gates
 
-Implementation must stop for human review at exactly these points:
+Implementation stops for human review at exactly:
 
 ```text
-G0 this r3 plan amendment approved
-G1 Task 2 accepted: preparation contract and exact source proven, zero physical launch
-G2 Task 3 accepted: Candidate B production launch/observe/stop and ack-loss semantics proven
+G0 r4 targeted remediation approved by finding-specific review
+G1 Task 2 accepted: preparation contract/exact source/identities proven, zero physical launch
+G2 Task 3 accepted: Candidate B production deployment + launch/observe/stop + environment/audit/ack-loss proven
 G3 Task 4 accepted: Coordinator/API composition, startup barrier, capacity, cancellation, privilege split proven
-G4 Task 5 native F01–F18 + final repository gate accepted
+G4 Task 5 native F01–F22 + final repository gate accepted
 ```
 
-Stop immediately before editing beyond-plan scope if any of these arise:
+Stop immediately before editing beyond-plan scope if any arise:
 
 - production needs a fifth Runner operation or arbitrary raw systemd field;
-- execution package appears to require direct imports from experiments/context rather than its approved ports/composition adapters;
+- execution package appears to require direct imports from experiments/context rather than approved ports/composition adapters;
 - exact source cannot be materialized without mutable worktree fallback/network fetch;
 - a real concurrency race requires claims/leases/fencing;
 - same-Attempt liveness appears to require reconstructing first-dispatch authority after crash;
 - UNKNOWN recovery requires destructive control without fresh ACTIVE_MATCH;
-- production Attempt path requires reusing PoC `/var/lib/labpilot-s2-poc/*` assumptions;
+- IDENTITY_CONFLICT appears to require aliasing to UNKNOWN or automatic conflict clearing;
+- production Attempt path requires PoC `/var/lib/labpilot-s2-poc/*` assumptions;
+- environment observation appears to require arbitrary caller-supplied probe code or a generic environment inventory platform;
 - API needs Runner socket/workspace/systemd access;
 - native evidence contradicts the selected S2.0 ADR.
 
-When a stop condition is hit, identify the exact file, commit, invariant, and observed evidence before proposing an amendment. Do not silently reinterpret the ADR.
+When a stop condition is hit, identify exact file, commit, invariant, and observed evidence before proposing an amendment. Do not silently reinterpret the ADR.
 
 ---
 
-# 9. Plan self-review checklist
+# 9. r4 self-review checklist
 
-Before implementation authorization, verify this document against the accepted ADR and current repository:
+Before G0 implementation authorization, verify:
 
-- Task 1 is historical/complete and no step asks to rerun P0–P13 for familiarity.
+- `Planning baseline` is exactly R0 authority root `032dd87d3366dc6edd66fb75451d44047e49f7dd`.
+- accepted Slice 1 baseline is explicitly recorded as `ff7909503c3b755bffb564423de3a56ce5bb9b4a` and is distinct from S2.0/handoff lineage.
+- Task 1 is historical/complete and no step reruns P0–P13 merely for familiarity.
 - Tasks 2–5 preserve the five-task outer shape.
-- Every named production file has one responsibility and follows the current dependency graph.
 - `execution` does not import `experiments` or `context`; Coordinator adapters bridge those authorities.
-- Legacy Proposal hashes remain immutable; legacy Versions fail closed for execution rather than being silently rewritten.
+- Legacy Proposal hashes remain immutable; legacy Versions fail closed for execution rather than being rewritten.
 - `parameter_matrix × seeds` is bounded to 1–20 Trials.
-- Attempt workspace root has an explicit deployment authority and no PoC/default path guess.
-- Source is exact/read-only; output root is explicit/writable.
+- Trial identity, X, workspace path, SourceManifest, FrozenExecutionSpec, H, and Runner policy identity have exact namespace/byte contracts and golden-vector tests.
+- `ArtifactDeclaration.relative_path` is unambiguously relative to Attempt `runtime/output`.
+- final ExecStart composition and NUL/token/byte budgets are frozen before implementation.
+- Attempt workspace root has explicit deployment authority and no PoC/default path guess.
+- source is exact/read-only; output root is explicit/writable; safe symlink semantics are deterministic.
 - Task 2 has no Runner/systemd side effect.
+- complete approved EnvironmentExpectation reaches FrozenExecutionSpec; Attempt persists bounded ObservedEnvironment before first dispatch.
+- only exact non-secret root-policy environment pairs enter FrozenLaunchSpec/H; observed host inventory is evidence, not H.
+- production root Runner has exact service/install/policy/runtime-dir/socket ownership and startup contract.
 - `LAUNCH_PENDING` commit precedes physical dispatch; first-dispatch authority is in-memory only.
 - Outbox is not a Runner LAUNCH delivery path.
+- launch intent, physical start, startup reconciliation, conflict, and terminal history have explicit immutable RuntimeEvents; audit-only events use the compatible `enqueue_outbox=False` bridge.
 - RUNNING/TERMINAL are observation-driven.
 - `PROCESS_TERMINAL_UNCLASSIFIED` prevents invented exit/cancel causality.
-- UNKNOWN and IDENTITY_CONFLICT retain capacity and prohibit retry/destructive control.
-- Coordinator startup barrier precedes new dispatch.
+- UNKNOWN and IDENTITY_CONFLICT are distinct durable states; both retain capacity and prohibit retry/destructive control.
+- Coordinator startup barrier includes and audits LAUNCH_PENDING/RUNNING/UNKNOWN/IDENTITY_CONFLICT before new dispatch.
+- retry wording uses `next_attempt_number > 1` and a finite explicit infrastructure allowlist.
 - API cannot reach the privileged physical boundary.
+- Task 5 explicitly maps API restart, Coordinator restart, failed launch, timeout, Coordinator-down exit, restart-during-reconciliation, and unknown/conflicting physical identity to named native scenarios.
 - Task 5 uses real physical facts and bounded evidence, not fabricated observations.
 - `DOCUMENT-STATUS.md` changes only at full Slice 2 acceptance.
