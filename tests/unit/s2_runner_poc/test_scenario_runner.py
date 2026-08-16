@@ -2,6 +2,7 @@ import json
 import os
 import pwd
 import subprocess
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
@@ -345,6 +346,71 @@ def test_dispatch_phase_is_persisted_before_launch_call(tmp_path: Path) -> None:
 
 def assert_dispatch_may_have_occurred(store: DurableIntentStore) -> None:
     assert store.load(ATTEMPT_ID).dispatch_phase is DispatchPhase.DISPATCH_MAY_HAVE_OCCURRED
+
+
+def test_p2_waits_for_probe_marker_after_active_observation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    marker_root = tmp_path / "markers"
+    marker_root.mkdir()
+    state_root = tmp_path / "state"
+    evidence_root = tmp_path / "evidence"
+    context = scenario_module._ScenarioContext(
+        arguments=scenario_module.CliArguments(
+            state_root=state_root,
+            evidence_root=evidence_root,
+            installation_namespace="native-test",
+            evidence_stack="systemd+journal",
+            command="p2",
+        ),
+        store=DurableIntentStore(state_root / "intents"),
+        evidence=EvidenceLog(evidence_root / "records.jsonl"),
+        runner_socket=Path("/run/labpilot-s2-runner-poc/control.sock"),
+    )
+    monkeypatch.setattr(scenario_module, "POC_MARKER_ROOT", marker_root)
+    monkeypatch.setattr(scenario_module, "POC_WORKING_ROOT", tmp_path / "workspace")
+
+    def dispatch(*args: object, **kwargs: object) -> ControlOutcome:
+        del args, kwargs
+        attempt_id = scenario_module._scenario_attempt(context, "p2")
+        identity = supervisor_execution_identity("native-test", attempt_id)
+        intent = context.store.load(attempt_id)
+        context.store.mark_dispatch_may_have_occurred(attempt_id)
+        return ControlOutcome(
+            ControlOutcomeKind.CREATED,
+            identity,
+            intent.execution_spec_hash,
+            "created",
+        )
+
+    def observe(
+        socket_path: Path,
+        execution_identity: str,
+        execution_spec_hash_value: str,
+        accepted: set[PhysicalObservationKind],
+        *,
+        timeout_seconds: float = 15.0,
+    ) -> PhysicalObservation:
+        del socket_path, accepted, timeout_seconds
+        marker = marker_root / "p2-systemd-journal-starts.jsonl"
+
+        def write_marker() -> None:
+            marker.write_text('{"event":"probe_started"}\n', encoding="utf-8")
+
+        threading.Timer(0.05, write_marker).start()
+        return PhysicalObservation(
+            PhysicalObservationKind.ACTIVE_MATCH,
+            execution_identity,
+            execution_spec_hash_value,
+            execution_spec_hash_value,
+            evidence_source="systemd_unit",
+        )
+
+    monkeypatch.setattr(scenario_module, "dispatch_once_runner", dispatch)
+    monkeypatch.setattr(scenario_module, "_wait_runner_observation", observe)
+    monkeypatch.setattr(scenario_module, "_cleanup_runner", lambda *args: None)
+
+    assert scenario_module._p2(context) == 0
 
 
 def test_p3_recovery_observes_before_any_possible_replay() -> None:

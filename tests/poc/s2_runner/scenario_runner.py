@@ -982,7 +982,7 @@ def _p2(context: _ScenarioContext) -> int:
         spec_hash,
         {PhysicalObservationKind.ACTIVE_MATCH},
     )
-    root_count = _line_count(Path(spec.start_marker_path))
+    root_count = _wait_for_line_count(Path(spec.start_marker_path), minimum_count=1)
     passed = observation.kind is PhysicalObservationKind.ACTIVE_MATCH and root_count == 1
     _cleanup_runner(context.runner_socket, identity, spec_hash)
     return _record_result(
@@ -2363,6 +2363,21 @@ def _read_marker_records(path: Path) -> tuple[dict[str, object], ...]:
 
 def _line_count(path: Path) -> int:
     return len(path.read_text(encoding="utf-8").splitlines()) if path.exists() else 0
+
+
+def _wait_for_line_count(
+    path: Path,
+    *,
+    minimum_count: int,
+    timeout_seconds: float = 5.0,
+    sleep: Callable[[float], None] = time.sleep,
+) -> int:
+    deadline = time.monotonic() + timeout_seconds
+    count = _line_count(path)
+    while count < minimum_count and time.monotonic() < deadline:
+        sleep(0.05)
+        count = _line_count(path)
+    return count
 
 
 def _run(command_runner: CommandRunner, argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
