@@ -769,6 +769,91 @@ def test_p8_not_found_after_possible_dispatch_is_unknown(tmp_path: Path) -> None
     assert supervisor.launch_calls == 0
 
 
+def test_p9_waits_for_start_witness_before_stop_race(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    marker_root = tmp_path / "markers"
+    marker_root.mkdir()
+    state_root = tmp_path / "state"
+    state_root.mkdir()
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir()
+    context = scenario_module._ScenarioContext(
+        arguments=scenario_module.CliArguments(
+            state_root=state_root,
+            evidence_root=evidence_root,
+            installation_namespace="native-test",
+            evidence_stack="systemd+journal",
+            command="p9",
+        ),
+        store=DurableIntentStore(state_root / "intents"),
+        evidence=EvidenceLog(evidence_root / "records.jsonl"),
+        runner_socket=Path("/run/labpilot-s2-runner-poc/control.sock"),
+    )
+    monkeypatch.setattr(scenario_module, "POC_MARKER_ROOT", marker_root)
+    monkeypatch.setattr(scenario_module, "POC_WORKING_ROOT", tmp_path / "workspace")
+
+    witnessed: set[Path] = set()
+
+    def dispatch(*args: object, **kwargs: object) -> ControlOutcome:
+        del kwargs
+        attempt_id = cast(UUID, args[2])
+        spec = cast(FrozenLaunchSpec, args[3])
+        spec_hash = cast(str, args[4])
+        return ControlOutcome(
+            ControlOutcomeKind.CREATED,
+            supervisor_execution_identity("native-test", attempt_id),
+            spec_hash,
+            str(spec.start_marker_path),
+        )
+
+    def wait_for_line_count(
+        path: Path, *, minimum_count: int, timeout_seconds: float = 5.0, **kwargs: object
+    ) -> int:
+        del timeout_seconds, kwargs
+        assert minimum_count == 1
+        witnessed.add(path)
+        return 1
+
+    def stop(
+        socket_path: Path, *, x: str, h: str, force: bool
+    ) -> dict[str, object]:
+        del socket_path, x, h, force
+        assert witnessed, "P9 issued STOP before bounded start-witness observation"
+        return {
+            "ok": True,
+            "kind": ControlOutcomeKind.CONTROL_ACCEPTED.value,
+            "detail_code": "systemctl_control_accepted",
+        }
+
+    def observe(
+        socket_path: Path,
+        execution_identity: str,
+        execution_spec_hash_value: str,
+        accepted: set[PhysicalObservationKind],
+        *,
+        timeout_seconds: float = 15.0,
+    ) -> PhysicalObservation:
+        del socket_path, accepted, timeout_seconds
+        return PhysicalObservation(
+            PhysicalObservationKind.TERMINAL_MATCH,
+            execution_identity,
+            execution_spec_hash_value,
+            execution_spec_hash_value,
+            evidence_source="journal",
+        )
+
+    monkeypatch.setattr(scenario_module, "dispatch_once_runner", dispatch)
+    monkeypatch.setattr(scenario_module, "_wait_for_line_count", wait_for_line_count)
+    monkeypatch.setattr(scenario_module, "runner_stop", stop)
+    monkeypatch.setattr(scenario_module, "_wait_runner_observation", observe)
+    monkeypatch.setattr(scenario_module, "_line_count", lambda path: 1)
+    monkeypatch.setattr(scenario_module.time, "sleep", lambda seconds: None)
+
+    assert scenario_module._p9(context) == 0
+    assert len(witnessed) == 3
+
+
 def test_p9_does_not_claim_cancel_caused_exit_without_evidence() -> None:
     spec_hash = execution_spec_hash(_spec())
     terminal = PhysicalObservation(

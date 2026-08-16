@@ -321,9 +321,31 @@ class SystemdCli:
             return self._unknown(execution_identity, execution_spec_hash, "journal_error")
         if result.returncode != 0:
             return self._unknown(execution_identity, execution_spec_hash, "journal_query_unknown")
+        unit_name = systemd_unit_name(execution_identity)
         for line in reversed(result.stdout.splitlines()):
             record = _json_object(line)
-            message = _json_object(record.get("MESSAGE")) if record is not None else None
+            if record is None:
+                continue
+            stop_hash = _systemd_manager_job_hash(record, unit_name, job_type="stop")
+            if stop_hash is not None:
+                if stop_hash != execution_spec_hash:
+                    return PhysicalObservation(
+                        kind=PhysicalObservationKind.IDENTITY_CONFLICT,
+                        execution_identity=execution_identity,
+                        expected_spec_hash=execution_spec_hash,
+                        observed_spec_hash=stop_hash,
+                        evidence_source="journal",
+                    )
+                return PhysicalObservation(
+                    kind=PhysicalObservationKind.TERMINAL_MATCH,
+                    execution_identity=execution_identity,
+                    expected_spec_hash=execution_spec_hash,
+                    observed_spec_hash=stop_hash,
+                    result="systemd_stop_done",
+                    evidence_source="journal",
+                )
+
+            message = _json_object(record.get("MESSAGE"))
             if message is None or message.get("execution_identity") != execution_identity:
                 continue
             observed_hash = message.get("execution_spec_hash")
@@ -384,6 +406,33 @@ class SystemdCli:
             observation.expected_spec_hash,
             f"observed_{observation.kind.value}",
         )
+
+
+def _systemd_manager_job_hash(
+    record: dict[str, object], unit_name: str, *, job_type: str
+) -> str | None:
+    if (
+        record.get("_PID") != "1"
+        or record.get("_SYSTEMD_UNIT") != "init.scope"
+        or record.get("SYSLOG_IDENTIFIER") != "systemd"
+        or record.get("UNIT") != unit_name
+        or record.get("JOB_TYPE") != job_type
+        or record.get("JOB_RESULT") != "done"
+    ):
+        return None
+    message = record.get("MESSAGE")
+    if not isinstance(message, str):
+        return None
+    verb = "Stopped" if job_type == "stop" else "Started"
+    prefix = f"{verb} {unit_name} - labpilot-poc:"
+    if not message.startswith(prefix) or not message.endswith("."):
+        return None
+    observed_hash = message[len(prefix) : -1]
+    if len(observed_hash) != 64 or any(
+        character not in "0123456789abcdef" for character in observed_hash
+    ):
+        return None
+    return observed_hash
 
 
 def _properties(stdout: str) -> dict[str, str]:

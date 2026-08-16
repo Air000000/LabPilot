@@ -1398,6 +1398,7 @@ def _p9(context: _ScenarioContext) -> int:
             spec_hash,
             PositiveCreationEvidence.FIRST_DISPATCH_PROVEN,
         )
+        _wait_for_line_count(Path(spec.start_marker_path), minimum_count=1)
         time.sleep(stop_delay)
         stop_outcome = _control_outcome_from_runner_response(
             runner_stop(

@@ -436,6 +436,70 @@ def test_journal_exact_x_h_terminal_record_can_be_terminal_match() -> None:
     assert observation.evidence_source == "journal"
 
 
+def test_journal_exact_x_h_systemd_stop_job_can_be_terminal_match() -> None:
+    spec_hash = execution_spec_hash(_spec())
+    unit = systemd_unit_name(X)
+    started = json.dumps(
+        {
+            "MESSAGE": f"Started {unit} - labpilot-poc:{spec_hash}.",
+            "UNIT": unit,
+            "JOB_TYPE": "start",
+            "JOB_RESULT": "done",
+            "_SYSTEMD_UNIT": "init.scope",
+            "SYSLOG_IDENTIFIER": "systemd",
+            "_PID": "1",
+        }
+    )
+    stopped = json.dumps(
+        {
+            "MESSAGE": f"Stopped {unit} - labpilot-poc:{spec_hash}.",
+            "UNIT": unit,
+            "JOB_TYPE": "stop",
+            "JOB_RESULT": "done",
+            "_SYSTEMD_UNIT": "init.scope",
+            "SYSLOG_IDENTIFIER": "systemd",
+            "_PID": "1",
+        }
+    )
+    runner = ScriptedRunner(_absent(), _result(stdout=f"{started}\n{stopped}\n"))
+
+    observation = _cli(runner, journal=True).observe(
+        execution_identity=X, execution_spec_hash=spec_hash
+    )
+
+    assert observation.kind is PhysicalObservationKind.TERMINAL_MATCH
+    assert observation.observed_spec_hash == spec_hash
+    assert observation.exit_code is None
+    assert observation.result == "systemd_stop_done"
+    assert observation.evidence_source == "journal"
+
+
+def test_journal_systemd_stop_job_different_h_is_identity_conflict() -> None:
+    spec_hash = execution_spec_hash(_spec())
+    other_hash = "b" * 64
+    unit = systemd_unit_name(X)
+    stopped = json.dumps(
+        {
+            "MESSAGE": f"Stopped {unit} - labpilot-poc:{other_hash}.",
+            "UNIT": unit,
+            "JOB_TYPE": "stop",
+            "JOB_RESULT": "done",
+            "_SYSTEMD_UNIT": "init.scope",
+            "SYSLOG_IDENTIFIER": "systemd",
+            "_PID": "1",
+        }
+    )
+    runner = ScriptedRunner(_absent(), _result(stdout=f"{stopped}\n"))
+
+    observation = _cli(runner, journal=True).observe(
+        execution_identity=X, execution_spec_hash=spec_hash
+    )
+
+    assert observation.kind is PhysicalObservationKind.IDENTITY_CONFLICT
+    assert observation.observed_spec_hash == other_hash
+    assert observation.evidence_source == "journal"
+
+
 def test_journal_different_h_is_identity_conflict() -> None:
     spec_hash = execution_spec_hash(_spec())
     record = json.dumps(
