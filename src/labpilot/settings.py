@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     repository_snapshot_max_total_bytes: int = Field(default=256 * 1024 * 1024, ge=1)
     repository_inspection_max_files: int = Field(default=50_000, ge=1)
     repository_inspection_max_total_bytes: int = Field(default=512 * 1024 * 1024, ge=1)
+    attempt_workspace_root: Path | None = None
 
     @field_validator("database_url")
     @classmethod
@@ -59,6 +60,23 @@ class Settings(BaseSettings):
         if self.environment != "test" and not self.repository_allowed_roots:
             raise ValueError(
                 "repository_allowed_roots must not be empty outside the test environment"
+            )
+        root = self.attempt_workspace_root
+        if root is None:
+            if self.environment != "test":
+                raise ValueError(
+                    "attempt_workspace_root is required outside the test environment"
+                )
+            return self
+        if not root.is_absolute():
+            raise ValueError("attempt_workspace_root must be absolute")
+        try:
+            resolved = root.resolve(strict=True)
+        except OSError as exc:
+            raise ValueError("attempt_workspace_root must exist") from exc
+        if resolved != root or not root.is_dir():
+            raise ValueError(
+                "attempt_workspace_root must be an existing canonical directory"
             )
         return self
 

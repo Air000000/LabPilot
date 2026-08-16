@@ -186,6 +186,102 @@ async def test_snapshot_source_clean_tree_descriptor_directory_and_read() -> Non
 
 
 @pytest.mark.asyncio
+async def test_snapshot_source_materializes_and_verifies_exact_regular_and_symlink_bytes(
+    tmp_path: Path,
+) -> None:
+    source, git = _source()
+    git.tree = git.tree[:3]
+    destination = tmp_path / "source"
+
+    materialized = await source.materialize_exact_source(
+        repository_snapshot_id=SNAPSHOT_ID,
+        expected_repository_snapshot_identity="e" * 64,
+        destination=destination,
+    )
+
+    assert [
+        (entry.relative_path, entry.file_type, entry.file_mode)
+        for entry in materialized.entries
+    ] == [
+        ("base.txt", "regular", "100644"),
+        ("dir/child.txt", "regular", "100644"),
+        ("link", "symlink", "120000"),
+    ]
+    assert [entry.content_sha256 for entry in materialized.entries] == [
+        sha256(b"base\n").hexdigest(),
+        sha256(b"child\n").hexdigest(),
+        sha256(b"base.txt").hexdigest(),
+    ]
+    assert (destination / "base.txt").read_bytes() == b"base\n"
+    assert (destination / "link").readlink() == Path("base.txt")
+
+    assert await source.materialize_exact_source(
+        repository_snapshot_id=SNAPSHOT_ID,
+        expected_repository_snapshot_identity="e" * 64,
+        destination=destination,
+    ) == materialized
+
+    (destination / "base.txt").write_bytes(b"tampered\n")
+    with pytest.raises(RepositorySourceReadError) as captured:
+        await source.materialize_exact_source(
+            repository_snapshot_id=SNAPSHOT_ID,
+            expected_repository_snapshot_identity="e" * 64,
+            destination=destination,
+        )
+    assert captured.value.reason_code == "SOURCE_TAMPERED"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tree_index", "content", "reason_code"),
+    [
+        (2, b"../../escape", "SOURCE_SYMLINK_ESCAPE"),
+        (
+            0,
+            b"version https://git-lfs.github.com/spec/v1\n"
+            b"oid sha256:" + b"a" * 64 + b"\nsize 1\n",
+            "SOURCE_LFS_UNSUPPORTED",
+        ),
+    ],
+)
+async def test_snapshot_source_rejects_unsafe_materialization(
+    tmp_path: Path,
+    tree_index: int,
+    content: bytes,
+    reason_code: str,
+) -> None:
+    source, git = _source()
+    git.tree = (git.tree[tree_index],)
+    oid = git.tree[0].object_oid
+    assert oid is not None
+    git.contents[oid] = content
+
+    with pytest.raises(RepositorySourceReadError) as captured:
+        await source.materialize_exact_source(
+            repository_snapshot_id=SNAPSHOT_ID,
+            expected_repository_snapshot_identity="e" * 64,
+            destination=tmp_path / reason_code,
+        )
+
+    assert captured.value.reason_code == reason_code
+
+
+@pytest.mark.asyncio
+async def test_snapshot_source_rejects_submodule_materialization(tmp_path: Path) -> None:
+    source, git = _source()
+    git.tree = (git.tree[3],)
+
+    with pytest.raises(RepositorySourceReadError) as captured:
+        await source.materialize_exact_source(
+            repository_snapshot_id=SNAPSHOT_ID,
+            expected_repository_snapshot_identity="e" * 64,
+            destination=tmp_path / "source",
+        )
+
+    assert captured.value.reason_code == "SOURCE_SUBMODULE_UNSUPPORTED"
+
+
+@pytest.mark.asyncio
 async def test_source_operations_use_only_fake_git_and_cas_content(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

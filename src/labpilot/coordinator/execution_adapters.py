@@ -4,7 +4,11 @@ from uuid import UUID
 
 from labpilot.db.uow import SessionContextFactory
 from labpilot.execution.ports import ExecutionInputError
-from labpilot.execution.types import SourceManifest, VersionExecutionSemantics
+from labpilot.execution.types import (
+    SourceManifest,
+    SourceManifestEntry,
+    VersionExecutionSemantics,
+)
 from labpilot.experiments.proposal_models import (
     ExperimentRow,
     ExperimentVersionRow,
@@ -29,7 +33,7 @@ class _AcceptedSnapshotSource(Protocol):
         repository_snapshot_id: UUID,
         expected_repository_snapshot_identity: str,
         destination: Path,
-    ) -> SourceManifest:
+    ) -> object:
         raise NotImplementedError
 
 
@@ -150,11 +154,34 @@ class RepositorySnapshotMaterializationAdapter:
         expected_repository_snapshot_identity: str,
         destination: Path,
     ) -> SourceManifest:
-        manifest = await self._source.materialize_exact_source(
-            repository_snapshot_id=repository_snapshot_id,
-            expected_repository_snapshot_identity=expected_repository_snapshot_identity,
-            destination=destination,
-        )
+        try:
+            raw_manifest = await self._source.materialize_exact_source(
+                repository_snapshot_id=repository_snapshot_id,
+                expected_repository_snapshot_identity=expected_repository_snapshot_identity,
+                destination=destination,
+            )
+        except Exception as exc:
+            reason_code = getattr(exc, "reason_code", None)
+            if type(reason_code) is str:
+                raise ExecutionInputError(reason_code) from exc
+            raise
+        try:
+            manifest = SourceManifest(
+                schema_version=raw_manifest.schema_version,  # type: ignore[attr-defined]
+                repository_snapshot_id=raw_manifest.repository_snapshot_id,  # type: ignore[attr-defined]
+                repository_snapshot_identity=raw_manifest.repository_snapshot_identity,  # type: ignore[attr-defined]
+                entries=tuple(
+                    SourceManifestEntry(
+                        entry.relative_path,
+                        entry.file_type,
+                        entry.file_mode,
+                        entry.content_sha256,
+                    )
+                    for entry in raw_manifest.entries  # type: ignore[attr-defined]
+                ),
+            )
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise ExecutionInputError("SOURCE_MANIFEST_INVALID") from exc
         if (
             manifest.repository_snapshot_id != repository_snapshot_id
             or manifest.repository_snapshot_identity

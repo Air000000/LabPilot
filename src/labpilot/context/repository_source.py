@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import os
+import stat
 from dataclasses import dataclass
-from pathlib import Path
+from hashlib import sha256
+from pathlib import Path, PurePosixPath
 from typing import Literal, cast
 from uuid import UUID
 
 from labpilot.context.content_store import ContentAddressedStore
-from labpilot.context.git_adapter import GitAdapter
+from labpilot.context.git_adapter import GitAdapter, is_lfs_pointer_blob
 from labpilot.context.models import (
     RepositoryRegistrationRow,
     RepositorySnapshotInspectionBundleEntryRow,
@@ -98,6 +101,22 @@ class RepositoryApprovalReadiness:
     repository_snapshot_id: UUID
     repository_snapshot_identity: str | None
     current_probe_identity: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class RepositoryMaterializedEntry:
+    relative_path: str
+    file_type: str
+    file_mode: str
+    content_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class RepositoryMaterialization:
+    schema_version: str
+    repository_snapshot_id: UUID
+    repository_snapshot_identity: str
+    entries: tuple[RepositoryMaterializedEntry, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,6 +275,82 @@ class RepositorySnapshotSourceService:
                     if len(hits) == max_results:
                         return tuple(hits)
         return tuple(hits)
+
+    async def materialize_exact_source(
+        self,
+        *,
+        repository_snapshot_id: UUID,
+        expected_repository_snapshot_identity: str,
+        destination: Path,
+    ) -> RepositoryMaterialization:
+        context = await self._snapshot_context(repository_snapshot_id)
+        if (
+            context.snapshot.repository_snapshot_identity
+            != expected_repository_snapshot_identity
+        ):
+            raise RepositorySourceReadError("REPOSITORY_SNAPSHOT_BINDING_MISMATCH")
+
+        verify_only = destination.exists()
+        if verify_only and (destination.is_symlink() or not destination.is_dir()):
+            raise RepositorySourceReadError("SOURCE_TAMPERED")
+        if not verify_only:
+            destination.mkdir(parents=True)
+
+        materialized: list[RepositoryMaterializedEntry] = []
+        expected_paths: set[str] = set()
+        expected_directories: set[str] = set()
+        for entry in context.entries:
+            if entry.file_type == "submodule" or entry.file_mode == "160000":
+                raise RepositorySourceReadError("SOURCE_SUBMODULE_UNSUPPORTED")
+            if (entry.file_type, entry.file_mode) not in {
+                ("regular", "100644"),
+                ("regular", "100755"),
+                ("symlink", "120000"),
+            }:
+                raise RepositorySourceReadError("SOURCE_MODE_UNSUPPORTED")
+
+            relative_path = _validate_path(entry.relative_path)
+            data = await self._entry_bytes(context, entry, max_bytes=(1 << 63) - 1)
+            if is_lfs_pointer_blob(data):
+                raise RepositorySourceReadError("SOURCE_LFS_UNSUPPORTED")
+            target = destination.joinpath(*PurePosixPath(relative_path).parts)
+            expected_paths.add(relative_path)
+            expected_directories.update(_parent_paths(relative_path))
+
+            if entry.file_type == "symlink":
+                link_target = _safe_symlink_target(relative_path, data)
+                if verify_only:
+                    _verify_symlink(target, link_target)
+                else:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.symlink_to(link_target)
+            elif verify_only:
+                _verify_regular(target, data, executable=entry.file_mode == "100755")
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(data)
+                target.chmod(0o755 if entry.file_mode == "100755" else 0o644)
+
+            materialized.append(
+                RepositoryMaterializedEntry(
+                    relative_path,
+                    entry.file_type,
+                    entry.file_mode,
+                    sha256(data).hexdigest(),
+                )
+            )
+
+        if verify_only:
+            actual_paths, actual_directories = _filesystem_tree(destination)
+            if actual_paths != expected_paths or actual_directories != expected_directories:
+                raise RepositorySourceReadError("SOURCE_TAMPERED")
+
+        return RepositoryMaterialization(
+            "v1",
+            repository_snapshot_id,
+            expected_repository_snapshot_identity,
+            tuple(materialized),
+        )
 
     async def check_approval_readiness(
         self,
@@ -464,3 +559,74 @@ def _validate_read_limits(start_line: int, end_line: int, max_bytes: int) -> Non
         raise RepositorySourceReadError("line_range")
     if type(max_bytes) is not int or max_bytes < 1 or max_bytes > _MAX_TEXT_BYTES:
         raise RepositorySourceReadError("max_bytes")
+
+
+def _parent_paths(relative_path: str) -> set[str]:
+    parent = PurePosixPath(relative_path).parent
+    return set() if parent == PurePosixPath(".") else {
+        PurePosixPath(*parent.parts[:index]).as_posix()
+        for index in range(1, len(parent.parts) + 1)
+    }
+
+
+def _safe_symlink_target(relative_path: str, data: bytes) -> str:
+    try:
+        target = data.decode("utf-8", "strict")
+    except UnicodeDecodeError as exc:
+        raise RepositorySourceReadError("SOURCE_SYMLINK_ESCAPE") from exc
+    parsed = PurePosixPath(target)
+    if not target or parsed.is_absolute():
+        raise RepositorySourceReadError("SOURCE_SYMLINK_ESCAPE")
+    depth = len(PurePosixPath(relative_path).parent.parts)
+    for part in parsed.parts:
+        if part in {"", "."}:
+            continue
+        if part == "..":
+            depth -= 1
+            if depth < 0:
+                raise RepositorySourceReadError("SOURCE_SYMLINK_ESCAPE")
+        else:
+            depth += 1
+    return target
+
+
+def _verify_regular(path: Path, expected: bytes, *, executable: bool) -> None:
+    try:
+        mode = path.lstat().st_mode
+        actual = path.read_bytes()
+    except OSError as exc:
+        raise RepositorySourceReadError("SOURCE_TAMPERED") from exc
+    if not stat.S_ISREG(mode) or actual != expected or bool(mode & 0o111) != executable:
+        raise RepositorySourceReadError("SOURCE_TAMPERED")
+
+
+def _verify_symlink(path: Path, expected_target: str) -> None:
+    try:
+        if not path.is_symlink() or os.readlink(path) != expected_target:
+            raise RepositorySourceReadError("SOURCE_TAMPERED")
+    except OSError as exc:
+        raise RepositorySourceReadError("SOURCE_TAMPERED") from exc
+
+
+def _filesystem_tree(root: Path) -> tuple[set[str], set[str]]:
+    paths: set[str] = set()
+    directories: set[str] = set()
+
+    def visit(directory: Path, relative: PurePosixPath) -> None:
+        try:
+            children = tuple(os.scandir(directory))
+        except OSError as exc:
+            raise RepositorySourceReadError("SOURCE_TAMPERED") from exc
+        for child in children:
+            child_relative = relative / child.name
+            rendered = child_relative.as_posix()
+            if child.is_symlink() or child.is_file(follow_symlinks=False):
+                paths.add(rendered)
+            elif child.is_dir(follow_symlinks=False):
+                directories.add(rendered)
+                visit(Path(child.path), child_relative)
+            else:
+                raise RepositorySourceReadError("SOURCE_TAMPERED")
+
+    visit(root, PurePosixPath())
+    return paths, directories

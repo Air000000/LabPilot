@@ -1699,3 +1699,7 @@ def _is_lfs_pointer(value: bytes) -> bool:
         size_value == "0"
         or (size_value[:1] in "123456789" and size_value.isascii() and size_value.isdecimal())
     ) and int(size_value) <= _MAX_SIGNED_INT64
+
+
+def is_lfs_pointer_blob(value: bytes) -> bool:
+    return _is_lfs_pointer(value)

@@ -13,6 +13,7 @@ def test_settings_require_a_postgresql_async_url() -> None:
         local_actor_id="air",
         repository_allowed_roots=(Path("/repositories"),),
         repository_content_store_root=Path("/content"),
+        attempt_workspace_root=Path("/tmp"),
     )
     assert settings.database_url.startswith("postgresql+asyncpg://")
 
@@ -31,6 +32,7 @@ def test_settings_load_server_actor_from_exact_environment_variables(
         '["/repositories", "/worktrees"]',
     )
     monkeypatch.setenv("LABPILOT_REPOSITORY_CONTENT_STORE_ROOT", "/content")
+    monkeypatch.setenv("LABPILOT_ATTEMPT_WORKSPACE_ROOT", "/tmp")
 
     settings = Settings(_env_file=None)
 
@@ -100,6 +102,7 @@ def test_settings_accept_local_actor_id_at_utf8_byte_boundary() -> None:
         local_actor_id=actor_id,
         repository_allowed_roots=(Path("/repositories"),),
         repository_content_store_root=Path("/content"),
+        attempt_workspace_root=Path("/tmp"),
     )
 
     assert settings.local_actor_id == actor_id
@@ -121,6 +124,7 @@ def test_settings_parse_repository_roots_from_json_environment(
         '["/repositories", "/worktrees"]',
     )
     monkeypatch.setenv("LABPILOT_REPOSITORY_CONTENT_STORE_ROOT", "/content")
+    monkeypatch.setenv("LABPILOT_ATTEMPT_WORKSPACE_ROOT", "/tmp")
 
     settings = Settings(_env_file=None)
 
@@ -143,6 +147,65 @@ def test_settings_allow_empty_repository_roots_in_test_environment() -> None:
     )
 
     assert settings.repository_allowed_roots == ()
+
+
+def test_settings_allow_missing_attempt_workspace_root_only_in_test_mode() -> None:
+    settings = Settings(
+        environment="test",
+        database_url="postgresql+asyncpg://user:pass@db:5432/labpilot",
+        installation_identity="installation-1",
+        local_actor_id="air",
+        repository_allowed_roots=(),
+        repository_content_store_root=Path("/content"),
+    )
+
+    assert settings.attempt_workspace_root is None
+
+
+def test_settings_require_existing_canonical_attempt_workspace_root_outside_tests(
+    tmp_path: Path,
+) -> None:
+    canonical = tmp_path / "attempts"
+    canonical.mkdir()
+    accepted = Settings(
+        database_url="postgresql+asyncpg://user:pass@db:5432/labpilot",
+        installation_identity="installation-1",
+        local_actor_id="air",
+        repository_allowed_roots=(Path("/repositories"),),
+        repository_content_store_root=Path("/content"),
+        attempt_workspace_root=canonical,
+    )
+    assert accepted.attempt_workspace_root == canonical
+
+    for invalid in (None, Path("relative"), canonical / "missing"):
+        with pytest.raises(ValidationError, match="attempt_workspace_root"):
+            Settings(
+                database_url="postgresql+asyncpg://user:pass@db:5432/labpilot",
+                installation_identity="installation-1",
+                local_actor_id="air",
+                repository_allowed_roots=(Path("/repositories"),),
+                repository_content_store_root=Path("/content"),
+                attempt_workspace_root=invalid,
+            )
+
+
+def test_settings_reject_attempt_workspace_root_with_symlink_component(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    linked = tmp_path / "linked"
+    linked.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(ValidationError, match="attempt_workspace_root"):
+        Settings(
+            database_url="postgresql+asyncpg://user:pass@db:5432/labpilot",
+            installation_identity="installation-1",
+            local_actor_id="air",
+            repository_allowed_roots=(Path("/repositories"),),
+            repository_content_store_root=Path("/content"),
+            attempt_workspace_root=linked,
+        )
 
 
 @pytest.mark.parametrize("environment", ["development", "production"])
@@ -209,6 +272,7 @@ def test_data_egress_policy_defaults_local_only() -> None:
         local_actor_id="air",
         repository_allowed_roots=(Path("/repositories"),),
         repository_content_store_root=Path("/content"),
+        attempt_workspace_root=Path("/tmp"),
     )
 
     assert settings.data_egress_policy == "local_only"
@@ -221,6 +285,7 @@ def test_data_egress_policy_accepts_remote_provider_allowed() -> None:
         local_actor_id="air",
         repository_allowed_roots=(Path("/repositories"),),
         repository_content_store_root=Path("/content"),
+        attempt_workspace_root=Path("/tmp"),
         data_egress_policy="remote_provider_allowed",
     )
 
