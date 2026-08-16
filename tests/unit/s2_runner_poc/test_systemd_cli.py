@@ -436,6 +436,33 @@ def test_journal_exact_x_h_terminal_record_can_be_terminal_match() -> None:
     assert observation.evidence_source == "journal"
 
 
+def test_journal_exact_x_h_start_record_retains_identity_evidence_without_terminal_fact() -> None:
+    spec_hash = execution_spec_hash(_spec())
+    record = json.dumps(
+        {
+            "MESSAGE": json.dumps(
+                {
+                    "event": "probe_started",
+                    "execution_identity": X,
+                    "execution_spec_hash": spec_hash,
+                    "pid": 4312,
+                }
+            )
+        }
+    )
+    runner = ScriptedRunner(_absent(), _result(stdout=f"{record}\n"))
+
+    observation = _cli(runner, journal=True).observe(
+        execution_identity=X,
+        execution_spec_hash=spec_hash,
+    )
+
+    assert observation.kind is PhysicalObservationKind.UNKNOWN
+    assert observation.observed_spec_hash == spec_hash
+    assert observation.result == "probe_started_retained"
+    assert observation.evidence_source == "journal"
+
+
 def test_journal_exact_x_h_systemd_stop_job_can_be_terminal_match() -> None:
     spec_hash = execution_spec_hash(_spec())
     unit = systemd_unit_name(X)

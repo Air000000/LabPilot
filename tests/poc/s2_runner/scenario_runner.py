@@ -1825,13 +1825,20 @@ def _reboot_verify(context: _ScenarioContext) -> int:
         "automatic_relaunch": current_root_count > prior_root_count,
         "observation": observation.kind.value,
     }
-    journal_retained = _journal_has_exact_record(identity, spec_hash, "probe_started")
+    journal_retained = (
+        observation.evidence_source == "journal"
+        and observation.observed_spec_hash == spec_hash
+    )
+    safe_post_reboot_observation = observation.kind in {
+        PhysicalObservationKind.TERMINAL_MATCH,
+        PhysicalObservationKind.UNKNOWN,
+    }
     no_launch = True
     passed = (
         result["boot_changed"] is True
         and result["independent_root_count_unchanged"] is True
         and result["automatic_relaunch"] is False
-        and result["observation"] != PhysicalObservationKind.ACTIVE_MATCH.value
+        and safe_post_reboot_observation
         and journal_retained
         and no_launch
     )

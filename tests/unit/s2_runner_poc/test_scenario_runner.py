@@ -992,6 +992,182 @@ def test_reboot_verify_does_not_invent_lost_observation_kind(tmp_path: Path) -> 
     assert "lost" not in {kind.value for kind in PhysicalObservationKind}
 
 
+def test_reboot_verify_uses_runner_journal_evidence_when_controller_cannot_read_journal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state_root = tmp_path / "state"
+    evidence_root = tmp_path / "evidence"
+    marker = tmp_path / "p11-starts.jsonl"
+    state_root.mkdir()
+    evidence_root.mkdir()
+    marker.write_text("one\n", encoding="utf-8")
+    spec_hash = "a" * 64
+    (evidence_root / "p11-reboot.json").write_text(
+        json.dumps(
+            {
+                "execution_identity": X,
+                "execution_spec_hash": spec_hash,
+                "marker_path": str(marker),
+                "prior_boot_id": "definitely-not-the-current-boot",
+                "prior_root_count": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    context = scenario_module._ScenarioContext(
+        arguments=scenario_module.CliArguments(
+            state_root=state_root,
+            evidence_root=evidence_root,
+            installation_namespace="native-test",
+            evidence_stack="systemd+journal",
+            command="reboot-verify",
+        ),
+        store=DurableIntentStore(state_root / "intents"),
+        evidence=EvidenceLog(evidence_root / "records.jsonl"),
+        runner_socket=Path("/run/labpilot-s2-runner-poc/control.sock"),
+    )
+    monkeypatch.setattr(
+        scenario_module,
+        "recover_runner_without_replay",
+        lambda socket_path, execution_identity, execution_spec_hash: PhysicalObservation(
+            PhysicalObservationKind.TERMINAL_MATCH,
+            execution_identity,
+            execution_spec_hash,
+            execution_spec_hash,
+            result="systemd_stop_done",
+            evidence_source="journal",
+        ),
+    )
+    direct_journal_calls = 0
+
+    def denied_controller_journal(
+        argv: tuple[str, ...] | list[str], timeout: float
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal direct_journal_calls
+        direct_journal_calls += 1
+        return subprocess.CompletedProcess(argv, 1, "", "Permission denied")
+
+    monkeypatch.setattr(
+        scenario_module,
+        "_subprocess_runner",
+        denied_controller_journal,
+    )
+
+    assert scenario_module._reboot_verify(context) == 0
+    assert direct_journal_calls == 0
+    record = context.evidence.read_all()[-1]
+    assert record.detail["pre_reboot_journal_record_retained"] is True
+
+
+def test_reboot_verify_accepts_unknown_when_runner_retains_exact_start_journal_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state_root = tmp_path / "state"
+    evidence_root = tmp_path / "evidence"
+    marker = tmp_path / "p11-starts.jsonl"
+    state_root.mkdir()
+    evidence_root.mkdir()
+    marker.write_text("one\n", encoding="utf-8")
+    spec_hash = "a" * 64
+    (evidence_root / "p11-reboot.json").write_text(
+        json.dumps(
+            {
+                "execution_identity": X,
+                "execution_spec_hash": spec_hash,
+                "marker_path": str(marker),
+                "prior_boot_id": "definitely-not-the-current-boot",
+                "prior_root_count": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    context = scenario_module._ScenarioContext(
+        arguments=scenario_module.CliArguments(
+            state_root=state_root,
+            evidence_root=evidence_root,
+            installation_namespace="native-test",
+            evidence_stack="systemd+journal",
+            command="reboot-verify",
+        ),
+        store=DurableIntentStore(state_root / "intents"),
+        evidence=EvidenceLog(evidence_root / "records.jsonl"),
+        runner_socket=Path("/run/labpilot-s2-runner-poc/control.sock"),
+    )
+    monkeypatch.setattr(
+        scenario_module,
+        "recover_runner_without_replay",
+        lambda socket_path, execution_identity, execution_spec_hash: PhysicalObservation(
+            PhysicalObservationKind.UNKNOWN,
+            execution_identity,
+            execution_spec_hash,
+            execution_spec_hash,
+            result="probe_started_retained",
+            evidence_source="journal",
+        ),
+    )
+    monkeypatch.setattr(
+        scenario_module,
+        "_subprocess_runner",
+        lambda argv, timeout: subprocess.CompletedProcess(argv, 1, "", "Permission denied"),
+    )
+
+    assert scenario_module._reboot_verify(context) == 0
+
+
+def test_reboot_verify_rejects_identity_conflict_even_with_retained_journal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state_root = tmp_path / "state"
+    evidence_root = tmp_path / "evidence"
+    marker = tmp_path / "p11-starts.jsonl"
+    state_root.mkdir()
+    evidence_root.mkdir()
+    marker.write_text("one\n", encoding="utf-8")
+    spec_hash = "a" * 64
+    (evidence_root / "p11-reboot.json").write_text(
+        json.dumps(
+            {
+                "execution_identity": X,
+                "execution_spec_hash": spec_hash,
+                "marker_path": str(marker),
+                "prior_boot_id": "definitely-not-the-current-boot",
+                "prior_root_count": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    context = scenario_module._ScenarioContext(
+        arguments=scenario_module.CliArguments(
+            state_root=state_root,
+            evidence_root=evidence_root,
+            installation_namespace="native-test",
+            evidence_stack="systemd+journal",
+            command="reboot-verify",
+        ),
+        store=DurableIntentStore(state_root / "intents"),
+        evidence=EvidenceLog(evidence_root / "records.jsonl"),
+        runner_socket=Path("/run/labpilot-s2-runner-poc/control.sock"),
+    )
+    monkeypatch.setattr(
+        scenario_module,
+        "recover_runner_without_replay",
+        lambda socket_path, execution_identity, execution_spec_hash: PhysicalObservation(
+            PhysicalObservationKind.IDENTITY_CONFLICT,
+            execution_identity,
+            execution_spec_hash,
+            "b" * 64,
+            evidence_source="journal",
+        ),
+    )
+    monkeypatch.setattr(
+        scenario_module,
+        "_journal_has_exact_record",
+        lambda execution_identity, execution_spec_hash, event: True,
+    )
+
+    assert scenario_module._reboot_verify(context) == 1
+
+
 def test_candidate_b_characterize_requires_runner_and_denied_direct_systemd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

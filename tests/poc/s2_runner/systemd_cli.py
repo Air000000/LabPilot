@@ -322,6 +322,7 @@ class SystemdCli:
         if result.returncode != 0:
             return self._unknown(execution_identity, execution_spec_hash, "journal_query_unknown")
         unit_name = systemd_unit_name(execution_identity)
+        retained_start_hash: str | None = None
         for line in reversed(result.stdout.splitlines()):
             record = _json_object(line)
             if record is None:
@@ -369,6 +370,17 @@ class SystemdCli:
                     exit_code=_integer_or_none(message.get("exit_code")),
                     evidence_source="journal",
                 )
+            if message.get("event") == "probe_started":
+                retained_start_hash = observed_hash
+        if retained_start_hash is not None:
+            return PhysicalObservation(
+                kind=PhysicalObservationKind.UNKNOWN,
+                execution_identity=execution_identity,
+                expected_spec_hash=execution_spec_hash,
+                observed_spec_hash=retained_start_hash,
+                result="probe_started_retained",
+                evidence_source="journal",
+            )
         return self._unknown(
             execution_identity, execution_spec_hash, "journal_evidence_insufficient"
         )
