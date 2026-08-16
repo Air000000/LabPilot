@@ -79,6 +79,23 @@ def _policy() -> RunnerPolicy:
     )
 
 
+def _pretend_policy_is_root_owned(
+    monkeypatch: pytest.MonkeyPatch,
+    policy_path: Path,
+) -> None:
+    original_lstat = Path.lstat
+
+    def root_owned_lstat(path: Path) -> os.stat_result:
+        metadata = original_lstat(path)
+        if path != policy_path:
+            return metadata
+        values = list(metadata)
+        values[4] = 0
+        return os.stat_result(values)
+
+    monkeypatch.setattr(Path, "lstat", root_owned_lstat)
+
+
 class FakeSystemdCli(SystemdCli):
     def __init__(self) -> None:
         self.launch_calls = 0
@@ -293,6 +310,7 @@ def test_policy_file_must_be_root_owned_not_writable_and_use_fixed_identities(
         )
     )
     os.chmod(policy_path, 0o600)
+    _pretend_policy_is_root_owned(monkeypatch, policy_path)
 
     loaded = load_policy(policy_path)
 
@@ -341,6 +359,7 @@ def test_policy_rejects_identity_names_other_than_candidate_b_principals(
         )
     )
     os.chmod(policy_path, 0o600)
+    _pretend_policy_is_root_owned(monkeypatch, policy_path)
 
     with pytest.raises(ValueError, match="policy_identity_mismatch"):
         load_policy(policy_path)
