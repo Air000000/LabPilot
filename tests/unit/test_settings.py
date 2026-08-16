@@ -168,6 +168,7 @@ def test_settings_require_existing_canonical_attempt_workspace_root_outside_test
     canonical = tmp_path / "attempts"
     canonical.mkdir()
     accepted = Settings(
+        environment="development",
         database_url="postgresql+asyncpg://user:pass@db:5432/labpilot",
         installation_identity="installation-1",
         local_actor_id="air",
@@ -180,6 +181,7 @@ def test_settings_require_existing_canonical_attempt_workspace_root_outside_test
     for invalid in (None, Path("relative"), canonical / "missing"):
         with pytest.raises(ValidationError, match="attempt_workspace_root"):
             Settings(
+                environment="development",
                 database_url="postgresql+asyncpg://user:pass@db:5432/labpilot",
                 installation_identity="installation-1",
                 local_actor_id="air",

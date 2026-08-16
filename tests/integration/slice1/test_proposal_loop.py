@@ -498,7 +498,7 @@ async def test_positive_repository_agent_proposal_approval_version_path(
             {"kind": "artifact_exists", "subject": "model"},
             {"kind": "metric_finite", "subject": "accuracy"},
         ]
-        assert slice2_tables.one() == (None, None, None, None)
+        assert slice2_tables.one() == ("batches", "trials", "attempts", None)
 
 
 @pytest.mark.asyncio
