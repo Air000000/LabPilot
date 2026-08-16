@@ -413,6 +413,94 @@ def test_p2_waits_for_probe_marker_after_active_observation(
     assert scenario_module._p2(context) == 0
 
 
+def test_p3_ack_response_loss_waits_for_probe_marker_after_active_observation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    marker_root = tmp_path / "markers"
+    marker_root.mkdir()
+    state_root = tmp_path / "state"
+    evidence_root = tmp_path / "evidence"
+    context = scenario_module._ScenarioContext(
+        arguments=scenario_module.CliArguments(
+            state_root=state_root,
+            evidence_root=evidence_root,
+            installation_namespace="native-test",
+            evidence_stack="systemd+journal",
+            command="p3",
+        ),
+        store=DurableIntentStore(state_root / "intents"),
+        evidence=EvidenceLog(evidence_root / "records.jsonl"),
+        runner_socket=Path("/run/labpilot-s2-runner-poc/control.sock"),
+    )
+    monkeypatch.setattr(scenario_module, "POC_MARKER_ROOT", marker_root)
+    monkeypatch.setattr(scenario_module, "POC_WORKING_ROOT", tmp_path / "workspace")
+
+    after_attempt = scenario_module._scenario_attempt(context, "p3-ack-after")
+    after_identity = supervisor_execution_identity("native-test", after_attempt)
+    lost_attempt = scenario_module._scenario_attempt(context, "p3-ack-response-lost")
+    lost_identity = supervisor_execution_identity("native-test", lost_attempt)
+
+    def dispatch(
+        store: DurableIntentStore,
+        socket_path: Path,
+        attempt_id: UUID,
+        spec: FrozenLaunchSpec,
+        execution_spec_hash_value: str,
+        creation_evidence: PositiveCreationEvidence,
+        **kwargs: object,
+    ) -> ControlOutcome:
+        del store, socket_path, spec, creation_evidence, kwargs
+        return ControlOutcome(
+            ControlOutcomeKind.CONTROL_UNKNOWN,
+            supervisor_execution_identity("native-test", attempt_id),
+            execution_spec_hash_value,
+            "injected_control_unknown",
+        )
+
+    def observe(
+        socket_path: Path,
+        execution_identity: str,
+        execution_spec_hash_value: str,
+        accepted: set[PhysicalObservationKind],
+        *,
+        timeout_seconds: float = 15.0,
+    ) -> PhysicalObservation:
+        del socket_path, accepted, timeout_seconds
+        if execution_identity == after_identity:
+            marker = marker_root / "p3-ack-after-systemd-journal-starts.jsonl"
+            marker.write_text('{"event":"probe_started"}\n', encoding="utf-8")
+        elif execution_identity == lost_identity:
+            marker = marker_root / "p3-ack-response-lost-systemd-journal-starts.jsonl"
+
+            def write_marker() -> None:
+                marker.write_text('{"event":"probe_started"}\n', encoding="utf-8")
+
+            threading.Timer(0.05, write_marker).start()
+        return PhysicalObservation(
+            PhysicalObservationKind.ACTIVE_MATCH,
+            execution_identity,
+            execution_spec_hash_value,
+            execution_spec_hash_value,
+            evidence_source="systemd_unit",
+        )
+
+    monkeypatch.setattr(scenario_module, "dispatch_once_runner", dispatch)
+    monkeypatch.setattr(scenario_module, "_wait_runner_ready", lambda *args: True)
+    monkeypatch.setattr(
+        scenario_module,
+        "recover_runner_without_replay",
+        lambda *args: PhysicalObservation(
+            PhysicalObservationKind.UNKNOWN,
+            args[1],
+            args[2],
+        ),
+    )
+    monkeypatch.setattr(scenario_module, "_wait_runner_observation", observe)
+    monkeypatch.setattr(scenario_module, "_cleanup_runner", lambda *args: None)
+
+    assert scenario_module._p3(context) == 0
+
+
 def test_p3_recovery_observes_before_any_possible_replay() -> None:
     spec_hash = execution_spec_hash(_spec())
     supervisor = FakeSupervisor(

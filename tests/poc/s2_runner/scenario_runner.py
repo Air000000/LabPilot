@@ -1101,7 +1101,9 @@ def _p3(context: _ScenarioContext) -> int:
         lost_hash,
         {PhysicalObservationKind.ACTIVE_MATCH, PhysicalObservationKind.TERMINAL_MATCH},
     )
-    lost_root_count = _line_count(Path(lost_spec.start_marker_path))
+    lost_root_count = _wait_for_line_count(
+        Path(lost_spec.start_marker_path), minimum_count=1
+    )
     lost_passed = (
         lost_outcome.kind is ControlOutcomeKind.CONTROL_UNKNOWN
         and lost_observation.kind
