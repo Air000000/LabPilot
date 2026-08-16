@@ -22,7 +22,7 @@
 
 **Native S2.0 evidence:** `docs/superpowers/evidence/2026-08-13-labpilot-v1-slice2-runner-supervision-poc.md`
 
-**Status:** Draft r4 targeted remediation after focused review of r3 commit `53c2601105d8ecb90021fc2343b3f20b8eeceea9`. Task 1 is complete and must not be rerun merely for familiarity. Tasks 2–5 remain **NOT AUTHORIZED FOR IMPLEMENTATION** until r4 receives finding-specific G0 approval.
+**Status:** Draft r4.1 direct-regression remediation after finding-specific review of r4 commit `962a156f5456c8903722e52c74882249734243fc`. Task 1 is complete and must not be rerun merely for familiarity. Tasks 2–5 remain **NOT AUTHORIZED FOR IMPLEMENTATION** until R4-D1 receives final finding-specific G0 approval.
 
 **Historical governance note:** Candidate B was admitted and implemented before a separate focused pre-implementation amendment was committed. This plan records the post-S2.0 production contract and does not backdate or rewrite that history.
 
@@ -51,9 +51,9 @@
 
 ---
 
-# 0. r4 targeted remediation scope
+# 0. r4/r4.1 targeted remediation scope
 
-This revision closes the focused review of r3 only. It does not reopen accepted architecture choices.
+r4 closed the focused review of r3. r4.1 changes only the direct deployment regression R4-D1 and its mechanically required consistency checks; it does not reopen accepted architecture choices.
 
 ```text
 R4-1  record exact R0 Planning baseline and exact Slice 1 acceptance baseline
@@ -66,9 +66,10 @@ R4-7  define durable launch/start/restart-reconcile/terminal audit events
 R4-8  clarify retry eligibility wording
 R4-9  define ArtifactDeclaration.relative_path relative to Attempt runtime/output
 R4-10 freeze final ExecStart composition and argv safety budgets
+R4-D1 restore tested root Runner service hardening: Python -E -s, NoNewPrivileges=yes, RestrictAddressFamilies=AF_UNIX, UMask=0077; keep socket sharing explicit
 ```
 
-Finding-specific re-review after this revision should check R4-1 through R4-10 and direct regressions only. A second broad architecture review is not required unless this revision materially widens the accepted Candidate B authority surface.
+The final G0 re-review checks R4-D1 and direct consistency edits only. A second broad architecture review is not required unless this revision materially widens the accepted Candidate B authority surface.
 
 ---
 
@@ -132,7 +133,7 @@ The current dependency guard intentionally keeps `labpilot.execution` independen
 
 **Create host deployment files:**
 
-- `deploy/systemd/labpilot-runner.service` — fixed root-managed service unit.
+- `deploy/systemd/labpilot-runner.service` — fixed root-managed service unit preserving the selected Candidate B service hardening.
 - `scripts/install_labpilot_runner_host.sh` — narrow root install/update script for an exact committed source tree plus an explicit policy file; not a general installer platform.
 
 **Create API files:**
@@ -192,12 +193,12 @@ Use the existing `labpilot.common.hashing.namespaced_sha256()` and `canonical_js
 Freeze these namespaces:
 
 ```text
-Trial identity                 labpilot-trial:v1
+Trial identity                  labpilot-trial:v1
 Supervisor installation digest labpilot-supervisor-installation:v1
-SourceManifest                 labpilot-source-manifest:v1
-FrozenExecutionSpec            labpilot-frozen-execution-spec:v1
-FrozenLaunchSpec / H           labpilot-frozen-launch-spec:v1
-Runner host policy             labpilot-runner-policy:v1
+SourceManifest                  labpilot-source-manifest:v1
+FrozenExecutionSpec             labpilot-frozen-execution-spec:v1
+FrozenLaunchSpec / H            labpilot-frozen-launch-spec:v1
+Runner host policy              labpilot-runner-policy:v1
 ```
 
 Trial identity is exactly:
@@ -393,11 +394,11 @@ Proposal template literals and rendered values must be valid UTF-8 without isola
 Budgets are fixed for V1:
 
 ```text
-rendered_argv tokens                 <= 256
-final ExecStart tokens               <= 258
-one token UTF-8 bytes                <= 8192
+rendered_argv tokens                    <= 256
+final ExecStart tokens                  <= 258
+one token UTF-8 bytes                   <= 8192
 sum(len(token_utf8) + 1) for ExecStart <= 32768
-NUL                                  forbidden
+NUL                                     forbidden
 ```
 
 Proposal verification rejects an already-invalid literal template token. Task 2 rechecks the fully rendered argv budget before `LAUNCH_READY`, because parameter/dataset substitutions may be larger than template literals.
@@ -915,16 +916,30 @@ After=local-fs.target
 Type=simple
 User=root
 Group=labpilot-control
-UMask=0007
+UMask=0077
 RuntimeDirectory=labpilot-runner
 RuntimeDirectoryMode=0750
-ExecStart=/opt/labpilot-runner/app/.venv/bin/python -m labpilot.execution.runner_daemon --policy /etc/labpilot/runner-policy.json
+ExecStart=/opt/labpilot-runner/app/.venv/bin/python -E -s -m labpilot.execution.runner_daemon --policy /etc/labpilot/runner-policy.json
 Restart=on-failure
 RestartSec=1s
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX
 
 [Install]
 WantedBy=multi-user.target
 ```
+
+`Group=labpilot-control` is a production-specific specialization for the runtime-directory/socket boundary; it does not widen default daemon-created-file access because the service-wide umask remains `0077`.
+
+The daemon creates the AF_UNIX socket under that restrictive umask and, before it reports readiness or accepts a request, explicitly applies and verifies the final socket metadata:
+
+```text
+owner uid = 0
+owner group = labpilot-control gid from the validated root-owned policy/host identity
+mode = 0660
+```
+
+Failure to set or re-read exact final socket ownership/mode is a fatal startup error. Other daemon-created files retain the restrictive service umask and are not implicitly exposed to `labpilot-control`.
 
 The installer is intentionally narrow:
 
@@ -934,7 +949,9 @@ The installer is intentionally narrow:
 4. runs `uv sync --locked --no-dev` in the root-owned install tree;
 5. installs policy/service with the exact ownership/modes above;
 6. `systemctl daemon-reload` then `systemctl enable --now labpilot-runner.service`;
-7. verifies service is active, runtime directory ownership/mode, socket ownership/mode, and `INFO` readiness.
+7. verifies the **effective loaded service** has exact `ExecStart` Python `-E -s`, `UMask=0077`, `NoNewPrivileges=yes`, and `RestrictAddressFamilies=AF_UNIX`; then verifies service active state, runtime-directory ownership/mode, socket ownership/mode, and `INFO` readiness.
+
+The effective-service check must interrogate systemd's loaded unit/properties after `daemon-reload`; checking only the repository unit file is insufficient.
 
 No site-specific `workspace_root` or runtime path is guessed by the repository. The explicit policy source supplied to the installer owns those deployment values.
 
@@ -1130,7 +1147,7 @@ Create: tests/unit/execution/test_runner_daemon.py
 Create: tests/architecture/test_execution_privilege_boundary.py
 ```
 
-Red tests prove: policy symlink/owner/write checks; exact policy hash; safe environment-key allowlist; peer credential mismatch performs zero systemd calls; INFO runtime probe cannot select arbitrary executable/code; same-X/different-H returns conflict; NOT_FOUND does not create without positive creation authority; workload stdout cannot fabricate terminal; STOP only after exact active observation.
+Red tests prove: policy symlink/owner/write checks; exact policy hash; safe environment-key allowlist; peer credential mismatch performs zero systemd calls; INFO runtime probe cannot select arbitrary executable/code; same-X/different-H returns conflict; NOT_FOUND does not create without positive creation authority; workload stdout cannot fabricate terminal; STOP only after exact active observation; socket bind explicitly sets and re-verifies `root:labpilot-control 0660` before readiness and fails startup if the final metadata differs.
 
 Run:
 
@@ -1154,7 +1171,20 @@ Create: scripts/install_labpilot_runner_host.sh
 Create: tests/unit/execution/test_runner_deployment.py
 ```
 
-Static tests assert exact service directives and reject a service that runs from repository/controller-writable paths. Script tests exercise non-root refusal and argument validation without mutating host systemd. Native Task 5 performs the real root install/start checks.
+Static deployment tests assert all exact directives below and reject regressions:
+
+```text
+User=root
+Group=labpilot-control
+UMask=0077
+ExecStart uses /opt/labpilot-runner/app/.venv/bin/python -E -s -m labpilot.execution.runner_daemon
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX
+RuntimeDirectory=labpilot-runner
+RuntimeDirectoryMode=0750
+```
+
+They also reject a service that executes from a repository/controller-writable path or relaxes to `UMask=0007`. Installer tests exercise non-root refusal, argument validation, and effective-systemd-property verification logic without mutating host systemd. Native Task 5 performs real root install/start checks against the effective loaded service.
 
 Run:
 
@@ -1224,7 +1254,7 @@ bash -n scripts/install_labpilot_runner_host.sh
 git diff --check
 ```
 
-Stop for G2 review before Task 4. The gate fails if any test reconstructs first-dispatch authority from durable state, aliases IDENTITY_CONFLICT to UNKNOWN, or invokes Runner LAUNCH from Outbox processing.
+Stop for G2 review before Task 4. The gate fails if any test reconstructs first-dispatch authority from durable state, aliases IDENTITY_CONFLICT to UNKNOWN, invokes Runner LAUNCH from Outbox processing, or drops the service hardening in §5.6.
 
 ---
 
@@ -1582,7 +1612,19 @@ Test fault decorators may delay/fail communication or delegate and drop a respon
 
 The tiny training fixture accepts deterministic argv for seed/value/dataset/output/duration/exit behavior, writes bounded test-oracle records under `runtime/output`, and may spawn a child for control-group cancellation testing. Those records are acceptance oracles only; production reconciliation never trusts them as physical authority.
 
-Each native scenario installs/starts the exact committed root-owned Runner using §5.6 or verifies the already-installed service matches the tested commit/policy identity before running.
+Each native scenario installs/starts the exact committed root-owned Runner using §5.6 or verifies the already-installed service matches the tested commit/policy identity **and the effective loaded hardening contract** before running. The preflight records and checks:
+
+```text
+ExecStart Python flags include -E -s
+UMask=0077
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX
+runtime directory root:labpilot-control 0750
+control.sock root:labpilot-control 0660
+INFO ready with expected policy identity
+```
+
+A repository unit file that is correct while systemd has a stale/different loaded unit is an acceptance failure.
 
 ## 7.2 Required native scenarios
 
@@ -1620,7 +1662,7 @@ failed launch / definite non-acceptance  F20
 timeout                                  F21
 process exits while Coordinator down     F08
 restart during reconciliation            F22
-unknown physical identity/evidence        F14 + F15
+unknown physical identity/evidence       F14 + F15
 physical process count = 1 recovery      F06 + F07 + F19 + F22
 ```
 
@@ -1647,6 +1689,7 @@ C13 API gains Runner/systemd physical-control authority
 C14 Attempt lacks bounded observed environment for its approved EnvironmentExpectation
 C15 restart reconciliation lacks its immutable audit event
 C16 production Runner imports/executes from controller-writable checkout
+C17 effective production Runner service drops Python -E/-s, NoNewPrivileges, AF_UNIX restriction, or UMask=0077
 ```
 
 ## 7.4 Evidence package
@@ -1658,6 +1701,7 @@ scenario.json
 db-before.json
 db-after.json
 runner-info.json
+runner-service-effective.json
 observed-environment.json
 physical-observations.jsonl
 runtime-events.jsonl
@@ -1667,7 +1711,7 @@ workload-test-oracle.json
 verdict.json
 ```
 
-Evidence includes R0/S1/S2.0/implementation commit identities, installation-identity digest, Runner policy identity/version/protocol, boot ID(s), X, H, workspace path, SourceManifest hash, and selected bounded RuntimeEvents. It excludes secrets, full process environment, unbounded journal, and full DB dumps.
+Evidence includes R0/S1/S2.0/implementation commit identities, installation-identity digest, Runner policy identity/version/protocol, effective service hardening facts, boot ID(s), X, H, workspace path, SourceManifest hash, and selected bounded RuntimeEvents. It excludes secrets, full process environment, unbounded journal, and full DB dumps.
 
 For scenarios intentionally ending UNKNOWN or IDENTITY_CONFLICT, seal/hash the verdict before external administrator teardown. Teardown must not write fake `terminal_at`, clear attention state, rewrite conflict as UNKNOWN, or mark domain success.
 
@@ -1691,7 +1735,7 @@ test: add slice two production acceptance harness
 
 - [ ] **Step 2: Run non-reboot native scenarios.**
 
-On the dedicated Candidate B VM, install/verify the exact committed Runner, then run:
+On the dedicated Candidate B VM, install/verify the exact committed Runner and effective service hardening in §5.6, then run:
 
 ```bash
 uv run python scripts/run_slice2_native_acceptance.py --scenarios F01-F17,F19-F22
@@ -1715,11 +1759,11 @@ Verify after reboot:
 uv run python scripts/run_slice2_native_acceptance.py --scenario F18 --phase verify
 ```
 
-The verifier must never call LAUNCH for the old Attempt.
+The verifier must re-check the effective Runner service hardening after reboot and must never call LAUNCH for the old Attempt.
 
 - [ ] **Step 4: Seal production acceptance evidence.**
 
-The evidence document records exact host/runtime versions, tested commit SHA, Runner installed commit/policy identity, F01–F22 verdicts, Roadmap mapping, critical-failure scan, archive checksum, and any ADR-bounded UNKNOWN. Do not claim full Slice 2 acceptance if any scenario lacks required evidence.
+The evidence document records exact host/runtime versions, tested commit SHA, Runner installed commit/policy identity, effective loaded service hardening, F01–F22 verdicts, Roadmap mapping, critical-failure scan, archive checksum, and any ADR-bounded UNKNOWN. Do not claim full Slice 2 acceptance if any scenario lacks required evidence.
 
 Commit message:
 
@@ -1741,7 +1785,7 @@ git diff --check
 
 Create a fresh PostgreSQL database and verify migrations from zero through `0010_attempt_physical_execution.py`, then rerun integration tests against that fresh DB.
 
-Perform one independent deep review focused on authority boundaries, replay/ack-loss safety, distinct IDENTITY_CONFLICT semantics, observed environment, audit history, Runner deployment, UNKNOWN semantics, and API privilege isolation.
+Perform one independent deep review focused on authority boundaries, replay/ack-loss safety, distinct IDENTITY_CONFLICT semantics, observed environment, audit history, Runner deployment/service hardening, UNKNOWN semantics, and API privilege isolation.
 
 Only after this gate passes update `DOCUMENT-STATUS.md` once to mark Slice 2 accepted.
 
@@ -1752,7 +1796,7 @@ Only after this gate passes update `DOCUMENT-STATUS.md` once to mark Slice 2 acc
 Implementation stops for human review at exactly:
 
 ```text
-G0 r4 targeted remediation approved by finding-specific review
+G0 r4.1 targeted remediation approved by final R4-D1-only finding-specific review
 G1 Task 2 accepted: preparation contract/exact source/identities proven, zero physical launch
 G2 Task 3 accepted: Candidate B production deployment + launch/observe/stop + environment/audit/ack-loss proven
 G3 Task 4 accepted: Coordinator/API composition, startup barrier, capacity, cancellation, privilege split proven
@@ -1770,6 +1814,7 @@ Stop immediately before editing beyond-plan scope if any arise:
 - IDENTITY_CONFLICT appears to require aliasing to UNKNOWN or automatic conflict clearing;
 - production Attempt path requires PoC `/var/lib/labpilot-s2-poc/*` assumptions;
 - environment observation appears to require arbitrary caller-supplied probe code or a generic environment inventory platform;
+- production Runner appears to require dropping `-E -s`, `NoNewPrivileges=yes`, `RestrictAddressFamilies=AF_UNIX`, or `UMask=0077`;
 - API needs Runner socket/workspace/systemd access;
 - native evidence contradicts the selected S2.0 ADR.
 
@@ -1777,7 +1822,7 @@ When a stop condition is hit, identify exact file, commit, invariant, and observ
 
 ---
 
-# 9. r4 self-review checklist
+# 9. r4.1 self-review checklist
 
 Before G0 implementation authorization, verify:
 
@@ -1785,6 +1830,10 @@ Before G0 implementation authorization, verify:
 - accepted Slice 1 baseline is explicitly recorded as `ff7909503c3b755bffb564423de3a56ce5bb9b4a` and is distinct from S2.0/handoff lineage.
 - Task 1 is historical/complete and no step reruns P0–P13 merely for familiarity.
 - Tasks 2–5 preserve the five-task outer shape.
+- R4-D1 is the only semantic change after r4: Runner service restores Python `-E -s`, `NoNewPrivileges=yes`, `RestrictAddressFamilies=AF_UNIX`, and `UMask=0077`; direct consistency edits only add verification/evidence for those properties.
+- `Group=labpilot-control` remains allowed only for the runtime-directory/socket boundary; restrictive `UMask=0077` prevents accidental group exposure of other daemon-created files.
+- Runner explicitly sets and verifies `control.sock` as `root:labpilot-control 0660` before readiness; socket sharing does not depend on service-wide umask relaxation.
+- deployment unit tests and installer/native checks verify the **effective loaded systemd service**, not only the repository unit file.
 - `execution` does not import `experiments` or `context`; Coordinator adapters bridge those authorities.
 - Legacy Proposal hashes remain immutable; legacy Versions fail closed for execution rather than being rewritten.
 - `parameter_matrix × seeds` is bounded to 1–20 Trials.
@@ -1796,7 +1845,7 @@ Before G0 implementation authorization, verify:
 - Task 2 has no Runner/systemd side effect.
 - complete approved EnvironmentExpectation reaches FrozenExecutionSpec; Attempt persists bounded ObservedEnvironment before first dispatch.
 - only exact non-secret root-policy environment pairs enter FrozenLaunchSpec/H; observed host inventory is evidence, not H.
-- production root Runner has exact service/install/policy/runtime-dir/socket ownership and startup contract.
+- production root Runner has exact service/install/policy/runtime-dir/socket ownership and startup contract without widening the native Candidate B service boundary.
 - `LAUNCH_PENDING` commit precedes physical dispatch; first-dispatch authority is in-memory only.
 - Outbox is not a Runner LAUNCH delivery path.
 - launch intent, physical start, startup reconciliation, conflict, and terminal history have explicit immutable RuntimeEvents; audit-only events use the compatible `enqueue_outbox=False` bridge.
@@ -1807,5 +1856,6 @@ Before G0 implementation authorization, verify:
 - retry wording uses `next_attempt_number > 1` and a finite explicit infrastructure allowlist.
 - API cannot reach the privileged physical boundary.
 - Task 5 explicitly maps API restart, Coordinator restart, failed launch, timeout, Coordinator-down exit, restart-during-reconciliation, and unknown/conflicting physical identity to named native scenarios.
+- Task 5 native preflight/evidence includes effective Runner service hardening, including after reboot.
 - Task 5 uses real physical facts and bounded evidence, not fabricated observations.
 - `DOCUMENT-STATUS.md` changes only at full Slice 2 acceptance.
