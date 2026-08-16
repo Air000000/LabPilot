@@ -1,4 +1,5 @@
 import json
+import multiprocessing
 import os
 import pwd
 import subprocess
@@ -468,7 +469,11 @@ def test_p3_ack_response_loss_waits_for_probe_marker_after_active_observation(
         del socket_path, accepted, timeout_seconds
         if execution_identity == after_identity:
             marker = marker_root / "p3-ack-after-systemd-journal-starts.jsonl"
-            marker.write_text('{"event":"probe_started"}\n', encoding="utf-8")
+
+            def write_after_marker() -> None:
+                marker.write_text('{"event":"probe_started"}\n', encoding="utf-8")
+
+            threading.Timer(0.05, write_after_marker).start()
         elif execution_identity == lost_identity:
             marker = marker_root / "p3-ack-response-lost-systemd-journal-starts.jsonl"
 
@@ -514,6 +519,92 @@ def test_p3_recovery_observes_before_any_possible_replay() -> None:
     assert supervisor.launch_calls == 0
 
 
+def test_p4_waits_for_probe_marker_after_concurrent_dispatch_settles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    marker_root = tmp_path / "markers"
+    marker_root.mkdir()
+    state_root = tmp_path / "state"
+    state_root.mkdir()
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir()
+    context = scenario_module._ScenarioContext(
+        arguments=scenario_module.CliArguments(
+            state_root=state_root,
+            evidence_root=evidence_root,
+            installation_namespace="native-test",
+            evidence_stack="systemd+journal",
+            command="p4",
+        ),
+        store=DurableIntentStore(state_root / "intents"),
+        evidence=EvidenceLog(evidence_root / "records.jsonl"),
+        runner_socket=Path("/run/labpilot-s2-runner-poc/control.sock"),
+    )
+    monkeypatch.setattr(scenario_module, "POC_MARKER_ROOT", marker_root)
+    monkeypatch.setattr(scenario_module, "POC_WORKING_ROOT", tmp_path / "workspace")
+
+    class FakeProcess:
+        def __init__(self, args: tuple[object, ...]) -> None:
+            self._args = args
+            self.exitcode: int | None = None
+
+        def start(self) -> None:
+            result_path = cast(Path, self._args[-1])
+            kind = "created" if result_path.name.endswith("0.json") else "existing_match"
+            result_path.write_text(
+                json.dumps({"kind": kind, "detail": "native-test"}),
+                encoding="utf-8",
+            )
+            self.exitcode = 0
+
+        def join(self, timeout: float | None = None) -> None:
+            del timeout
+
+        def is_alive(self) -> bool:
+            return False
+
+        def terminate(self) -> None:
+            raise AssertionError("fake process should already be complete")
+
+    class FakeSpawnContext:
+        def Process(self, *, target: object, args: tuple[object, ...]) -> FakeProcess:
+            del target
+            return FakeProcess(args)
+
+    monkeypatch.setattr(
+        multiprocessing,
+        "get_context",
+        lambda method: FakeSpawnContext(),
+    )
+
+    def observe(
+        socket_path: Path,
+        execution_identity: str,
+        execution_spec_hash_value: str,
+        accepted: set[PhysicalObservationKind],
+        *,
+        timeout_seconds: float = 15.0,
+    ) -> PhysicalObservation:
+        del socket_path, accepted, timeout_seconds
+        marker = marker_root / "p4-systemd-journal-starts.jsonl"
+
+        def write_marker() -> None:
+            marker.write_text('{"event":"probe_started"}\n', encoding="utf-8")
+
+        threading.Timer(0.05, write_marker).start()
+        return PhysicalObservation(
+            PhysicalObservationKind.ACTIVE_MATCH,
+            execution_identity,
+            execution_spec_hash_value,
+            execution_spec_hash_value,
+            evidence_source="systemd_unit",
+        )
+
+    monkeypatch.setattr(scenario_module, "_wait_runner_observation", observe)
+    monkeypatch.setattr(scenario_module, "_cleanup_runner", lambda *args: None)
+
+    assert scenario_module._p4(context) == 0
+
 def test_p4_concurrent_same_x_h_never_generates_fallback_identity(tmp_path: Path) -> None:
     spec = _spec()
     spec_hash = execution_spec_hash(spec)
@@ -545,6 +636,85 @@ def test_p4_concurrent_same_x_h_never_generates_fallback_identity(tmp_path: Path
     assert supervisor.launch_calls == 1
     assert supervisor.observe_calls == 1
 
+
+def test_p5_waits_for_original_probe_marker_before_counting_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    marker_root = tmp_path / "markers"
+    marker_root.mkdir()
+    state_root = tmp_path / "state"
+    state_root.mkdir()
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir()
+    context = scenario_module._ScenarioContext(
+        arguments=scenario_module.CliArguments(
+            state_root=state_root,
+            evidence_root=evidence_root,
+            installation_namespace="native-test",
+            evidence_stack="systemd+journal",
+            command="p5",
+        ),
+        store=DurableIntentStore(state_root / "intents"),
+        evidence=EvidenceLog(evidence_root / "records.jsonl"),
+        runner_socket=Path("/run/labpilot-s2-runner-poc/control.sock"),
+    )
+    monkeypatch.setattr(scenario_module, "POC_MARKER_ROOT", marker_root)
+    monkeypatch.setattr(scenario_module, "POC_WORKING_ROOT", tmp_path / "workspace")
+
+    def dispatch(
+        store: DurableIntentStore,
+        socket_path: Path,
+        attempt_id: UUID,
+        spec: FrozenLaunchSpec,
+        execution_spec_hash_value: str,
+        creation_evidence: PositiveCreationEvidence,
+        **kwargs: object,
+    ) -> ControlOutcome:
+        del store, socket_path, spec, creation_evidence, kwargs
+        return ControlOutcome(
+            ControlOutcomeKind.CREATED,
+            supervisor_execution_identity("native-test", attempt_id),
+            execution_spec_hash_value,
+            "created",
+        )
+
+    def observe(
+        socket_path: Path,
+        execution_identity: str,
+        execution_spec_hash_value: str,
+        accepted: set[PhysicalObservationKind],
+        *,
+        timeout_seconds: float = 15.0,
+    ) -> PhysicalObservation:
+        del socket_path, accepted, timeout_seconds
+        marker = marker_root / "p5-systemd-journal-starts.jsonl"
+
+        def write_marker() -> None:
+            marker.write_text('{"event":"probe_started"}\n', encoding="utf-8")
+
+        threading.Timer(0.05, write_marker).start()
+        return PhysicalObservation(
+            PhysicalObservationKind.ACTIVE_MATCH,
+            execution_identity,
+            execution_spec_hash_value,
+            execution_spec_hash_value,
+            evidence_source="systemd_unit",
+        )
+
+    monkeypatch.setattr(scenario_module, "dispatch_once_runner", dispatch)
+    monkeypatch.setattr(scenario_module, "_wait_runner_observation", observe)
+    monkeypatch.setattr(
+        scenario_module,
+        "runner_launch",
+        lambda *args, **kwargs: {
+            "ok": True,
+            "kind": ControlOutcomeKind.IDENTITY_CONFLICT.value,
+            "detail_code": "identity_conflict",
+        },
+    )
+    monkeypatch.setattr(scenario_module, "_cleanup_runner", lambda *args: None)
+
+    assert scenario_module._p5(context) == 0
 
 def test_p5_same_x_different_h_never_stops_or_relaunches() -> None:
     spec_hash = execution_spec_hash(_spec())
@@ -615,6 +785,88 @@ def test_p9_does_not_claim_cancel_caused_exit_without_evidence() -> None:
     assert facts == {"stop_requested": True, "terminal_observed": True}
     assert "cancel_caused_exit" not in facts
 
+
+def test_reboot_prepare_waits_for_probe_marker_before_recording_root_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    marker_root = tmp_path / "markers"
+    marker_root.mkdir()
+    state_root = tmp_path / "state"
+    state_root.mkdir()
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir()
+    (state_root / "host-characterization.json").write_text(
+        json.dumps(
+            {
+                "facts": {
+                    "state_root_volatile": False,
+                    "evidence_root_volatile": False,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    context = scenario_module._ScenarioContext(
+        arguments=scenario_module.CliArguments(
+            state_root=state_root,
+            evidence_root=evidence_root,
+            installation_namespace="native-test",
+            evidence_stack="systemd+journal",
+            command="reboot-prepare",
+        ),
+        store=DurableIntentStore(state_root / "intents"),
+        evidence=EvidenceLog(evidence_root / "records.jsonl"),
+        runner_socket=Path("/run/labpilot-s2-runner-poc/control.sock"),
+    )
+    monkeypatch.setattr(scenario_module, "POC_MARKER_ROOT", marker_root)
+    monkeypatch.setattr(scenario_module, "POC_WORKING_ROOT", tmp_path / "workspace")
+
+    def dispatch(
+        store: DurableIntentStore,
+        socket_path: Path,
+        attempt_id: UUID,
+        spec: FrozenLaunchSpec,
+        execution_spec_hash_value: str,
+        creation_evidence: PositiveCreationEvidence,
+        **kwargs: object,
+    ) -> ControlOutcome:
+        del store, socket_path, spec, creation_evidence, kwargs
+        return ControlOutcome(
+            ControlOutcomeKind.CREATED,
+            supervisor_execution_identity("native-test", attempt_id),
+            execution_spec_hash_value,
+            "created",
+        )
+
+    def observe(
+        socket_path: Path,
+        execution_identity: str,
+        execution_spec_hash_value: str,
+        accepted: set[PhysicalObservationKind],
+        *,
+        timeout_seconds: float = 15.0,
+    ) -> PhysicalObservation:
+        del socket_path, accepted, timeout_seconds
+        marker = marker_root / "p11-systemd-journal-starts.jsonl"
+
+        def write_marker() -> None:
+            marker.write_text('{"event":"probe_started"}\n', encoding="utf-8")
+
+        threading.Timer(0.05, write_marker).start()
+        return PhysicalObservation(
+            PhysicalObservationKind.ACTIVE_MATCH,
+            execution_identity,
+            execution_spec_hash_value,
+            execution_spec_hash_value,
+            evidence_source="systemd_unit",
+        )
+
+    monkeypatch.setattr(scenario_module, "dispatch_once_runner", dispatch)
+    monkeypatch.setattr(scenario_module, "_wait_runner_observation", observe)
+
+    assert scenario_module._reboot_prepare(context) == 0
+    metadata = json.loads((evidence_root / "p11-reboot.json").read_text(encoding="utf-8"))
+    assert metadata["prior_root_count"] == 1
 
 def test_reboot_verify_never_calls_launch(tmp_path: Path) -> None:
     marker = tmp_path / "starts.jsonl"

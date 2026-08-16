@@ -1054,7 +1054,9 @@ def _p3(context: _ScenarioContext) -> int:
         after_hash,
         {PhysicalObservationKind.ACTIVE_MATCH, PhysicalObservationKind.TERMINAL_MATCH},
     )
-    after_root_count = _line_count(Path(after_spec.start_marker_path))
+    after_root_count = _wait_for_line_count(
+        Path(after_spec.start_marker_path), minimum_count=1
+    )
     after_passed = (
         after_outcome.kind is ControlOutcomeKind.CONTROL_UNKNOWN
         and after_ready
@@ -1178,7 +1180,7 @@ def _p4(context: _ScenarioContext) -> int:
         spec_hash,
         {PhysicalObservationKind.ACTIVE_MATCH, PhysicalObservationKind.TERMINAL_MATCH},
     )
-    root_count = _line_count(Path(spec.start_marker_path))
+    root_count = _wait_for_line_count(Path(spec.start_marker_path), minimum_count=1)
     outcomes = [str(_read_json(path).get("kind")) for path in result_paths if path.exists()]
     passed = (
         all(not process.is_alive() and process.exitcode == 0 for process in processes)
@@ -1231,7 +1233,7 @@ def _p5(context: _ScenarioContext) -> int:
         identity,
         conflicting_hash,
     )
-    root_count = _line_count(Path(spec.start_marker_path))
+    root_count = _wait_for_line_count(Path(spec.start_marker_path), minimum_count=1)
     passed = outcome.kind is ControlOutcomeKind.IDENTITY_CONFLICT and root_count == 1
     _cleanup_runner(context.runner_socket, identity, spec_hash)
     return _record_result(
@@ -1765,7 +1767,7 @@ def _reboot_prepare(context: _ScenarioContext) -> int:
         spec_hash,
         {PhysicalObservationKind.ACTIVE_MATCH},
     )
-    root_count = _line_count(Path(spec.start_marker_path))
+    root_count = _wait_for_line_count(Path(spec.start_marker_path), minimum_count=1)
     metadata_path = context.arguments.evidence_root / "p11-reboot.json"
     _write_json_fsync(
         metadata_path,
