@@ -23,3 +23,7 @@ def test_model_registry_registers_tool_and_agent_runtime_tables() -> None:
         "agent_runs",
         "agent_steps",
     } <= set(Base.metadata.tables)
+
+
+def test_model_registry_registers_execution_preparation_tables() -> None:
+    assert {"batches", "trials", "attempts"} <= set(Base.metadata.tables)
