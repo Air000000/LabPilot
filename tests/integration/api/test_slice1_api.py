@@ -83,6 +83,16 @@ def _payload(snapshot_id: UUID, identity: str, **changes: object) -> dict[str, o
         ],
         "timeout_seconds": 3600,
         "max_retries": 1,
+        "train_argv_template": [
+            "--learning-rate",
+            "{parameter:learning_rate}",
+            "--seed",
+            "{seed}",
+            "--dataset",
+            "{dataset}",
+            "--output-dir",
+            "{output_dir}",
+        ],
     }
     value.update(changes)
     return value

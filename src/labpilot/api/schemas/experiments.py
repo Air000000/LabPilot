@@ -88,6 +88,7 @@ class ProposalPayloadRequest(BaseModel):
     validation_rules: list[ValidationRuleRequest]
     timeout_seconds: int
     max_retries: int
+    train_argv_template: list[str] | None = None
 
     @field_validator("parameter_matrix")
     @classmethod
@@ -139,6 +140,11 @@ class ProposalPayloadRequest(BaseModel):
             ),
             timeout_seconds=self.timeout_seconds,
             max_retries=self.max_retries,
+            train_argv_template=(
+                tuple(self.train_argv_template)
+                if self.train_argv_template is not None
+                else None
+            ),
         )
 
 
