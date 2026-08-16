@@ -850,7 +850,7 @@ def _validation_from_json(
 
 
 def _payload_to_json(payload: ProposalPayload) -> dict[str, object]:
-    return {
+    value: dict[str, object] = {
         "goal": payload.goal,
         "experiment_type": payload.experiment_type,
         "repository_snapshot_id": str(payload.repository_snapshot_id),
@@ -886,6 +886,9 @@ def _payload_to_json(payload: ProposalPayload) -> dict[str, object]:
         "timeout_seconds": payload.timeout_seconds,
         "max_retries": payload.max_retries,
     }
+    if payload.train_argv_template is not None:
+        value["train_argv_template"] = list(payload.train_argv_template)
+    return value
 
 
 def _payload_from_json(value: dict[str, object]) -> ProposalPayload:
@@ -932,6 +935,11 @@ def _payload_from_json(value: dict[str, object]) -> ProposalPayload:
         ),
         timeout_seconds=cast(int, value["timeout_seconds"]),
         max_retries=cast(int, value["max_retries"]),
+        train_argv_template=(
+            tuple(cast(list[str], value["train_argv_template"]))
+            if value.get("train_argv_template") is not None
+            else None
+        ),
     )
 
 

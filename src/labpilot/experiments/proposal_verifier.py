@@ -207,6 +207,7 @@ class ProposalVerifier:
         self._check_experiment_type(payload, trial_count, findings)
         self._check_dataset(payload, findings)
         self._check_artifacts_and_metrics(payload, findings)
+        self._check_train_argv_template(payload, findings)
 
         if not 1 <= payload.timeout_seconds <= 86_400:
             findings.append(
@@ -311,15 +312,108 @@ class ProposalVerifier:
                     )
                 )
         trial_count = prod(len(values) for values in matrix.values())
-        if not 1 <= trial_count <= 20:
+        expanded_trial_count = trial_count * len(payload.seeds)
+        if not 1 <= expanded_trial_count <= 20:
             findings.append(
                 _finding(
-                    "trial_count_invalid",
+                    "expanded_trial_count",
                     field="parameter_matrix",
                     message="Expanded Trial count must be between 1 and 20.",
                 )
             )
         return trial_count
+
+    @staticmethod
+    def _check_train_argv_template(
+        payload: ProposalPayload,
+        findings: list[VerificationFinding],
+    ) -> None:
+        template = payload.train_argv_template
+        if template is None:
+            findings.append(
+                _finding(
+                    "train_argv_template_required",
+                    field="train_argv_template",
+                    message="train_argv_template is required for verification.",
+                )
+            )
+            return
+
+        invalid = len(template) > 256
+        encoded_bytes = 0
+        consumed_parameters: set[str] = set()
+        has_seed = False
+        has_dataset = False
+        has_output_dir = False
+        for token in template:
+            if type(token) is not str:
+                invalid = True
+                continue
+            try:
+                encoded = token.encode("utf-8")
+            except UnicodeEncodeError:
+                invalid = True
+                continue
+            encoded_bytes += len(encoded) + 1
+            if "\x00" in token or len(encoded) > 8192:
+                invalid = True
+            if token == "{seed}":
+                has_seed = True
+            elif token == "{dataset}":
+                has_dataset = True
+            elif token == "{output_dir}":
+                has_output_dir = True
+            elif token.startswith("{parameter:") and token.endswith("}"):
+                key = token[len("{parameter:") : -1]
+                if key and key in payload.parameter_matrix:
+                    consumed_parameters.add(key)
+                else:
+                    invalid = True
+            elif "{" in token or "}" in token:
+                invalid = True
+
+        if encoded_bytes > 32768:
+            invalid = True
+        if invalid:
+            findings.append(
+                _finding(
+                    "train_argv_template_invalid",
+                    field="train_argv_template",
+                    message="train_argv_template contains an invalid or unsafe token.",
+                )
+            )
+        if set(payload.parameter_matrix) - consumed_parameters:
+            findings.append(
+                _finding(
+                    "train_argv_parameter_missing",
+                    field="train_argv_template",
+                    message="Every parameter dimension must be consumed.",
+                )
+            )
+        if not has_seed:
+            findings.append(
+                _finding(
+                    "train_argv_seed_missing",
+                    field="train_argv_template",
+                    message="train_argv_template must contain {seed}.",
+                )
+            )
+        if not has_dataset:
+            findings.append(
+                _finding(
+                    "train_argv_dataset_missing",
+                    field="train_argv_template",
+                    message="train_argv_template must contain {dataset}.",
+                )
+            )
+        if payload.artifacts and not has_output_dir:
+            findings.append(
+                _finding(
+                    "train_argv_output_dir_missing",
+                    field="train_argv_template",
+                    message="Artifact declarations require {output_dir}.",
+                )
+            )
 
     @staticmethod
     def _check_experiment_type(

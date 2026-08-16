@@ -108,6 +108,34 @@ def test_payload_hash_is_independent_of_parameter_mapping_insertion_order() -> N
     assert proposal_payload_hash(first) == proposal_payload_hash(second)
 
 
+def test_train_argv_template_participates_in_payload_hash() -> None:
+    first = replace(
+        _payload(),
+        train_argv_template=("--seed", "{seed}", "--dataset", "{dataset}"),
+    )
+    second = replace(
+        first,
+        train_argv_template=("--seed", "{seed}", "--data", "{dataset}"),
+    )
+
+    assert proposal_payload_hash(first) != proposal_payload_hash(second)
+
+
+def test_legacy_absent_train_argv_key_keeps_historical_hash() -> None:
+    payload = _payload()
+    stored_json = proposal_service._payload_to_json(payload)
+
+    assert "train_argv_template" not in stored_json
+    assert proposal_payload_hash(payload) == (
+        "de7b31452c083fa70fc986fc05938dd16f6595ae0427aa3f14f8f5a56d6d3ba1"
+    )
+
+    loaded = proposal_service._payload_from_json(stored_json)
+
+    assert loaded.train_argv_template is None
+    assert proposal_payload_hash(loaded) == proposal_payload_hash(payload)
+
+
 def test_payload_owns_immutable_parameter_mapping_snapshot() -> None:
     source = {"lr": (1e-3, 1e-4)}
     payload = _payload(parameter_matrix=source)

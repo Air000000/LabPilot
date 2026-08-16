@@ -107,6 +107,7 @@ class ProposalPayload:
     validation_rules: tuple[ValidationRule, ...]
     timeout_seconds: int
     max_retries: int
+    train_argv_template: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -154,7 +155,7 @@ def _validation_protocol_value(
 
 
 def _proposal_payload_value(payload: ProposalPayload) -> dict[str, CanonicalValue]:
-    return {
+    value: dict[str, CanonicalValue] = {
         "goal": payload.goal,
         "experiment_type": payload.experiment_type,
         "repository_snapshot_id": str(payload.repository_snapshot_id),
@@ -191,6 +192,9 @@ def _proposal_payload_value(payload: ProposalPayload) -> dict[str, CanonicalValu
         "timeout_seconds": payload.timeout_seconds,
         "max_retries": payload.max_retries,
     }
+    if payload.train_argv_template is not None:
+        value["train_argv_template"] = list(payload.train_argv_template)
+    return value
 
 
 def proposal_payload_hash(payload: ProposalPayload) -> str:

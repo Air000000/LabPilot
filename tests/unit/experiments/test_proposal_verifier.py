@@ -1,4 +1,6 @@
-from dataclasses import replace
+from dataclasses import fields, replace
+from types import SimpleNamespace
+from typing import cast
 from uuid import UUID
 
 import pytest
@@ -23,6 +25,16 @@ OTHER_PROJECT_ID = UUID("11111111-1111-1111-1111-111111111112")
 SNAPSHOT_ID = UUID("22222222-2222-2222-2222-222222222222")
 OTHER_SNAPSHOT_ID = UUID("22222222-2222-2222-2222-222222222223")
 SNAPSHOT_IDENTITY = "a" * 64
+VALID_TRAIN_ARGV_TEMPLATE = (
+    "--learning-rate",
+    "{parameter:learning_rate}",
+    "--seed",
+    "{seed}",
+    "--dataset",
+    "{dataset}",
+    "--output-dir",
+    "{output_dir}",
+)
 
 
 class FakeRepositoryFacts:
@@ -82,6 +94,10 @@ def _dataset(
 
 
 def _payload(**changes: object) -> ProposalPayload:
+    train_argv_template = changes.pop(
+        "train_argv_template",
+        VALID_TRAIN_ARGV_TEMPLATE,
+    )
     payload = ProposalPayload(
         goal="Reproduce the baseline",
         experiment_type="reproduction",
@@ -110,7 +126,9 @@ def _payload(**changes: object) -> ProposalPayload:
     )
     for field, value in changes.items():
         object.__setattr__(payload, field, value)
-    return payload
+    values = {field.name: getattr(payload, field.name) for field in fields(payload)}
+    values["train_argv_template"] = train_argv_template
+    return cast(ProposalPayload, SimpleNamespace(**values))
 
 
 async def _verify(
@@ -237,7 +255,19 @@ async def test_seed_limits_uniqueness_and_non_negative_values(seeds: tuple[int, 
 
 
 async def test_parameter_matrix_allows_zero_keys_as_one_planned_trial() -> None:
-    result = await _verify(_payload(parameter_matrix={}))
+    result = await _verify(
+        _payload(
+            parameter_matrix={},
+            train_argv_template=(
+                "--seed",
+                "{seed}",
+                "--dataset",
+                "{dataset}",
+                "--output-dir",
+                "{output_dir}",
+            ),
+        )
+    )
 
     assert result.passed is True
 
@@ -271,7 +301,107 @@ async def test_expanded_trial_count_must_not_exceed_twenty() -> None:
         _payload(parameter_matrix={"a": tuple(range(5)), "b": tuple(range(5))})
     )
 
-    assert "trial_count_invalid" in _codes(result)
+    assert "expanded_trial_count" in _codes(result)
+
+
+async def test_expanded_trial_count_includes_seeds() -> None:
+    result = await _verify(
+        _payload(
+            parameter_matrix={"learning_rate": tuple(range(5))},
+            seeds=(1, 2, 3, 4, 5),
+        )
+    )
+
+    assert "expanded_trial_count" in _codes(result)
+
+
+async def test_train_argv_template_is_required() -> None:
+    result = await _verify(_payload(train_argv_template=None))
+
+    assert "train_argv_template_required" in _codes(result)
+
+
+@pytest.mark.parametrize(
+    "token",
+    ["{unknown}", "{parameter:missing}", "prefix{seed}", "{parameter:}"],
+)
+async def test_train_argv_template_rejects_unknown_or_malformed_placeholders(
+    token: str,
+) -> None:
+    result = await _verify(
+        _payload(train_argv_template=(*VALID_TRAIN_ARGV_TEMPLATE, token))
+    )
+
+    assert "train_argv_template_invalid" in _codes(result)
+
+
+@pytest.mark.parametrize(
+    ("template", "code"),
+    [
+        (
+            tuple(token for token in VALID_TRAIN_ARGV_TEMPLATE if token != "{seed}"),
+            "train_argv_seed_missing",
+        ),
+        (
+            tuple(token for token in VALID_TRAIN_ARGV_TEMPLATE if token != "{dataset}"),
+            "train_argv_dataset_missing",
+        ),
+        (
+            tuple(token for token in VALID_TRAIN_ARGV_TEMPLATE if token != "{output_dir}"),
+            "train_argv_output_dir_missing",
+        ),
+    ],
+)
+async def test_train_argv_template_requires_execution_placeholders(
+    template: tuple[str, ...],
+    code: str,
+) -> None:
+    result = await _verify(_payload(train_argv_template=template))
+
+    assert code in _codes(result)
+
+
+async def test_train_argv_template_consumes_every_parameter_dimension() -> None:
+    result = await _verify(
+        _payload(
+            parameter_matrix={"learning_rate": (0.1,), "batch_size": (16,)},
+        )
+    )
+
+    assert "train_argv_parameter_missing" in _codes(result)
+
+
+@pytest.mark.parametrize(
+    "invalid_token",
+    ["bad\x00token", "bad\ud800token", "x" * 8193],
+    ids=("nul", "isolated-surrogate", "too-large"),
+)
+async def test_train_argv_template_rejects_invalid_utf8_nul_and_large_tokens(
+    invalid_token: str,
+) -> None:
+    result = await _verify(
+        _payload(train_argv_template=(*VALID_TRAIN_ARGV_TEMPLATE, invalid_token))
+    )
+
+    assert "train_argv_template_invalid" in _codes(result)
+
+
+async def test_train_argv_template_rejects_too_many_tokens() -> None:
+    result = await _verify(
+        _payload(train_argv_template=VALID_TRAIN_ARGV_TEMPLATE + ("x",) * 249)
+    )
+
+    assert "train_argv_template_invalid" in _codes(result)
+
+
+async def test_train_argv_template_rejects_literal_execstart_byte_overflow() -> None:
+    result = await _verify(
+        _payload(
+            train_argv_template=VALID_TRAIN_ARGV_TEMPLATE + ("x" * 8192,) * 4,
+        )
+    )
+
+    assert "train_argv_template_invalid" in _codes(result)
 
 
 @pytest.mark.parametrize("experiment_type", ["parameter_sweep", "comparison", "ablation"])
