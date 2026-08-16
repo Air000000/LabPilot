@@ -14,8 +14,8 @@ polkit manage-units exposed exact unit + verb
 exact-unit + verb=start authorization still allowed caller-selected User=root / ExecStart
 root probe completed as UID 0
 Candidate A = REJECTED
-Candidate B = admitted for focused evaluation
-SELECT_B = not yet authorized
+Candidate B = SELECTED by the accepted S2.0 ADR
+SELECT_B = frozen for downstream Slice 2 planning
 ```
 
 Do not broaden polkit, add NOPASSWD sudo, use `systemd --user`, or run the controller as root to
@@ -62,12 +62,19 @@ not invoke sudo, edit `/etc`, provision users, or reboot the host.
 Run P0 and P12 first. If either fails, Candidate B stops. Only then run the remaining B-dependent
 P1-P10/P13 campaign and the explicit human P11 reboot gate.
 
-Final S2.0 output remains exactly one of:
+The completed native campaign disposition is:
 
 ```text
 SELECT_B
-BLOCKED
 ```
 
-Do not add a Runner DB/receipt ledger, generic HostPolicy framework, backend registry, network
-transport, scheduler, or production Task 2-5 code to make the PoC pass.
+The bounded evidence report and ADR are:
+
+```text
+docs/superpowers/evidence/2026-08-13-labpilot-v1-slice2-runner-supervision-poc.md
+docs/superpowers/specs/2026-08-13-labpilot-v1-slice2-runner-supervision-adr.md
+```
+
+This does not authorize production Tasks 2-5. Do not add a Runner DB/receipt ledger, generic
+HostPolicy framework, backend registry, network transport, scheduler, or production Task 2-5 code
+to the PoC.
