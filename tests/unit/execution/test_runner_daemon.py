@@ -16,6 +16,8 @@ from labpilot.execution.runner_protocol import (
 )
 from labpilot.execution.types import FrozenLaunchSpec, frozen_launch_spec_hash
 
+X = f"labpilot-v1-{'a' * 64}-{'b' * 32}"
+
 
 def _value() -> dict[str, object]:
     return {
@@ -58,7 +60,7 @@ def test_peer_credential_mismatch_causes_zero_systemd_calls() -> None:
         supervisor,  # type: ignore[arg-type]
     )
     request = RunnerObserveRequest(
-        PROTOCOL_VERSION, RunnerOperation.OBSERVE, "labpilot-v1-x", "a" * 64
+        PROTOCOL_VERSION, RunnerOperation.OBSERVE, X, "a" * 64
     )
 
     response = daemon.handle_request(request, peer_uid=999, peer_gid=1001)
@@ -118,7 +120,7 @@ def test_launch_rechecks_current_root_policy_before_systemd() -> None:
     request = RunnerLaunchRequest(
         PROTOCOL_VERSION,
         RunnerOperation.LAUNCH,
-        "labpilot-v1-x",
+        X,
         frozen_launch_spec_hash(spec),
         spec,
         "first_dispatch_proven",

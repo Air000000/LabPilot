@@ -11,6 +11,7 @@ PROTOCOL_VERSION = "labpilot-runner:v1"
 MAX_FRAME_BYTES = 64 * 1024
 _HEADER = struct.Struct("!I")
 _DISTRIBUTION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_EXECUTION_IDENTITY = re.compile(r"^labpilot-v1-[0-9a-f]{64}-[0-9a-f]{32}$")
 
 
 class ProtocolError(ValueError):
@@ -80,6 +81,7 @@ def encode_request(request: RunnerRequest) -> bytes:
             None if request.inspection is None else _inspection_to_wire(request.inspection)
         )
     elif isinstance(request, RunnerLaunchRequest):
+        _validate_execution_identity(request.execution_identity)
         if request.creation_authority != "first_dispatch_proven":
             raise ProtocolError("invalid_creation_authority")
         value.update(
@@ -89,6 +91,7 @@ def encode_request(request: RunnerRequest) -> bytes:
             creation_authority=request.creation_authority,
         )
     else:
+        _validate_execution_identity(request.execution_identity)
         value.update(
             execution_identity=request.execution_identity,
             execution_spec_hash=request.execution_spec_hash,
@@ -126,7 +129,7 @@ def decode_request(payload: bytes) -> RunnerRequest:
         return RunnerLaunchRequest(
             version,
             operation,
-            _require_str(value, "execution_identity"),
+            _validate_execution_identity(_require_str(value, "execution_identity")),
             _require_str(value, "execution_spec_hash"),
             _spec_from_wire(value["spec"]),
             authority,
@@ -141,7 +144,7 @@ def decode_request(payload: bytes) -> RunnerRequest:
     return request_type(
         version,
         operation,
-        _require_str(value, "execution_identity"),
+        _validate_execution_identity(_require_str(value, "execution_identity")),
         _require_str(value, "execution_spec_hash"),
     )
 
@@ -231,6 +234,12 @@ def _validate_inspection(inspection: InfoInspectionRequest) -> None:
         or names != tuple(sorted(set(names)))
     ):
         raise ProtocolError("invalid_inspection")
+
+
+def _validate_execution_identity(value: str) -> str:
+    if _EXECUTION_IDENTITY.fullmatch(value) is None:
+        raise ProtocolError("execution_identity_invalid")
+    return value
 
 
 def _validate_response_result(

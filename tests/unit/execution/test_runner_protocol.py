@@ -21,6 +21,8 @@ from labpilot.execution.runner_protocol import (
 )
 from labpilot.execution.types import FrozenLaunchSpec, frozen_launch_spec_hash
 
+X = f"labpilot-v1-{'a' * 64}-{'b' * 32}"
+
 
 def _spec() -> FrozenLaunchSpec:
     return FrozenLaunchSpec(
@@ -55,7 +57,7 @@ def test_all_four_requests_round_trip_with_exact_fields() -> None:
         RunnerLaunchRequest(
             version=PROTOCOL_VERSION,
             operation=RunnerOperation.LAUNCH,
-            execution_identity="labpilot-v1-x",
+            execution_identity=X,
             execution_spec_hash=frozen_launch_spec_hash(spec),
             spec=spec,
             creation_authority="first_dispatch_proven",
@@ -63,13 +65,13 @@ def test_all_four_requests_round_trip_with_exact_fields() -> None:
         RunnerObserveRequest(
             version=PROTOCOL_VERSION,
             operation=RunnerOperation.OBSERVE,
-            execution_identity="labpilot-v1-x",
+            execution_identity=X,
             execution_spec_hash="d" * 64,
         ),
         RunnerStopRequest(
             version=PROTOCOL_VERSION,
             operation=RunnerOperation.STOP,
-            execution_identity="labpilot-v1-x",
+            execution_identity=X,
             execution_spec_hash="d" * 64,
         ),
     )
@@ -135,7 +137,7 @@ def test_launch_and_stop_have_no_raw_privileged_authority() -> None:
             RunnerLaunchRequest(
                 PROTOCOL_VERSION,
                 RunnerOperation.LAUNCH,
-                "labpilot-v1-x",
+                X,
                 frozen_launch_spec_hash(spec),
                 spec,
                 "first_dispatch_proven",
@@ -147,7 +149,7 @@ def test_launch_and_stop_have_no_raw_privileged_authority() -> None:
             RunnerStopRequest(
                 PROTOCOL_VERSION,
                 RunnerOperation.STOP,
-                "labpilot-v1-x",
+                X,
                 frozen_launch_spec_hash(spec),
             )
         )
@@ -155,6 +157,22 @@ def test_launch_and_stop_have_no_raw_privileged_authority() -> None:
     forbidden = {"unit", "user", "group", "signal", "systemd_properties", "executable"}
     assert forbidden.isdisjoint(launch)
     assert forbidden.isdisjoint(stop)
+
+
+@pytest.mark.parametrize(
+    "invalid_identity",
+    ("ssh", "ssh.service", "../ssh", f"{X} ", f"{X}\n"),
+)
+def test_protocol_rejects_nonproduction_execution_identity(invalid_identity: str) -> None:
+    request = RunnerObserveRequest(
+        PROTOCOL_VERSION,
+        RunnerOperation.OBSERVE,
+        invalid_identity,
+        "a" * 64,
+    )
+
+    with pytest.raises(ProtocolError, match="execution_identity_invalid"):
+        encode_request(request)
 
 
 def test_oversized_frame_is_rejected_before_payload_read() -> None:

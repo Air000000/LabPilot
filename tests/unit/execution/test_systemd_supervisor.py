@@ -1,12 +1,17 @@
 import json
 import subprocess
 
+import pytest
+
 from labpilot.execution.systemd_supervisor import (
     ControlOutcomeKind,
     PhysicalObservationKind,
     SystemdSupervisor,
 )
 from labpilot.execution.types import FrozenLaunchSpec, frozen_launch_spec_hash
+
+X = f"labpilot-v1-{'a' * 64}-{'b' * 32}"
+UNIT = f"{X}.service"
 
 
 def _spec() -> FrozenLaunchSpec:
@@ -63,7 +68,7 @@ def test_same_x_different_h_is_identity_conflict_without_creation() -> None:
     spec = _spec()
 
     outcome = supervisor.launch(
-        "labpilot-v1-x", frozen_launch_spec_hash(spec), spec, creation_authority=True
+        X, frozen_launch_spec_hash(spec), spec, creation_authority=True
     )
 
     assert outcome.kind is ControlOutcomeKind.IDENTITY_CONFLICT
@@ -82,7 +87,7 @@ def test_not_found_never_creates_without_positive_authority() -> None:
     spec = _spec()
 
     outcome = supervisor.launch(
-        "labpilot-v1-x", frozen_launch_spec_hash(spec), spec, creation_authority=False
+        X, frozen_launch_spec_hash(spec), spec, creation_authority=False
     )
 
     assert outcome.kind is ControlOutcomeKind.DEFINITE_NON_ACCEPTANCE
@@ -105,12 +110,13 @@ def test_stop_only_runs_after_fresh_exact_active_match() -> None:
         stop_timeout_seconds=30,
     )
 
-    blocked = supervisor.stop("labpilot-v1-x", expected)
-    accepted = supervisor.stop("labpilot-v1-x", expected)
+    blocked = supervisor.stop(X, expected)
+    accepted = supervisor.stop(X, expected)
 
     assert blocked.kind is ControlOutcomeKind.TERMINAL_MATCH
     assert accepted.kind is ControlOutcomeKind.CONTROL_ACCEPTED
     assert commands.argv[-1][:4] == ("systemctl", "--system", "--no-ask-password", "stop")
+    assert commands.argv[-1][4] == UNIT
 
 
 def test_workload_stdout_cannot_fabricate_terminal_evidence() -> None:
@@ -128,7 +134,7 @@ def test_workload_stdout_cannot_fabricate_terminal_evidence() -> None:
         stop_timeout_seconds=30,
     )
 
-    observation = supervisor.observe("labpilot-v1-x", "a" * 64)
+    observation = supervisor.observe(X, "a" * 64)
 
     assert observation.kind is PhysicalObservationKind.NOT_FOUND
 
@@ -145,9 +151,9 @@ def test_pid1_journal_terminal_evidence_survives_unit_gc() -> None:
                         "_PID": "1",
                         "_SYSTEMD_UNIT": "init.scope",
                         "SYSLOG_IDENTIFIER": "systemd",
-                        "UNIT": "labpilot-ignored-by-test.service",
+                        "UNIT": UNIT,
                         "MESSAGE": (
-                            f"Finished labpilot-ignored-by-test.service - labpilot:{expected}."
+                            f"Finished {UNIT} - labpilot:{expected}."
                         ),
                     }
                 ),
@@ -160,15 +166,9 @@ def test_pid1_journal_terminal_evidence_survives_unit_gc() -> None:
         execution_group="labpilot-train",
         stop_timeout_seconds=30,
     )
-    unit = "labpilot-03594cd45a2989788ffc0fb3bfa47e93e4d5a06f2b98c5e20c33a37584508dbd.service"
-    commands.outputs[1] = (
-        0,
-        commands.outputs[1][1].replace("labpilot-ignored-by-test.service", unit),
-    )
-
-    assert (
-        supervisor.observe("labpilot-v1-x", expected).kind is PhysicalObservationKind.TERMINAL_MATCH
-    )
+    assert supervisor.observe(X, expected).kind is PhysicalObservationKind.TERMINAL_MATCH
+    assert commands.argv[0][4] == UNIT
+    assert commands.argv[1][1] == f"--unit={UNIT}"
 
 
 def test_launch_uses_exact_fixed_systemd_profile() -> None:
@@ -183,7 +183,7 @@ def test_launch_uses_exact_fixed_systemd_profile() -> None:
 
     assert (
         supervisor.launch(
-            "labpilot-v1-x",
+            X,
             frozen_launch_spec_hash(spec),
             spec,
             creation_authority=True,
@@ -191,6 +191,7 @@ def test_launch_uses_exact_fixed_systemd_profile() -> None:
         is ControlOutcomeKind.CREATED
     )
     argv = commands.argv[-1]
+    assert f"--unit={UNIT}" in argv
     for exact in (
         "--service-type=exec",
         "--uid=labpilot-train",
@@ -221,7 +222,55 @@ def test_terminal_signal_is_not_invented_as_exit_code() -> None:
         stop_timeout_seconds=30,
     )
 
-    observation = supervisor.observe("labpilot-v1-x", expected)
+    observation = supervisor.observe(X, expected)
 
     assert observation.exit_code is None
     assert observation.termination_signal == 15
+
+
+def test_observe_uses_exact_production_x_service() -> None:
+    commands = Commands([(0, "LoadState=not-found\n"), (0, "")])
+    supervisor = SystemdSupervisor(
+        commands,
+        execution_user="labpilot-train",
+        execution_group="labpilot-train",
+        stop_timeout_seconds=30,
+    )
+
+    supervisor.observe(X, "a" * 64)
+
+    assert commands.argv[0][4] == UNIT
+    assert commands.argv[1][1] == f"--unit={UNIT}"
+
+
+@pytest.mark.parametrize(
+    "invalid_identity",
+    (
+        "ssh",
+        "ssh.service",
+        "../ssh",
+        "/etc/systemd/system/ssh.service",
+        "labpilot-v1-x",
+        f"{X} ",
+        f"{X}\n",
+        f"labpilot-v1-{'a' * 63}-{'b' * 32}",
+        f"labpilot-v1-{'g' * 64}-{'b' * 32}",
+    ),
+)
+def test_malformed_execution_identity_is_rejected_before_systemd(
+    invalid_identity: str,
+) -> None:
+    commands = Commands(
+        [(0, _loaded(active="active", description=f"labpilot:{'a' * 64}"))]
+    )
+    supervisor = SystemdSupervisor(
+        commands,
+        execution_user="labpilot-train",
+        execution_group="labpilot-train",
+        stop_timeout_seconds=30,
+    )
+
+    with pytest.raises(ValueError, match="execution_identity_invalid"):
+        supervisor.observe(invalid_identity, "a" * 64)
+
+    assert commands.argv == []

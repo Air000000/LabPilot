@@ -14,12 +14,14 @@ from labpilot.execution.runner_protocol import (
     RunnerOperation,
 )
 
+X = f"labpilot-v1-{'a' * 64}-{'b' * 32}"
+
 
 def _request() -> RunnerObserveRequest:
     return RunnerObserveRequest(
         PROTOCOL_VERSION,
         RunnerOperation.OBSERVE,
-        "labpilot-v1-x",
+        X,
         "a" * 64,
     )
 

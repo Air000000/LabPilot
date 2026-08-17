@@ -1,5 +1,5 @@
-import hashlib
 import json
+import re
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -8,6 +8,7 @@ from enum import StrEnum
 from labpilot.execution.types import FrozenLaunchSpec, frozen_launch_spec_hash
 
 CommandRunner = Callable[[tuple[str, ...], float], subprocess.CompletedProcess[str]]
+_EXECUTION_IDENTITY = re.compile(r"^labpilot-v1-[0-9a-f]{64}-[0-9a-f]{32}$")
 
 
 class PhysicalObservationKind(StrEnum):
@@ -256,7 +257,9 @@ class SystemdSupervisor:
 
 
 def _unit_name(execution_identity: str) -> str:
-    return f"labpilot-{hashlib.sha256(execution_identity.encode()).hexdigest()}.service"
+    if _EXECUTION_IDENTITY.fullmatch(execution_identity) is None:
+        raise ValueError("execution_identity_invalid")
+    return f"{execution_identity}.service"
 
 
 def _properties(stdout: str) -> dict[str, str]:
