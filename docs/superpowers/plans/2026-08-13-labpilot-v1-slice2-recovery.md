@@ -22,7 +22,7 @@
 
 **Native S2.0 evidence:** `docs/superpowers/evidence/2026-08-13-labpilot-v1-slice2-runner-supervision-poc.md`
 
-**Status:** r4.1 is **APPROVED AT G0**. Task 1 remains **COMPLETE / SELECT_B**. Task 2 is **ACCEPTED AT G1**. Task 3 is **ACCEPTED AT G2**. Task 4 is **AUTHORIZED** and must begin in a new implementation window. Task 5 remains **NOT AUTHORIZED**. This governance state does not imply Slice 2 acceptance. `DOCUMENT-STATUS.md` remains unchanged and may be updated only after full Slice 2 acceptance.
+**Status:** r4.1 is **APPROVED AT G0**. Task 1 remains **COMPLETE / SELECT_B**. Task 2 is **ACCEPTED AT G1**. Task 3 is **ACCEPTED AT G2**. Task 4 implementation is **COMPLETE** with G3 **CHANGES REQUIRED** (0 Critical, 5 Important; G3-1 through G3-5 OPEN). Task 5 remains **NOT AUTHORIZED**. This governance state does not imply Slice 2 acceptance. `DOCUMENT-STATUS.md` remains unchanged and may be updated only after full Slice 2 acceptance.
 
 **Historical governance note:** Candidate B was admitted and implemented before a separate focused pre-implementation amendment was committed. This plan records the post-S2.0 production contract and does not backdate or rewrite that history.
 
@@ -89,6 +89,10 @@ G2-7  CLOSED — reject a policy-unadmitted INFO python_profile before probe exe
 
 The final G2-7 review proves bounded policy rejection and continued service on the same `RunnerDaemon` instance. It is not native systemd process-level acceptance. Native root/systemd/persistent-journald recovery evidence remains Task 5 scope. Task 4 is **AUTHORIZED** for a new implementation window; Task 5 remains **NOT AUTHORIZED**. `DOCUMENT-STATUS.md` remains unchanged until full Slice 2 acceptance.
 
+## 0.2 Task 4 G3 finding status
+
+Task 4 implementation is **COMPLETE**. G3 is **CHANGES REQUIRED** with 0 Critical and 5 Important findings: G3-1 through G3-5 are OPEN. Task 5 remains **NOT AUTHORIZED**, and `DOCUMENT-STATUS.md` remains unchanged.
+
 ---
 
 # 1. Formal Slice 2 task status
@@ -97,7 +101,7 @@ The final G2-7 review proves bounded policy rejection and continued service on t
 Task 1 — S2.0 Runner Supervision PoC + ADR                        COMPLETE / SELECT_B
 Task 2 — S2.1 Attempt Preparation + Exact Source Materialization  ACCEPTED AT G1
 Task 3 — S2.2 Durable Launch / Observe / Stop                     ACCEPTED AT G2
-Task 4 — S2.3 Coordinator Reconciliation + S2.4 API Composition  AUTHORIZED
+Task 4 — S2.3 Coordinator Reconciliation + S2.4 API Composition  G3 CHANGES REQUIRED
 Task 5 — S2.5 Real Recovery / Fault-Injection Acceptance         NOT AUTHORIZED
 ```
 
@@ -1363,6 +1367,8 @@ Coordinator progress -> no row_version change
 
 No writable persisted `Batch.status` column is added. Batch/Trial current state is derived by `query_service.py` from durable commands plus Attempts.
 
+Derived state must converge: a cancelled Trial with zero Attempts presents `cancelled`; a cancelled Batch with no active, pending, or needs-attention Trial presents `cancelled`; and a started, non-cancelled Batch with no active, pending, or needs-attention Trial and at least one failed Trial presents `failed`, including mixed succeeded plus failed terminal outcomes. UNKNOWN and IDENTITY_CONFLICT keep their existing priority and presentation. No persisted `Batch.status` is added.
+
 ## 6.2 Attempt creation and retry
 
 Only Coordinator may call internal `create_attempt_for_trial(trial_id)`; API never creates Trial/Attempt directly.
@@ -1512,12 +1518,18 @@ Coordinator process/container:
 PostgreSQL
 snapshot/content-store access needed for Task 2
 Attempt workspace mounted at the SAME canonical absolute path as host policy
-Runner AF_UNIX socket
+Runner AF_UNIX runtime directory mounted at `/run/labpilot-runner`
 host-compatible labpilot-controller UID/GID
 labpilot-train supplementary GID for workspace preparation; composition resolves that fixed group to numeric execution_gid and passes it explicitly to AttemptPreparationService
 ```
 
 Compose obtains those identities only from the required `LABPILOT_CONTROLLER_UID`, `LABPILOT_CONTROLLER_GID`, and `LABPILOT_TRAIN_GID` deployment variables frozen in §6.0. It does not hardcode numeric identities, mount host passwd/group databases, or generalize the fixed identity names into configuration.
+
+Coordinator bind-mounts the host `/run/labpilot-runner` directory at the identical path with Compose long bind syntax, `bind.create_host_path: false`, and read-only access when supported by the accepted local Compose path. It must not bind-mount the single socket inode. API receives no Runner runtime-directory mount, and `RunnerClient` continues to connect to `/run/labpilot-runner/control.sock`.
+
+The accepted root Runner service adds `RuntimeDirectoryPreserve=restart` so the mounted runtime-directory identity survives both `Restart=on-failure` and installer `systemctl restart`. Runner startup handles only its own trusted stale socket: it uses `lstat`, rejects symlink/non-socket/wrong-owner/wrong-group/unsafe modes, accepts only root:`labpilot-control` socket mode 0700 or 0660 under the hardened root:`labpilot-control` 0750 runtime directory, refuses to unlink a socket with a live listener, and unlinks only a trusted stale socket proven to have no listener before binding. The existing post-bind root:`labpilot-control` 0660 verification remains exact. Runner protocol and systemd authority do not widen.
+
+Task 3 remains **ACCEPTED AT G2**. This is a direct Task 4 composition compatibility correction; the affected deployment/socket invariants are subject to finding-specific G3 re-review.
 
 Do not create a container-path ↔ host-path translation table.
 
@@ -1639,12 +1651,14 @@ LABPILOT_ATTEMPT_WORKSPACE_ROOT          required at Coordinator composition out
 LABPILOT_RUNNER_SOCKET_PATH              required at Coordinator composition; production value /run/labpilot-runner/control.sock
 LABPILOT_RUNNER_REQUEST_TIMEOUT_SECONDS  positive bounded value, default 10
 LABPILOT_UNKNOWN_ATTENTION_GRACE_SECONDS positive bounded value, default 60
+LABPILOT_CONTROLLER_UID                  required positive integer at Coordinator composition
+LABPILOT_CONTROLLER_GID                  required positive integer at Coordinator composition
 LABPILOT_TRAIN_GID                       required positive integer at Coordinator composition
 ```
 
-`LABPILOT_ATTEMPT_WORKSPACE_ROOT` is required at the Coordinator composition boundary outside tests, not globally for API. API requires none of the workspace, Runner socket, or train GID settings.
+`LABPILOT_ATTEMPT_WORKSPACE_ROOT` is required at the Coordinator composition boundary outside tests, not globally for API. API requires none of the workspace, Runner socket, controller UID/GID, or train GID settings.
 
-Compose mounts `${LABPILOT_ATTEMPT_WORKSPACE_ROOT}` into Coordinator at the same absolute path and mounts `/run/labpilot-runner/control.sock` only into Coordinator. API receives neither.
+Compose mounts `${LABPILOT_ATTEMPT_WORKSPACE_ROOT}` into Coordinator at the same absolute path and mounts the host `/run/labpilot-runner` directory only into Coordinator using long bind syntax with `bind.create_host_path: false`. API receives neither.
 
 Run:
 
@@ -1677,6 +1691,8 @@ Stop for G3 review before native Task 5. The gate fails if API can reach Runner 
 # 7. Task 5 — S2.5 Real Recovery / Fault-Injection Acceptance
 
 **Authorization:** NOT AUTHORIZED. Native root/systemd/persistent-journald recovery evidence remains gated on Task 4 acceptance.
+
+Future Task 5 native evidence must prove that an already-running Coordinator container communicates again after `systemctl restart labpilot-runner.service` without recreating the Coordinator container. Do not execute that proof during Task 4 G3 remediation.
 
 **Risk:** Release critical.
 
