@@ -203,6 +203,28 @@ def _validate_attempt_terminal(payload: EventJsonObject) -> None:
         raise CanonicalizationError("attempt terminal supervisor_result must be a string")
 
 
+def _validate_batch_created(payload: EventJsonObject) -> None:
+    if set(payload) != {
+        "batch_id",
+        "experiment_version_id",
+        "trial_count",
+        "row_version",
+    }:
+        raise CanonicalizationError("batch created payload fields are invalid")
+    if any(
+        type(payload[name]) is not str
+        for name in ("batch_id", "experiment_version_id")
+    ) or any(type(payload[name]) is not int for name in ("trial_count", "row_version")):
+        raise CanonicalizationError("batch created payload field types are invalid")
+
+
+def _validate_batch_control(payload: EventJsonObject) -> None:
+    if set(payload) != {"batch_id", "row_version"}:
+        raise CanonicalizationError("batch control payload fields are invalid")
+    if type(payload["batch_id"]) is not str or type(payload["row_version"]) is not int:
+        raise CanonicalizationError("batch control payload field types are invalid")
+
+
 register_runtime_event_payload_schema(
     "foundation.probe.created",
     1,
@@ -224,4 +246,9 @@ register_runtime_event_payload_schema(
 )
 register_runtime_event_payload_schema(
     "attempt.terminal_observed", 1, _validate_attempt_terminal
+)
+register_runtime_event_payload_schema("batch.created", 1, _validate_batch_created)
+register_runtime_event_payload_schema("batch.started", 1, _validate_batch_control)
+register_runtime_event_payload_schema(
+    "batch.cancel_requested", 1, _validate_batch_control
 )
