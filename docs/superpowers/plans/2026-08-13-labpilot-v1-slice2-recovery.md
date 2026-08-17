@@ -22,7 +22,7 @@
 
 **Native S2.0 evidence:** `docs/superpowers/evidence/2026-08-13-labpilot-v1-slice2-runner-supervision-poc.md`
 
-**Status:** r4.1 is **APPROVED AT G0**. Task 1 remains **COMPLETE / SELECT_B**. Task 2 is **ACCEPTED AT G1**, and Task 3 is **AUTHORIZED**. Tasks 4–5 remain **NOT AUTHORIZED FOR IMPLEMENTATION**. This governance approval does not imply Slice 2 acceptance. `DOCUMENT-STATUS.md` remains unchanged and may be updated only after full Slice 2 acceptance.
+**Status:** r4.1 is **APPROVED AT G0**. Task 1 remains **COMPLETE / SELECT_B**. Task 2 is **ACCEPTED AT G1**. Task 3 implementation is **COMPLETE**, and Task 3 G2 is **CHANGES REQUIRED** with 0 Critical and 7 Important findings (`G2-1` through `G2-7`) open. Tasks 4–5 remain **NOT AUTHORIZED FOR IMPLEMENTATION**. This governance state does not imply Slice 2 acceptance. `DOCUMENT-STATUS.md` remains unchanged and may be updated only after full Slice 2 acceptance.
 
 **Historical governance note:** Candidate B was admitted and implemented before a separate focused pre-implementation amendment was committed. This plan records the post-S2.0 production contract and does not backdate or rewrite that history.
 
@@ -73,6 +73,22 @@ R4-D1 restore tested root Runner service hardening: Python -E -s, NoNewPrivilege
 
 The final G0 re-review checks R4-D1 and direct consistency edits only. A second broad architecture review is not required unless this revision materially widens the accepted Candidate B authority surface.
 
+## 0.1 Task 3 G2 finding status
+
+Task 3 G2 is **CHANGES REQUIRED** with 0 Critical and 7 Important findings open:
+
+```text
+G2-1  restore exact X -> X.service supervisor identity mapping
+G2-2  canonicalize INFO inspection without rewriting accepted G1 identity
+G2-3  implement the frozen ordinary-UNKNOWN grace state machine
+G2-4  run installer INFO readiness as labpilot-controller:labpilot-control
+G2-5  preserve historical journal _BOOT_ID provenance
+G2-6  explicitly activate the newly installed Runner tree/policy on update
+G2-7  contain runtime-probe execution failures as bounded evidence
+```
+
+Task 4 and Task 5 remain **NOT AUTHORIZED**. Task 5 native root/systemd/persistent-journald acceptance has not been performed. `DOCUMENT-STATUS.md` remains unchanged.
+
 ---
 
 # 1. Formal Slice 2 task status
@@ -80,7 +96,7 @@ The final G0 re-review checks R4-D1 and direct consistency edits only. A second 
 ```text
 Task 1 — S2.0 Runner Supervision PoC + ADR                        COMPLETE / SELECT_B
 Task 2 — S2.1 Attempt Preparation + Exact Source Materialization  ACCEPTED AT G1
-Task 3 — S2.2 Durable Launch / Observe / Stop                     AUTHORIZED
+Task 3 — S2.2 Durable Launch / Observe / Stop                     G2 CHANGES REQUIRED (implementation complete; G2-1..G2-7 open)
 Task 4 — S2.3 Coordinator Reconciliation + S2.4 API Composition  NOT AUTHORIZED
 Task 5 — S2.5 Real Recovery / Fault-Injection Acceptance         NOT AUTHORIZED
 ```
@@ -961,8 +977,8 @@ The installer is intentionally narrow:
 3. uses `git archive <sha>` to populate `/opt/labpilot-runner/app` so the daemon never imports a controller-writable checkout;
 4. runs `uv sync --locked --no-dev` in the root-owned install tree;
 5. installs policy/service with the exact ownership/modes above;
-6. `systemctl daemon-reload` then `systemctl enable --now labpilot-runner.service`;
-7. verifies the **effective loaded service** has exact `ExecStart` Python `-E -s`, `UMask=0077`, `NoNewPrivileges=yes`, and `RestrictAddressFamilies=AF_UNIX`; then verifies service active state, runtime-directory ownership/mode, socket ownership/mode, and `INFO` readiness.
+6. `systemctl daemon-reload`, then `systemctl enable labpilot-runner.service`, then an explicit `systemctl restart labpilot-runner.service`; `restart` starts an inactive unit on first installation and replaces an already-active process on update so subsequent checks exercise the newly installed exact tree and in-memory policy;
+7. only after that activation, verifies the **effective loaded service** has exact `ExecStart` Python `-E -s`, `UMask=0077`, `NoNewPrivileges=yes`, and `RestrictAddressFamilies=AF_UNIX`; then verifies service active state, runtime-directory ownership/mode, socket ownership/mode, and controller-identity `INFO` readiness.
 
 The effective-service check must interrogate systemd's loaded unit/properties after `daemon-reload`; checking only the repository unit file is insufficient.
 
