@@ -46,7 +46,7 @@ def derive_trial_presentation(
         AttemptStatus.TERMINAL.value,
     } for attempt in attempts):
         return "running"
-    if cancelled and attempts:
+    if cancelled:
         return "cancelled"
     if attempts:
         return "failed"
@@ -73,7 +73,9 @@ def derive_batch_presentation(
         return "succeeded"
     if any(value == "running" for value in trial_presentations):
         return "running"
-    if trial_presentations and all(value == "failed" for value in trial_presentations):
+    if "failed" in trial_presentations and all(
+        value in {"succeeded", "failed"} for value in trial_presentations
+    ):
         return "failed"
     return "pending"
 

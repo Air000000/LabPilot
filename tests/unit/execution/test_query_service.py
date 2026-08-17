@@ -37,3 +37,25 @@ def test_coordination_attention_is_derived_above_exact_attempt_status() -> None:
     assert derive_batch_presentation(
         ("needs_attention",), started=True, cancelled=False
     ) == "failed_to_coordinate"
+
+
+def test_cancelled_unattempted_trial_and_batch_converge_to_cancelled() -> None:
+    from labpilot.execution.query_service import (
+        derive_batch_presentation,
+        derive_trial_presentation,
+    )
+
+    trial = derive_trial_presentation((), started=True, cancelled=True)
+
+    assert trial == "cancelled"
+    assert derive_batch_presentation(
+        (trial,), started=True, cancelled=True
+    ) == "cancelled"
+
+
+def test_mixed_terminal_batch_with_failure_converges_to_failed() -> None:
+    from labpilot.execution.query_service import derive_batch_presentation
+
+    assert derive_batch_presentation(
+        ("succeeded", "failed"), started=True, cancelled=False
+    ) == "failed"

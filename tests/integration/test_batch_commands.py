@@ -186,6 +186,13 @@ async def test_receipt_replay_beats_stale_version_and_cancel_blocks_new_start(
         assert started.replayed is False and replay.replayed is True
         assert cancelled.replayed is False and cancel_replay.replayed is True
         assert batch is not None and batch.row_version == 3
+        from labpilot.execution.query_service import ExecutionQueryService
+
+        query = ExecutionQueryService(system.database.session)
+        batch_view = await query.get_batch(batch_id)
+        trial_view = await query.get_trial(batch_view.trial_ids[0])
+        assert trial_view.presentation_status == "cancelled"
+        assert batch_view.presentation_status == "cancelled"
 
 
 @pytest.mark.integration
