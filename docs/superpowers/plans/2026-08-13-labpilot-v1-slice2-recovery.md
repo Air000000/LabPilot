@@ -1729,6 +1729,45 @@ implementation window. Only after external G4 approval may a separate
 governance-only closure mark Task 5 accepted, mark Slice 2 accepted, and update
 `DOCUMENT-STATUS.md` exactly once.
 
+### 7.0.1 Non-native marker gate and native test-admin authority
+
+Task 5 acceptance selection is marker-based. `native` is the explicit pytest
+marker for tests that perform or require real native-host acceptance. Pure
+fixture, oracle, serialization, registry, config, bounded-polling,
+fault-decorator, and F18 metadata round-trip tests are not marked `native`.
+Ordinary CI and every non-native Task 5 gate use `-m "not native"`; filename or
+node-name text is never the isolation mechanism.
+
+Native mode requires `LABPILOT_SLICE2_ACCEPTANCE_CONFIG` to name an explicit
+absolute test-admin config path. Its absence fails before systemd interaction,
+acceptance-database mutation, Runner installation, Compose startup, process
+control, or reboot preparation. The config is test-only and does not alter
+production Settings or API contracts. It has no defaults and provides at
+least:
+
+```text
+version = 1
+dedicated_candidate_b_host = true
+expected_hostname
+repository_root
+workspace_root
+runner_policy_source
+evidence_root
+dataset_root
+database_url_env
+api_base_url
+compose_project
+python_profile
+```
+
+Every filesystem path is an explicit absolute native-host path.
+`database_url_env` names the environment variable holding database authority;
+the config and evidence never contain database credentials. SSH credentials,
+passwords, and private keys are not repository config or evidence. The actual
+hostname must equal `expected_hostname`, and WSL is rejected even if systemd is
+available. Task 5 remains AUTHORIZED / IN PROGRESS; G4 has not occurred and
+`DOCUMENT-STATUS.md` remains unchanged.
+
 ## 7.1 Test-only files
 
 Create:
@@ -1860,7 +1899,7 @@ For scenarios intentionally ending UNKNOWN or IDENTITY_CONFLICT, seal/hash the v
 Run:
 
 ```bash
-uv run pytest tests/acceptance/slice2 -v -k "not native"
+uv run pytest tests/acceptance/slice2 -v -m "not native"
 uv run ruff check tests/acceptance/slice2 scripts/run_slice2_native_acceptance.py
 uv run mypy scripts/run_slice2_native_acceptance.py
 ```
@@ -1915,7 +1954,7 @@ Run in a supported Python 3.12 environment with PostgreSQL drivers installed:
 
 ```bash
 ./scripts/check_ci.sh
-uv run pytest tests/acceptance/slice2 -v -k "not native"
+uv run pytest tests/acceptance/slice2 -v -m "not native"
 uv run python -m compileall -q src tests scripts
 bash -n scripts/install_labpilot_runner_host.sh
 git diff --check
