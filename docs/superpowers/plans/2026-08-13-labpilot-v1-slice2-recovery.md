@@ -148,6 +148,7 @@ The current dependency guard intentionally keeps `labpilot.execution` independen
 - `src/labpilot/api/routers/experiments.py`
 - `src/labpilot/main.py`
 - `compose.yaml`
+- `.env.example` — Task 4 documents the required fixed host numeric identity inputs; no guessed defaults.
 
 **Create host deployment files:**
 
@@ -1295,6 +1296,45 @@ Stop for G2 review before Task 4. The gate fails if any test reconstructs first-
 
 **Deliverable:** Thin durable user commands, deterministic single-Coordinator recovery/scheduling, fixed concurrency ≤4 including UNKNOWN and IDENTITY_CONFLICT, startup reconciliation barrier with durable restart audit, and production composition where API has no Runner socket/workspace authority.
 
+## 6.0 Narrow Task 4 compatibility amendment
+
+**Governance:** Task 3 remains ACCEPTED AT G2. Task 4 remains AUTHORIZED / in implementation. Task 5 remains NOT AUTHORIZED. `DOCUMENT-STATUS.md` remains unchanged.
+
+The accepted Task 3 stop primitive is compatibly extended so a startup cancellation pass can persist its mandatory fresh pre-stop observation and restart audit atomically:
+
+```python
+async def request_stop(
+    attempt_id: UUID,
+    *,
+    reason: ReconciliationReason = ReconciliationReason.PERIODIC,
+    coordinator_start_id: UUID | None = None,
+) -> None
+```
+
+It uses the same validation as `reconcile_attempt()`: STARTUP requires `coordinator_start_id`; PERIODIC forbids it. Default callers remain PERIODIC and retain the accepted Task 3 behavior.
+
+For a STARTUP cancellation pass, the first fresh observation inside `request_stop()` is the Attempt's STARTUP reconciliation observation. That observation and `attempt.reconciled_after_restart` are persisted atomically through the existing `_persist_observation()` path, including when `TERMINAL_MATCH` terminalizes the Attempt in that UoW. A non-`ACTIVE_MATCH` observation returns without STOP. An `ACTIVE_MATCH` observation permits the existing exact-match STOP; any post-STOP reconciliation remains PERIODIC and cannot duplicate the startup audit. Coordinator never appends the restart audit directly.
+
+Production Coordinator numeric identity inputs are frozen as required positive decimal integers:
+
+```text
+LABPILOT_CONTROLLER_UID = host UID of fixed user labpilot-controller
+LABPILOT_CONTROLLER_GID = host GID of fixed group labpilot-control
+LABPILOT_TRAIN_GID      = host GID of fixed group labpilot-train
+```
+
+They are deployment identity only and never enter Trial identity, `FrozenExecutionSpec`, `FrozenLaunchSpec`, or H. Compose uses:
+
+```yaml
+user: "${LABPILOT_CONTROLLER_UID}:${LABPILOT_CONTROLLER_GID}"
+group_add:
+  - "${LABPILOT_TRAIN_GID}"
+```
+
+Coordinator receives `LABPILOT_TRAIN_GID` and passes its exact numeric value as `AttemptPreparationService(..., execution_gid=settings.train_gid)`. It never infers the GID from workspace ownership, process groups, Runner responses, or container account databases. Task 5 native acceptance will prove the configured numbers correspond to the fixed host identities.
+
+Execution-only Settings are process-scoped. The shared Settings object may keep `attempt_workspace_root`, `runner_socket_path`, and `train_gid` optional, with strict validation whenever supplied. API does not require or receive them. Coordinator outside tests fails closed at its composition boundary when any is absent. This supersedes the older global requirement that every non-test process must configure `LABPILOT_ATTEMPT_WORKSPACE_ROOT`; no generic process-role framework is introduced.
+
 ## 6.1 Batch command contract
 
 Public commands:
@@ -1368,9 +1408,20 @@ scan all nonterminal Attempts with status:
     IDENTITY_CONFLICT
 
 for each:
-    apply parent-cancel control only when exact ACTIVE_MATCH permits it
-    call reconcile_attempt(..., reason=STARTUP, coordinator_start_id=...)
-    persist attempt.reconciled_after_restart event
+    if status == IDENTITY_CONFLICT:
+        preserve parent cancel intent
+        call reconcile_attempt(..., reason=STARTUP, coordinator_start_id=...)
+        never request_stop / STOP / kill
+    elif parent cancel exists:
+        call request_stop(
+            attempt_id,
+            reason=STARTUP,
+            coordinator_start_id=coordinator_start_id,
+        )
+        this call is the startup reconciliation/audit pass
+        do not issue a second STARTUP reconcile
+    else:
+        call reconcile_attempt(..., reason=STARTUP, coordinator_start_id=...)
 
 only after every such Attempt receives one startup pass may new dispatch occur
 ```
@@ -1465,6 +1516,8 @@ Runner AF_UNIX socket
 host-compatible labpilot-controller UID/GID
 labpilot-train supplementary GID for workspace preparation; composition resolves that fixed group to numeric execution_gid and passes it explicitly to AttemptPreparationService
 ```
+
+Compose obtains those identities only from the required `LABPILOT_CONTROLLER_UID`, `LABPILOT_CONTROLLER_GID`, and `LABPILOT_TRAIN_GID` deployment variables frozen in §6.0. It does not hardcode numeric identities, mount host passwd/group databases, or generalize the fixed identity names into configuration.
 
 Do not create a container-path ↔ host-path translation table.
 
@@ -1582,11 +1635,14 @@ Create: tests/integration/test_execution_composition.py
 Required settings/contracts:
 
 ```text
-LABPILOT_ATTEMPT_WORKSPACE_ROOT          required outside tests, canonical absolute, no guessed default
-LABPILOT_RUNNER_SOCKET_PATH              required for Coordinator; production value /run/labpilot-runner/control.sock
+LABPILOT_ATTEMPT_WORKSPACE_ROOT          required at Coordinator composition outside tests; canonical absolute; no guessed default
+LABPILOT_RUNNER_SOCKET_PATH              required at Coordinator composition; production value /run/labpilot-runner/control.sock
 LABPILOT_RUNNER_REQUEST_TIMEOUT_SECONDS  positive bounded value, default 10
 LABPILOT_UNKNOWN_ATTENTION_GRACE_SECONDS positive bounded value, default 60
+LABPILOT_TRAIN_GID                       required positive integer at Coordinator composition
 ```
+
+`LABPILOT_ATTEMPT_WORKSPACE_ROOT` is required at the Coordinator composition boundary outside tests, not globally for API. API requires none of the workspace, Runner socket, or train GID settings.
 
 Compose mounts `${LABPILOT_ATTEMPT_WORKSPACE_ROOT}` into Coordinator at the same absolute path and mounts `/run/labpilot-runner/control.sock` only into Coordinator. API receives neither.
 
