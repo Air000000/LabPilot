@@ -22,7 +22,7 @@
 
 **Native S2.0 evidence:** `docs/superpowers/evidence/2026-08-13-labpilot-v1-slice2-runner-supervision-poc.md`
 
-**Status:** r4.1 is **APPROVED AT G0**. Task 1 remains **COMPLETE / SELECT_B**. Task 2 is **ACCEPTED AT G1**. Task 3 is **ACCEPTED AT G2**. Task 4 implementation is **COMPLETE** with G3 **CHANGES REQUIRED** (0 Critical, 5 Important; G3-1 through G3-5 OPEN). Task 5 remains **NOT AUTHORIZED**. This governance state does not imply Slice 2 acceptance. `DOCUMENT-STATUS.md` remains unchanged and may be updated only after full Slice 2 acceptance.
+**Status:** r4.1 is **APPROVED AT G0**. Task 1 remains **COMPLETE / SELECT_B**. Task 2 is **ACCEPTED AT G1**. Task 3 is **ACCEPTED AT G2**. Task 4 is **ACCEPTED AT G3**. Task 5 is **AUTHORIZED** only to begin implementation and native acceptance in a new Task 5 window from the Task 4 governance closure commit. This governance state does not imply Task 5 or Slice 2 acceptance. `DOCUMENT-STATUS.md` remains unchanged and may be updated only after full Slice 2 acceptance.
 
 **Historical governance note:** Candidate B was admitted and implemented before a separate focused pre-implementation amendment was committed. This plan records the post-S2.0 production contract and does not backdate or rewrite that history.
 
@@ -91,7 +91,19 @@ The final G2-7 review proves bounded policy rejection and continued service on t
 
 ## 0.2 Task 4 G3 finding status
 
-Task 4 implementation is **COMPLETE**. G3 is **CHANGES REQUIRED** with 0 Critical and 5 Important findings: G3-1 through G3-5 are OPEN. Task 5 remains **NOT AUTHORIZED**, and `DOCUMENT-STATUS.md` remains unchanged.
+The initial Task 4 G3 review returned **CHANGES REQUIRED** with 0 Critical and 5 Important findings: G3-1 through G3-5 were OPEN. That historical result remains part of the audit trail.
+
+The final Task 4 G3 finding-specific review is **APPROVE** with 0 Critical and 0 Important findings. The final reviewed Task 4 HEAD is `6da2c6c2591c17c948508b0ad8b72b5c04785e52`; GitHub Actions run `32028039084` completed successfully for that exact HEAD.
+
+```text
+G3-1  CLOSED — real cancel API and durable command state are consistently cancel_requested; replay does not increment row_version again
+G3-2  CLOSED — fixed controller UID/GID and train GID composition inputs are positive, required for Coordinator composition, and use the same Compose identity variables
+G3-3  CLOSED — Coordinator mounts the Runner runtime directory rather than one socket inode; host path auto-creation is disabled; RuntimeDirectoryPreserve is restart; stale socket replacement is bounded by exact metadata, liveness, and inode revalidation
+G3-4  CLOSED — derived Trial/Batch presentation converges for cancelled untouched work and mixed succeeded/failed terminal work without persisted Batch.status
+G3-5  CLOSED — missing ExperimentVersion is translated to existing public not-found semantics while unrelated ExecutionInputError values are not converted to 404
+```
+
+Task 4 is **ACCEPTED AT G3**. Task 5 is **AUTHORIZED** only for work in a new Task 5 window after the Task 4 governance closure commit; it is not COMPLETE or ACCEPTED. `DOCUMENT-STATUS.md` remains unchanged until full Slice 2 acceptance.
 
 ---
 
@@ -101,8 +113,8 @@ Task 4 implementation is **COMPLETE**. G3 is **CHANGES REQUIRED** with 0 Critica
 Task 1 — S2.0 Runner Supervision PoC + ADR                        COMPLETE / SELECT_B
 Task 2 — S2.1 Attempt Preparation + Exact Source Materialization  ACCEPTED AT G1
 Task 3 — S2.2 Durable Launch / Observe / Stop                     ACCEPTED AT G2
-Task 4 — S2.3 Coordinator Reconciliation + S2.4 API Composition  G3 CHANGES REQUIRED
-Task 5 — S2.5 Real Recovery / Fault-Injection Acceptance         NOT AUTHORIZED
+Task 4 — S2.3 Coordinator Reconciliation + S2.4 API Composition  ACCEPTED AT G3
+Task 5 — S2.5 Real Recovery / Fault-Injection Acceptance         AUTHORIZED
 ```
 
 Task 1's accepted evidence stack is the ADR plus S2.0 evidence document above. Do not rerun P0–P13 unless a later approved production change materially changes a physical invariant that those scenarios established.
@@ -1294,7 +1306,7 @@ Stop for G2 review before Task 4. The gate fails if any test reconstructs first-
 
 # 6. Task 4 — S2.3 Coordinator Reconciliation + S2.4 API Composition
 
-**Authorization:** AUTHORIZED. Begin only in a new implementation window from the Task 3 G2 governance closure commit.
+**Status:** ACCEPTED AT G3. Implementation began in a new Task 4 window from the Task 3 G2 governance closure commit and ended with the Task 4 G3 governance closure commit.
 
 **Risk:** Workflow / race critical.
 
@@ -1690,9 +1702,19 @@ Stop for G3 review before native Task 5. The gate fails if API can reach Runner 
 
 # 7. Task 5 — S2.5 Real Recovery / Fault-Injection Acceptance
 
-**Authorization:** NOT AUTHORIZED. Native root/systemd/persistent-journald recovery evidence remains gated on Task 4 acceptance.
+**Authorization:** AUTHORIZED. This permits only implementation and native acceptance work in a **new Task 5 window** beginning from the Task 4 governance closure commit. It does not mark Task 5 COMPLETE or ACCEPTED.
 
-Future Task 5 native evidence must prove that an already-running Coordinator container communicates again after `systemctl restart labpilot-runner.service` without recreating the Coordinator container. Do not execute that proof during Task 4 G3 remediation.
+Task 4 G3 acceptance does not prove any of the following; each remains a Task 5 evidence obligation:
+
+- actual host numeric IDs correspond to `labpilot-controller`, `labpilot-control`, and `labpilot-train`;
+- real `SO_PEERCRED` succeeds between the composed Coordinator and Runner;
+- real `labpilot-train` can traverse, read, execute, and write with the exact workspace permissions;
+- an already-running Coordinator container reconnects after `systemctl restart labpilot-runner.service` without container recreation;
+- real `RuntimeDirectoryPreserve` and AF_UNIX stale-socket replacement work end-to-end across systemd and Docker mount namespaces;
+- persistent journald recovery works across actual process or host restart; and
+- failed launch, timeout, and restart-during-reconciliation behave correctly on the native stack.
+
+Do not execute those proofs in the Task 4 window. `DOCUMENT-STATUS.md` remains unchanged until full Slice 2 acceptance.
 
 **Risk:** Release critical.
 
