@@ -50,19 +50,19 @@ services:
     build: .
     environment:
       <<: *app-env
-      LABPILOT_ATTEMPT_WORKSPACE_ROOT: ${LABPILOT_ATTEMPT_WORKSPACE_ROOT}
+      LABPILOT_ATTEMPT_WORKSPACE_ROOT: ${LABPILOT_ATTEMPT_WORKSPACE_ROOT:?LABPILOT_ATTEMPT_WORKSPACE_ROOT is required}
       LABPILOT_RUNNER_SOCKET_PATH: /run/labpilot-runner/control.sock
       LABPILOT_RUNNER_REQUEST_TIMEOUT_SECONDS: ${LABPILOT_RUNNER_REQUEST_TIMEOUT_SECONDS:-10}
       LABPILOT_UNKNOWN_ATTENTION_GRACE_SECONDS: ${LABPILOT_UNKNOWN_ATTENTION_GRACE_SECONDS:-60}
-      LABPILOT_TRAIN_GID: ${LABPILOT_TRAIN_GID}
-    user: "${LABPILOT_CONTROLLER_UID}:${LABPILOT_CONTROLLER_GID}"
+      LABPILOT_TRAIN_GID: ${LABPILOT_TRAIN_GID:?LABPILOT_TRAIN_GID is required}
+    user: "${LABPILOT_CONTROLLER_UID:?LABPILOT_CONTROLLER_UID is required}:${LABPILOT_CONTROLLER_GID:?LABPILOT_CONTROLLER_GID is required}"
     group_add:
-      - "${LABPILOT_TRAIN_GID}"
+      - "${LABPILOT_TRAIN_GID:?LABPILOT_TRAIN_GID is required}"
     command: ["python", "-m", "labpilot.coordinator.worker"]
     volumes:
       - ${LABPILOT_REPOSITORY_HOST_ROOT:-.}:/repositories:ro
       - labpilot_content:/var/lib/labpilot/content
-      - ${LABPILOT_ATTEMPT_WORKSPACE_ROOT}:${LABPILOT_ATTEMPT_WORKSPACE_ROOT}
+      - "${LABPILOT_ATTEMPT_WORKSPACE_ROOT:?LABPILOT_ATTEMPT_WORKSPACE_ROOT is required}:${LABPILOT_ATTEMPT_WORKSPACE_ROOT:?LABPILOT_ATTEMPT_WORKSPACE_ROOT is required}"
       - /run/labpilot-runner/control.sock:/run/labpilot-runner/control.sock
     depends_on:
       migrate:

@@ -1,3 +1,4 @@
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -42,12 +43,19 @@ def test_coordinator_composition_uses_exact_train_gid(tmp_path: Path) -> None:
             tmp_path,
             attempt_workspace_root=workspace,
             runner_socket_path=Path("/run/labpilot-runner/control.sock"),
+            runner_request_timeout_seconds=12,
+            unknown_attention_grace_seconds=62,
             train_gid=3456,
         ),
         Database("postgresql+asyncpg://user:pass@db:5432/labpilot"),
     )
 
     assert coordinator._preparation._execution_gid == 3456
+    assert coordinator._execution._runner._socket_path == (
+        "/run/labpilot-runner/control.sock"
+    )
+    assert coordinator._execution._runner._timeout_seconds == 12
+    assert coordinator._execution._unknown_grace == timedelta(seconds=62)
 
 
 @pytest.mark.integration
@@ -68,8 +76,10 @@ def test_compose_grants_execution_authority_only_to_coordinator() -> None:
     ):
         assert value not in api
         assert value in coordinator
-    assert '${LABPILOT_CONTROLLER_UID}:${LABPILOT_CONTROLLER_GID}' in coordinator
-    assert (
-        '${LABPILOT_ATTEMPT_WORKSPACE_ROOT}:${LABPILOT_ATTEMPT_WORKSPACE_ROOT}'
-        in coordinator
-    )
+    for name in (
+        "LABPILOT_CONTROLLER_UID",
+        "LABPILOT_CONTROLLER_GID",
+        "LABPILOT_TRAIN_GID",
+        "LABPILOT_ATTEMPT_WORKSPACE_ROOT",
+    ):
+        assert f"${{{name}:?" in coordinator
