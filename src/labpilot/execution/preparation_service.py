@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import stat
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -57,10 +58,14 @@ class AttemptPreparationService:
         *,
         version_semantics: VersionExecutionSemanticsPort,
         snapshot_materialization: SnapshotMaterializationPort,
+        execution_gid: int,
     ) -> None:
+        if type(execution_gid) is not int or execution_gid < 0:
+            raise ValueError("execution_gid must be a non-negative integer")
         self._session_context_factory = session_context_factory
         self._version_semantics = version_semantics
         self._snapshot_materialization = snapshot_materialization
+        self._execution_gid = execution_gid
         self._repository = ExecutionRepository()
 
     async def prepare_attempt(self, attempt_id: UUID) -> None:
@@ -80,7 +85,9 @@ class AttemptPreparationService:
                     expected_repository_snapshot_identity=semantics.repository_snapshot_identity,
                     destination=workspace / "source",
                 )
-                _verify_workspace_permissions(workspace)
+                _verify_workspace_permissions(
+                    workspace, manifest, execution_gid=self._execution_gid
+                )
                 spec = build_frozen_execution_spec(
                     semantics,
                     trial_identity=inputs.trial_identity,
@@ -101,8 +108,11 @@ class AttemptPreparationService:
                     resolved_parameters=inputs.resolved_parameters,
                     seed=inputs.seed,
                 )
-                set_workspace_permissions(staging)
+                set_workspace_permissions(staging, execution_gid=self._execution_gid)
                 os.replace(staging, workspace)
+                _verify_workspace_permissions(
+                    workspace, manifest, execution_gid=self._execution_gid
+                )
             await self._persist_prepared(inputs, manifest, spec)
         except ExecutionInputError as exc:
             if staging is not None and staging.exists():
@@ -282,14 +292,40 @@ def _verify_workspace_shape(workspace: Path) -> None:
         raise ExecutionInputError("SOURCE_TAMPERED") from exc
 
 
-def _verify_workspace_permissions(workspace: Path) -> None:
+def _verify_workspace_permissions(
+    workspace: Path,
+    manifest: SourceManifest,
+    *,
+    execution_gid: int,
+) -> None:
     source = workspace / "source"
-    if source.stat().st_mode & 0o222:
-        raise ExecutionInputError("SOURCE_TAMPERED")
+    _verify_path_permissions(workspace, 0o750, execution_gid)
+    _verify_path_permissions(source, 0o550, execution_gid)
+    regular_modes = {
+        entry.relative_path: 0o550 if entry.file_mode == "100755" else 0o440
+        for entry in manifest.entries
+        if entry.file_type == "regular"
+    }
     for path in source.rglob("*"):
-        if not path.is_symlink() and path.stat().st_mode & 0o222:
+        if path.is_symlink():
+            continue
+        expected_mode = (
+            0o550
+            if path.is_dir()
+            else regular_modes.get(path.relative_to(source).as_posix())
+        )
+        if expected_mode is None:
             raise ExecutionInputError("SOURCE_TAMPERED")
-    if (workspace / "runtime" / "output").stat().st_mode & 0o220 != 0o220:
+        _verify_path_permissions(path, expected_mode, execution_gid)
+    _verify_path_permissions(workspace / "runtime", 0o770, execution_gid)
+    _verify_path_permissions(workspace / "runtime" / "output", 0o770, execution_gid)
+
+
+def _verify_path_permissions(path: Path, mode: int, execution_gid: int) -> None:
+    metadata = path.lstat()
+    if stat.S_IMODE(metadata.st_mode) != mode or (
+        os.name == "posix" and metadata.st_gid != execution_gid
+    ):
         raise ExecutionInputError("SOURCE_TAMPERED")
 
 
@@ -351,16 +387,22 @@ def build_frozen_execution_spec(
     )
 
 
-def set_workspace_permissions(workspace: Path) -> None:
+def set_workspace_permissions(workspace: Path, *, execution_gid: int) -> None:
     source = workspace / "source"
-    for path in sorted(source.rglob("*"), reverse=True):
-        if path.is_symlink():
-            continue
-        mode = path.stat().st_mode
-        path.chmod(0o555 if path.is_dir() or mode & 0o111 else 0o444)
-    source.chmod(0o555)
-    (workspace / "runtime").chmod(0o770)
-    (workspace / "runtime" / "output").chmod(0o770)
+    runtime = workspace / "runtime"
+    output = runtime / "output"
+    source_paths = [path for path in source.rglob("*") if not path.is_symlink()]
+    paths = [workspace, source, *source_paths, runtime, output]
+    if os.name == "posix":
+        for path in paths:
+            os.chown(path, -1, execution_gid, follow_symlinks=False)
+    workspace.chmod(0o750)
+    source.chmod(0o550)
+    for path in source_paths:
+        mode = path.lstat().st_mode
+        path.chmod(0o550 if path.is_dir() or mode & 0o111 else 0o440)
+    runtime.chmod(0o770)
+    output.chmod(0o770)
 
 
 def _render_scalar(value: ParameterValue) -> str:

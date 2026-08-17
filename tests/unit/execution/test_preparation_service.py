@@ -1,3 +1,5 @@
+import os
+import stat
 from dataclasses import replace
 from pathlib import Path
 from uuid import UUID
@@ -176,20 +178,49 @@ def test_build_frozen_spec_rejects_unlaunchable_inputs(
 def test_workspace_permissions_make_source_read_only_and_output_writable(tmp_path: Path) -> None:
     from labpilot.execution.preparation_service import set_workspace_permissions
 
-    source = tmp_path / "source"
-    output = tmp_path / "runtime" / "output"
-    source.mkdir()
+    workspace = tmp_path / "attempt"
+    source = workspace / "source"
+    nested = source / "nested"
+    output = workspace / "runtime" / "output"
+    source.mkdir(parents=True)
+    nested.mkdir()
     output.mkdir(parents=True)
     regular = source / "regular.py"
-    executable = source / "run.sh"
+    executable = nested / "run.sh"
+    outside = tmp_path / "outside"
     regular.write_text("pass\n")
     executable.write_text("#!/bin/sh\n")
     executable.chmod(0o755)
+    outside.write_text("outside\n")
+    outside.chmod(0o600)
+    (source / "outside-link").symlink_to(outside)
+    tmp_path.chmod(0o700)
 
-    set_workspace_permissions(tmp_path)
+    execution_gid = os.getgid() if os.name == "posix" else 0
+    set_workspace_permissions(workspace, execution_gid=execution_gid)
 
-    assert regular.stat().st_mode & 0o222 == 0
-    assert executable.stat().st_mode & 0o222 == 0
-    assert executable.stat().st_mode & 0o111
-    assert source.stat().st_mode & 0o222 == 0
-    assert output.stat().st_mode & 0o220 == 0o220
+    assert stat.S_IMODE(tmp_path.stat().st_mode) == 0o700
+    assert stat.S_IMODE(workspace.stat().st_mode) == 0o750
+    assert stat.S_IMODE(source.stat().st_mode) == 0o550
+    assert stat.S_IMODE(nested.stat().st_mode) == 0o550
+    assert stat.S_IMODE(regular.stat().st_mode) == 0o440
+    assert stat.S_IMODE(executable.stat().st_mode) == 0o550
+    assert stat.S_IMODE((workspace / "runtime").stat().st_mode) == 0o770
+    assert stat.S_IMODE(output.stat().st_mode) == 0o770
+    assert stat.S_IMODE(outside.stat().st_mode) == 0o600
+    if os.name == "posix":
+        for path in (workspace, source, nested, regular, executable, workspace / "runtime", output):
+            assert path.stat().st_gid == execution_gid
+
+
+@pytest.mark.parametrize("execution_gid", [True, -1, 1.5])
+def test_attempt_preparation_requires_valid_execution_gid(execution_gid: object) -> None:
+    from labpilot.execution.preparation_service import AttemptPreparationService
+
+    with pytest.raises(ValueError):
+        AttemptPreparationService(
+            object(),  # type: ignore[arg-type]
+            version_semantics=object(),  # type: ignore[arg-type]
+            snapshot_materialization=object(),  # type: ignore[arg-type]
+            execution_gid=execution_gid,  # type: ignore[arg-type]
+        )

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import stat
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
@@ -112,6 +114,7 @@ async def _prepared_system(
             system.database.session,
             version_semantics=VersionExecutionSemanticsAdapter(system.database.session),
             snapshot_materialization=RepositorySnapshotMaterializationAdapter(source),
+            execution_gid=os.getgid() if os.name == "posix" else 0,
         )
         yield _PreparedSystem(
             system.database,
@@ -151,8 +154,20 @@ async def test_preparation_materializes_exact_source_and_freezes_full_semantics(
         assert row.frozen_execution_spec_json["framework_requirements"] == ["torch==2.7.0"]
         assert row.frozen_execution_spec_json["environment_expectation_hash"]
         assert (system.workspace / "source" / "train.py").read_text() == "print('train')\n"
-        assert (system.workspace / "source").stat().st_mode & 0o222 == 0
-        assert (system.workspace / "runtime" / "output").stat().st_mode & 0o220 == 0o220
+        assert stat.S_IMODE(system.workspace.stat().st_mode) == 0o750
+        assert stat.S_IMODE((system.workspace / "source").stat().st_mode) == 0o550
+        assert stat.S_IMODE((system.workspace / "source" / "train.py").stat().st_mode) == 0o440
+        assert stat.S_IMODE((system.workspace / "runtime").stat().st_mode) == 0o770
+        assert stat.S_IMODE((system.workspace / "runtime" / "output").stat().st_mode) == 0o770
+        if os.name == "posix":
+            for path in (
+                system.workspace,
+                system.workspace / "source",
+                system.workspace / "source" / "train.py",
+                system.workspace / "runtime",
+                system.workspace / "runtime" / "output",
+            ):
+                assert path.stat().st_gid == os.getgid()
 
 
 @pytest.mark.integration
@@ -223,6 +238,48 @@ async def test_final_workspace_tamper_marks_preparation_failed(
         assert row.status == AttemptStatus.PREPARATION_FAILED.value
         assert row.preparation_failure_code == "SOURCE_TAMPERED"
         assert row.terminal_at is not None
+
+
+@pytest.mark.integration
+async def test_final_workspace_mode_tamper_marks_preparation_failed(
+    isolated_database_url: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with _prepared_system(isolated_database_url, tmp_path) as system:
+        async def interrupt(*args: object, **kwargs: object) -> None:
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(system.service, "_persist_prepared", interrupt)
+        with pytest.raises(asyncio.CancelledError):
+            await system.service.prepare_attempt(system.attempt_id)  # type: ignore[attr-defined]
+        (system.workspace / "runtime" / "output").chmod(0o775)
+
+        monkeypatch.undo()
+        await system.service.prepare_attempt(system.attempt_id)  # type: ignore[attr-defined]
+
+        row = await _attempt(system)
+        assert row.status == AttemptStatus.PREPARATION_FAILED.value
+        assert row.preparation_failure_code == "SOURCE_TAMPERED"
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(os.name != "posix", reason="POSIX ownership semantics required")
+async def test_ownership_failure_never_reaches_launch_ready(
+    isolated_database_url: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with _prepared_system(isolated_database_url, tmp_path) as system:
+        def deny_chown(*args: object, **kwargs: object) -> None:
+            raise PermissionError("denied")
+
+        monkeypatch.setattr(os, "chown", deny_chown)
+        await system.service.prepare_attempt(system.attempt_id)  # type: ignore[attr-defined]
+
+        row = await _attempt(system)
+        assert row.status == AttemptStatus.PREPARATION_FAILED.value
+        assert row.preparation_failure_code == "WORKSPACE_PREPARATION_FAILED"
 
 
 @pytest.mark.integration
