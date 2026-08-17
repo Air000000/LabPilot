@@ -14,6 +14,7 @@ from sqlalchemy import select
 from labpilot.execution.execution_service import (
     AttemptExecutionService,
     ReconciliationReason,
+    _execution_spec_from_json,
 )
 from labpilot.execution.models import AttemptRow, BatchRow
 from labpilot.execution.ports import ExecutionInputError
@@ -24,8 +25,14 @@ from labpilot.execution.runner_protocol import (
     RunnerObserveRequest,
     RunnerRequest,
     RunnerStopRequest,
+    encode_request,
 )
-from labpilot.execution.types import AttemptStatus, TerminalKind
+from labpilot.execution.types import (
+    AttemptStatus,
+    TerminalKind,
+    frozen_execution_spec_hash,
+    frozen_execution_spec_value,
+)
 from labpilot.observability.models import OutboxRecordRow, RuntimeEventRow
 from tests.integration.test_attempt_preparation import _attempt, _prepared_system
 
@@ -45,6 +52,7 @@ class FakeRunner:
         self._lock = Lock()
 
     def request(self, request: RunnerRequest) -> dict[str, object]:
+        encode_request(request)
         with self._lock:
             self.requests.append(request)
             if isinstance(request, RunnerInfoRequest):
@@ -215,6 +223,63 @@ async def test_one_cas_winner_dispatches_and_audits_without_outbox(
             "attempt.physical_started_observed",
         ]
         assert outbox_count == 0
+
+
+@pytest.mark.integration
+async def test_info_inspection_canonicalizes_g1_names_without_rewriting_identity(
+    isolated_database_url: str, tmp_path: Path
+) -> None:
+    async with _prepared_system(isolated_database_url, tmp_path) as system:
+        await _prepare(system)
+        async with system.database.session() as session:  # type: ignore[attr-defined]
+            async with session.begin():
+                row = await session.get(AttemptRow, system.attempt_id)
+                assert row is not None and row.frozen_execution_spec_json is not None
+                value = dict(row.frozen_execution_spec_json)
+                value["framework_requirements"] = [
+                    "torch==2.7.0",
+                    "scikit-learn>=1.7",
+                    "torch>=2",
+                ]
+                value["framework_distribution_names"] = [
+                    "torch",
+                    "scikit-learn",
+                    "torch",
+                ]
+                logical = _execution_spec_from_json(value)
+                original_hash = frozen_execution_spec_hash(logical)
+                row.frozen_execution_spec_json = frozen_execution_spec_value(logical)
+                row.frozen_execution_spec_hash = original_hash
+
+        runner = FakeRunner(system.workspace.parent, observations=[_active()])
+        service = AttemptExecutionService(
+            system.database.session,  # type: ignore[attr-defined]
+            runner,
+            workspace_root=system.workspace.parent,
+        )
+
+        await service.dispatch_attempt(system.attempt_id)
+
+        info = next(
+            request
+            for request in runner.requests
+            if isinstance(request, RunnerInfoRequest)
+        )
+        assert info.inspection is not None
+        assert info.inspection.framework_distribution_names == ("scikit-learn", "torch")
+        row = await _attempt(system)
+        assert row.frozen_execution_spec_hash == original_hash
+        assert row.frozen_execution_spec_json is not None
+        assert row.frozen_execution_spec_json["framework_distribution_names"] == [
+            "torch",
+            "scikit-learn",
+            "torch",
+        ]
+        assert row.observed_environment_json is not None
+        assert [
+            item["distribution_name"]
+            for item in row.observed_environment_json["framework_versions"]
+        ] == ["scikit-learn", "torch"]
 
 
 @pytest.mark.integration

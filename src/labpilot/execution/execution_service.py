@@ -140,17 +140,22 @@ class AttemptExecutionService:
         if inputs is None:
             return
         _verify_source(inputs.workspace_path, inputs.source_manifest)
+        inspection_distributions = tuple(
+            sorted(set(inputs.execution_spec.framework_distribution_names))
+        )
         info = await self._request(
             RunnerInfoRequest(
                 PROTOCOL_VERSION,
                 RunnerOperation.INFO,
                 InfoInspectionRequest(
                     inputs.execution_spec.python_profile,
-                    inputs.execution_spec.framework_distribution_names,
+                    inspection_distributions,
                 ),
             )
         )
-        launch_spec, observed = self._resolve_launch(inputs, info)
+        launch_spec, observed = self._resolve_launch(
+            inputs, info, inspection_distributions=inspection_distributions
+        )
         launch_hash = frozen_launch_spec_hash(launch_spec)
         permit = await self._commit_launch_intent(
             inputs, launch_spec, launch_hash, observed
@@ -279,6 +284,8 @@ class AttemptExecutionService:
         self,
         inputs: _DispatchInputs,
         response: dict[str, object],
+        *,
+        inspection_distributions: tuple[str, ...],
     ) -> tuple[FrozenLaunchSpec, ObservedEnvironment]:
         result = _successful_result(response, RunnerOperation.INFO)
         if (
@@ -315,7 +322,7 @@ class AttemptExecutionService:
             expected_hash=inputs.execution_spec.environment_expectation_hash,
             expected_profile=inputs.execution_spec.python_profile,
             expected_runtime=runtime_path,
-            expected_distributions=inputs.execution_spec.framework_distribution_names,
+            expected_distributions=inspection_distributions,
         )
         launch = build_frozen_launch_spec(
             inputs.execution_spec,
