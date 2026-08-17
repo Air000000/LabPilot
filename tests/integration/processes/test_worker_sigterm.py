@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import pytest
+from tests.integration.db_helpers import upgrade_database_to_head
 
 _STDERR_LIMIT = 4096
 _TRACEBACK_NEEDLE = b"Traceback"
@@ -363,6 +364,19 @@ async def test_worker_process_exits_zero_on_sigterm(
             ),
         }
     )
+    if module_name == "labpilot.coordinator.worker":
+        upgrade_database_to_head(isolated_database_url)
+        attempt_workspace_root = tmp_path / "attempts"
+        attempt_workspace_root.mkdir()
+        environment.update(
+            {
+                "LABPILOT_ATTEMPT_WORKSPACE_ROOT": str(attempt_workspace_root),
+                "LABPILOT_RUNNER_SOCKET_PATH": (
+                    "/run/labpilot-runner/control.sock"
+                ),
+                "LABPILOT_TRAIN_GID": "1234",
+            }
+        )
     process = await asyncio.create_subprocess_exec(
         sys.executable,
         "-m",

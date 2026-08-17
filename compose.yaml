@@ -48,8 +48,22 @@ services:
 
   coordinator:
     build: .
-    environment: *app-env
+    environment:
+      <<: *app-env
+      LABPILOT_ATTEMPT_WORKSPACE_ROOT: ${LABPILOT_ATTEMPT_WORKSPACE_ROOT}
+      LABPILOT_RUNNER_SOCKET_PATH: /run/labpilot-runner/control.sock
+      LABPILOT_RUNNER_REQUEST_TIMEOUT_SECONDS: ${LABPILOT_RUNNER_REQUEST_TIMEOUT_SECONDS:-10}
+      LABPILOT_UNKNOWN_ATTENTION_GRACE_SECONDS: ${LABPILOT_UNKNOWN_ATTENTION_GRACE_SECONDS:-60}
+      LABPILOT_TRAIN_GID: ${LABPILOT_TRAIN_GID}
+    user: "${LABPILOT_CONTROLLER_UID}:${LABPILOT_CONTROLLER_GID}"
+    group_add:
+      - "${LABPILOT_TRAIN_GID}"
     command: ["python", "-m", "labpilot.coordinator.worker"]
+    volumes:
+      - ${LABPILOT_REPOSITORY_HOST_ROOT:-.}:/repositories:ro
+      - labpilot_content:/var/lib/labpilot/content
+      - ${LABPILOT_ATTEMPT_WORKSPACE_ROOT}:${LABPILOT_ATTEMPT_WORKSPACE_ROOT}
+      - /run/labpilot-runner/control.sock:/run/labpilot-runner/control.sock
     depends_on:
       migrate:
         condition: service_completed_successfully

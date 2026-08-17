@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     repository_inspection_max_files: int = Field(default=50_000, ge=1)
     repository_inspection_max_total_bytes: int = Field(default=512 * 1024 * 1024, ge=1)
     attempt_workspace_root: Path | None = None
+    runner_socket_path: Path | None = None
+    runner_request_timeout_seconds: int = Field(default=10, ge=1, le=300)
+    unknown_attention_grace_seconds: int = Field(default=60, ge=1, le=300)
+    train_gid: int | None = Field(default=None, gt=0)
 
     @field_validator("database_url")
     @classmethod
@@ -55,6 +59,13 @@ class Settings(BaseSettings):
             raise ValueError("local_actor_id exceeds 200 UTF-8 bytes")
         return value
 
+    @field_validator("runner_socket_path")
+    @classmethod
+    def validate_runner_socket_path(cls, value: Path | None) -> Path | None:
+        if value is not None and not value.is_absolute():
+            raise ValueError("runner_socket_path must be absolute")
+        return value
+
     @model_validator(mode="after")
     def validate_repository_allowed_roots(self) -> Self:
         if self.environment != "test" and not self.repository_allowed_roots:
@@ -63,10 +74,6 @@ class Settings(BaseSettings):
             )
         root = self.attempt_workspace_root
         if root is None:
-            if self.environment != "test":
-                raise ValueError(
-                    "attempt_workspace_root is required outside the test environment"
-                )
             return self
         if not root.is_absolute():
             raise ValueError("attempt_workspace_root must be absolute")

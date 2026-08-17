@@ -17,8 +17,11 @@ from labpilot.context.content_store import ContentAddressedStore
 from labpilot.context.git_adapter import GitAdapter
 from labpilot.context.proposal_repository_adapter import ProposalRepositoryFactAdapter
 from labpilot.context.repository_source import RepositorySnapshotSourceService
+from labpilot.coordinator.execution_adapters import VersionExecutionSemanticsAdapter
 from labpilot.db.readiness import DatabaseReadinessProbe
 from labpilot.db.session import Database
+from labpilot.execution.batch_service import BatchApplicationService
+from labpilot.execution.query_service import ExecutionQueryService
 from labpilot.experiments.project_service import ProjectApplicationService
 from labpilot.experiments.proposal_service import ProposalApplicationService
 from labpilot.experiments.proposal_verifier import ProposalVerifier
@@ -81,6 +84,11 @@ services = ApplicationServices(
     repository_source=repository_source,
     proposals=proposals,
     agent_runs=agent_runs,
+    batches=BatchApplicationService(
+        database.session,
+        version_semantics=VersionExecutionSemanticsAdapter(database.session),
+    ),
+    execution_queries=ExecutionQueryService(database.session),
 )
 actor_provider = ServerConfiguredActorProvider(
     installation_identity=settings.installation_identity,

@@ -149,20 +149,24 @@ def test_settings_allow_empty_repository_roots_in_test_environment() -> None:
     assert settings.repository_allowed_roots == ()
 
 
-def test_settings_allow_missing_attempt_workspace_root_only_in_test_mode() -> None:
+def test_settings_allow_missing_execution_configuration_for_api() -> None:
     settings = Settings(
-        environment="test",
+        environment="development",
         database_url="postgresql+asyncpg://user:pass@db:5432/labpilot",
         installation_identity="installation-1",
         local_actor_id="air",
-        repository_allowed_roots=(),
+        repository_allowed_roots=(Path("/repositories"),),
         repository_content_store_root=Path("/content"),
     )
 
     assert settings.attempt_workspace_root is None
+    assert settings.runner_socket_path is None
+    assert settings.train_gid is None
+    assert settings.runner_request_timeout_seconds == 10
+    assert settings.unknown_attention_grace_seconds == 60
 
 
-def test_settings_require_existing_canonical_attempt_workspace_root_outside_tests(
+def test_settings_require_supplied_attempt_workspace_root_to_be_canonical(
     tmp_path: Path,
 ) -> None:
     canonical = tmp_path / "attempts"
@@ -178,7 +182,7 @@ def test_settings_require_existing_canonical_attempt_workspace_root_outside_test
     )
     assert accepted.attempt_workspace_root == canonical
 
-    for invalid in (None, Path("relative"), canonical / "missing"):
+    for invalid in (Path("relative"), canonical / "missing"):
         with pytest.raises(ValidationError, match="attempt_workspace_root"):
             Settings(
                 environment="development",
@@ -189,6 +193,53 @@ def test_settings_require_existing_canonical_attempt_workspace_root_outside_test
                 repository_content_store_root=Path("/content"),
                 attempt_workspace_root=invalid,
             )
+
+
+def test_settings_parse_coordinator_execution_configuration(tmp_path: Path) -> None:
+    root = tmp_path / "attempts"
+    root.mkdir()
+    settings = Settings(
+        environment="test",
+        database_url="postgresql+asyncpg://user:pass@db:5432/labpilot",
+        installation_identity="installation-1",
+        local_actor_id="air",
+        repository_allowed_roots=(),
+        repository_content_store_root=Path("/content"),
+        attempt_workspace_root=root,
+        runner_socket_path=Path("/run/labpilot-runner/control.sock"),
+        runner_request_timeout_seconds=11,
+        unknown_attention_grace_seconds=61,
+        train_gid=1234,
+    )
+
+    assert settings.runner_socket_path == Path("/run/labpilot-runner/control.sock")
+    assert settings.train_gid == 1234
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("runner_socket_path", Path("relative.sock")),
+        ("runner_request_timeout_seconds", 0),
+        ("runner_request_timeout_seconds", 301),
+        ("unknown_attention_grace_seconds", 0),
+        ("unknown_attention_grace_seconds", 301),
+        ("train_gid", 0),
+    ],
+)
+def test_settings_reject_invalid_coordinator_execution_configuration(
+    field: str, value: object
+) -> None:
+    with pytest.raises(ValidationError):
+        Settings(
+            environment="test",
+            database_url="postgresql+asyncpg://user:pass@db:5432/labpilot",
+            installation_identity="installation-1",
+            local_actor_id="air",
+            repository_allowed_roots=(),
+            repository_content_store_root=Path("/content"),
+            **{field: value},
+        )
 
 
 def test_settings_reject_attempt_workspace_root_with_symlink_component(

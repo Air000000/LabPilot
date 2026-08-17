@@ -14,6 +14,14 @@ MODEL_REGISTRY_ALLOWED_IMPORTS = frozenset(
         "labpilot.tools_policy.models",
     }
 )
+COORDINATOR_COMPOSITION_PATH = Path("coordinator/worker.py")
+COORDINATOR_COMPOSITION_ALLOWED_IMPORTS = frozenset(
+    {
+        "labpilot.context.content_store",
+        "labpilot.context.git_adapter",
+        "labpilot.context.repository_source",
+    }
+)
 
 ALLOWED_INTERNAL_IMPORTS: dict[str, set[str]] = {
     "common": {"common"},
@@ -102,6 +110,9 @@ def is_path_specific_import_allowed(
     return (
         relative_path == MODEL_REGISTRY_PATH
         and target_module_name in MODEL_REGISTRY_ALLOWED_IMPORTS
+    ) or (
+        relative_path == COORDINATOR_COMPOSITION_PATH
+        and target_module_name in COORDINATOR_COMPOSITION_ALLOWED_IMPORTS
     )
 
 

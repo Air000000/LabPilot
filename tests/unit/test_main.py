@@ -34,7 +34,10 @@ def _startup_composition(tmp_path: Path, provider_environment: dict[str, str]) -
             "'provider_model_name': getattr(main.provider, 'model_name', None), "
             "'timeout_seconds': getattr(main.provider, '_timeout_seconds', None), "
             "'max_response_bytes': getattr(main.provider, '_max_response_bytes', None), "
-            "'agent_model_name': main.agent_runs._model_name}))",
+            "'agent_model_name': main.agent_runs._model_name, "
+            "'batches_configured': main.services.batches is not None, "
+            "'queries_configured': main.services.execution_queries is not None, "
+            "'runner_client_in_api_composition': 'RunnerClient' in main.__dict__}))",
         ],
         check=True,
         capture_output=True,
@@ -63,6 +66,9 @@ def test_startup_uses_opencode_provider_with_complete_configuration(tmp_path: Pa
         "timeout_seconds": 17,
         "max_response_bytes": 4096,
         "agent_model_name": "deepseek-v4-flash",
+        "batches_configured": True,
+        "queries_configured": True,
+        "runner_client_in_api_composition": False,
     }
 
 
@@ -75,6 +81,9 @@ def test_startup_uses_unconfigured_provider_without_credentials(tmp_path: Path) 
         "timeout_seconds": None,
         "max_response_bytes": None,
         "agent_model_name": "unconfigured",
+        "batches_configured": True,
+        "queries_configured": True,
+        "runner_client_in_api_composition": False,
     }
 
 
