@@ -145,8 +145,16 @@ def administrative_cleanup_record(action: str) -> dict[str, object]:
 
 
 def run_native_request(request: object) -> None:
-    # ponytail: fail closed until preflight binds concrete test-admin operations.
-    raise RuntimeError(f"native host preflight has not bound {type(request).__name__}")
+    from tests.acceptance.slice2.native_preflight import redact_evidence, run_preflight_request
+
+    if not isinstance(request, dict):
+        raise RuntimeError(f"native request must be a mapping, got {type(request).__name__}")
+    facts = run_preflight_request(request)
+    if request.get("phase") == "preflight":
+        print(json.dumps(redact_evidence(facts), separators=(",", ":"), sort_keys=True))
+        return
+    # ponytail: scenario control is added only when its concrete native proof is implemented.
+    raise RuntimeError("native scenario drivers are not bound")
 
 
 def _write_json(path: Path, value: object) -> None:

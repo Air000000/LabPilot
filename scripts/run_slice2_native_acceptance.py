@@ -13,6 +13,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 CONFIG_ENV = "LABPILOT_SLICE2_ACCEPTANCE_CONFIG"
+TESTED_SHA_ENV = "TESTED_SHA"
 _CONFIG_KEYS = {
     "version",
     "dedicated_candidate_b_host",
@@ -37,6 +38,7 @@ _PATH_KEYS = (
 _ENVIRONMENT_NAME = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
 _COMPOSE_PROJECT = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
 _MAX_CONFIG_BYTES = 64 * 1024
+_SHA = re.compile(r"^[0-9a-f]{40}$")
 
 
 class NativeOptInRequired(RuntimeError):
@@ -119,6 +121,9 @@ def main(
         raise NativeOptInRequired(
             f"explicit database authority is missing from {database_variable}"
         )
+    tested_sha = environ.get(TESTED_SHA_ENV, "")
+    if _SHA.fullmatch(tested_sha) is None:
+        raise NativeOptInRequired(f"explicit exact tested commit is missing from {TESTED_SHA_ENV}")
 
     repository_root = str(Path(__file__).resolve().parents[1])
     if repository_root not in sys.path:
@@ -129,9 +134,10 @@ def main(
     choice = parser.add_mutually_exclusive_group(required=True)
     choice.add_argument("--scenarios")
     choice.add_argument("--scenario")
+    choice.add_argument("--preflight-only", action="store_true")
     parser.add_argument("--phase", choices=("prepare", "verify"))
     args = parser.parse_args(list(argv) if argv is not None else None)
-    selected = select_scenarios(args.scenarios or args.scenario)
+    selected = () if args.preflight_only else select_scenarios(args.scenarios or args.scenario)
     if args.phase is not None and [scenario.name for scenario in selected] != ["F18"]:
         parser.error("--phase is valid only for F18")
     if args.phase is None and [scenario.name for scenario in selected] == ["F18"]:
@@ -141,7 +147,10 @@ def main(
         "scenarios": selected,
         "phase": args.phase or "run",
         "database_url": environ[database_variable],
+        "tested_sha": tested_sha,
     }
+    if args.preflight_only:
+        request["phase"] = "preflight"
     if execute is None:
         from tests.acceptance.slice2.scenarios import run_native_request
 
