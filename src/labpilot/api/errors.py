@@ -7,6 +7,16 @@ from labpilot.agent_runtime.types import AgentRuntimeError
 from labpilot.common.errors import LabPilotError
 from labpilot.context.repository_source import RepositorySourceReadError
 from labpilot.db.idempotency import IdempotencyKeyConflict
+from labpilot.execution.batch_service import (
+    BatchNotFound,
+    BatchStateConflict,
+    BatchVersionConflict,
+)
+from labpilot.execution.query_service import (
+    AttemptQueryNotFound,
+    BatchQueryNotFound,
+    TrialQueryNotFound,
+)
 from labpilot.experiments.project_service import (
     ProjectNotFound,
     ProjectStateConflict,
@@ -158,6 +168,52 @@ async def _project_state_conflict_handler(
     )
 
 
+async def _execution_not_found_handler(
+    _: Request,
+    exc: Exception,
+) -> JSONResponse:
+    if isinstance(exc, BatchNotFound | BatchQueryNotFound):
+        aggregate_type, aggregate_id = "batch", exc.batch_id
+    elif isinstance(exc, TrialQueryNotFound):
+        aggregate_type, aggregate_id = "trial", exc.trial_id
+    else:
+        assert isinstance(exc, AttemptQueryNotFound)
+        aggregate_type, aggregate_id = "attempt", exc.attempt_id
+    return _response(
+        status_code=404,
+        error_code=f"{aggregate_type}_not_found",
+        human_message=f"{aggregate_type} was not found",
+        aggregate_type=aggregate_type,
+        aggregate_id=str(aggregate_id),
+    )
+
+
+async def _batch_conflict_handler(_: Request, exc: Exception) -> JSONResponse:
+    assert isinstance(exc, BatchVersionConflict | BatchStateConflict)
+    if isinstance(exc, BatchVersionConflict):
+        return _response(
+            status_code=409,
+            error_code="batch_version_conflict",
+            human_message="batch version does not match",
+            aggregate_type="batch",
+            aggregate_id=str(exc.batch_id),
+            retryable=True,
+            details={
+                "expected_row_version": exc.expected_row_version,
+                "current_row_version": exc.current_row_version,
+            },
+        )
+    return _response(
+        status_code=409,
+        error_code="batch_state_conflict",
+        human_message="batch state does not allow this command",
+        aggregate_type="batch",
+        aggregate_id=str(exc.batch_id),
+        current_state=exc.current_state,
+        expected_state=exc.expected_state,
+    )
+
+
 async def _idempotency_conflict_handler(
     _: Request,
     exc: Exception,
@@ -296,6 +352,15 @@ def register_error_handlers(app: FastAPI) -> None:
         ProjectStateConflict,
         _project_state_conflict_handler,
     )
+    for error_type in (
+        BatchNotFound,
+        BatchQueryNotFound,
+        TrialQueryNotFound,
+        AttemptQueryNotFound,
+    ):
+        app.add_exception_handler(error_type, _execution_not_found_handler)
+    app.add_exception_handler(BatchVersionConflict, _batch_conflict_handler)
+    app.add_exception_handler(BatchStateConflict, _batch_conflict_handler)
     app.add_exception_handler(
         IdempotencyKeyConflict,
         _idempotency_conflict_handler,

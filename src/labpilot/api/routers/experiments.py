@@ -1,10 +1,20 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 
-from labpilot.api.dependencies import get_command_context, get_proposal_service
+from labpilot.api.dependencies import (
+    get_batch_service,
+    get_command_context,
+    get_proposal_service,
+)
 from labpilot.api.errors import RequestDomainValidationError
+from labpilot.api.routers.execution import batch_command_response
+from labpilot.api.routers.projects import (
+    IdempotencyKey,
+    _validate_idempotency_key_transport,
+)
+from labpilot.api.schemas.execution import BatchCommandResponse
 from labpilot.api.schemas.experiments import (
     ApproveProposalRevisionRequest,
     CreateProposalRevisionRequest,
@@ -15,9 +25,32 @@ from labpilot.api.schemas.experiments import (
     RejectProposalRevisionRequest,
 )
 from labpilot.common.commands import CommandContext
+from labpilot.execution.batch_service import BatchApplicationService, CreateBatch
 from labpilot.experiments.proposal_service import ProposalApplicationService
 
 router = APIRouter(tags=["experiments"])
+
+
+@router.post(
+    "/experiment-versions/{experiment_version_id}/batches",
+    response_model=BatchCommandResponse,
+    status_code=201,
+)
+async def create_batch(
+    experiment_version_id: UUID,
+    response: Response,
+    idempotency_key: IdempotencyKey,
+    context: Annotated[CommandContext, Depends(get_command_context)],
+    service: Annotated[BatchApplicationService, Depends(get_batch_service)],
+) -> BatchCommandResponse:
+    idempotency_key = _validate_idempotency_key_transport(idempotency_key)
+    outcome = await service.create_batch(
+        context=context,
+        idempotency_key=idempotency_key,
+        command=CreateBatch(experiment_version_id),
+    )
+    response.status_code = 200 if outcome.replayed else 201
+    return batch_command_response(outcome, committed_state="created")
 
 
 @router.get(

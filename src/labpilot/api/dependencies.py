@@ -8,6 +8,8 @@ from labpilot.api.actor import ActorProvider
 from labpilot.api.errors import ServiceUnavailableError
 from labpilot.common.commands import CommandContext
 from labpilot.context.repository_source import RepositorySnapshotSourceService
+from labpilot.execution.batch_service import BatchApplicationService
+from labpilot.execution.query_service import ExecutionQueryService
 from labpilot.experiments.project_service import ProjectApplicationService
 from labpilot.experiments.proposal_service import ProposalApplicationService
 
@@ -18,6 +20,8 @@ class ApplicationServices:
     repository_source: RepositorySnapshotSourceService | None = None
     proposals: ProposalApplicationService | None = None
     agent_runs: AgentApplicationService | None = None
+    batches: BatchApplicationService | None = None
+    execution_queries: ExecutionQueryService | None = None
 
 
 def get_application_services(request: Request) -> ApplicationServices:
@@ -47,6 +51,22 @@ def get_agent_run_service(
     if services.agent_runs is None:
         raise ServiceUnavailableError("agent run service is not configured")
     return services.agent_runs
+
+
+def get_batch_service(
+    services: Annotated[ApplicationServices, Depends(get_application_services)],
+) -> BatchApplicationService:
+    if services.batches is None:
+        raise ServiceUnavailableError("batch service is not configured")
+    return services.batches
+
+
+def get_execution_query_service(
+    services: Annotated[ApplicationServices, Depends(get_application_services)],
+) -> ExecutionQueryService:
+    if services.execution_queries is None:
+        raise ServiceUnavailableError("execution query service is not configured")
+    return services.execution_queries
 
 
 def get_actor_provider(request: Request) -> ActorProvider:
