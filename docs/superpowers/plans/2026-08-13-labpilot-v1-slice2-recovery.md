@@ -1720,6 +1720,15 @@ Do not execute those proofs in the Task 4 window. `DOCUMENT-STATUS.md` remains u
 
 **Deliverable:** Real native-Linux evidence that production Tasks 2–4 survive process/database/control-plane failures and preserve exact source, environment observation, exact X/H, no duplicate launch, cancellation, UNKNOWN/conflict, capacity, timeout, and reboot invariants.
 
+### 7.0 G4 and document-status closure
+
+The final repository gate becoming green does not accept G4 or Slice 2. Task 5
+implementation stops for external G4 review after all native evidence and
+repository gates are complete. `DOCUMENT-STATUS.md` remains unchanged in this
+implementation window. Only after external G4 approval may a separate
+governance-only closure mark Task 5 accepted, mark Slice 2 accepted, and update
+`DOCUMENT-STATUS.md` exactly once.
+
 ## 7.1 Test-only files
 
 Create:
@@ -1916,7 +1925,9 @@ Create a fresh PostgreSQL database and verify migrations from zero through `0010
 
 Perform one independent deep review focused on authority boundaries, replay/ack-loss safety, distinct IDENTITY_CONFLICT semantics, observed environment, audit history, Runner deployment/service hardening, UNKNOWN semantics, and API privilege isolation.
 
-Only after this gate passes update `DOCUMENT-STATUS.md` once to mark Slice 2 accepted.
+After this gate passes, stop for external G4 review. Do not update
+`DOCUMENT-STATUS.md` in the Task 5 implementation window; the separate
+governance-only closure described in §7.0 owns that update after G4 approval.
 
 ---
 
