@@ -90,3 +90,71 @@ esac
 
 def test_installer_script_has_valid_bash_syntax() -> None:
     subprocess.run(["bash", "-n", str(INSTALLER)], check=True)
+
+
+def test_info_readiness_runs_as_fixed_controller_uid_and_gid(tmp_path: Path) -> None:
+    app_root = tmp_path / "app"
+    python = app_root / ".venv/bin/python"
+    python.parent.mkdir(parents=True)
+    python.write_text("#!/bin/sh\nexit 0\n")
+    python.chmod(0o755)
+    log = tmp_path / "runuser.argv"
+    log.write_text("")
+    command = f"""
+source '{INSTALLER}'
+app_root='{app_root}'
+runtime_dir='{tmp_path}/run'
+socket_path='{tmp_path}/run/control.sock'
+systemctl() {{ return 0; }}
+stat() {{
+  case "$3" in
+    "$runtime_dir") echo 'root:labpilot-control 750' ;;
+    "$socket_path") echo 'root:labpilot-control 660' ;;
+  esac
+}}
+runuser() {{ printf '%s\n' "$@" > '{log}'; }}
+verify_runtime_boundary
+"""
+
+    result = subprocess.run(
+        ["bash", "-c", command], check=False, capture_output=True, text=True
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert log.read_text().splitlines()[:9] == [
+        "--user",
+        "labpilot-controller",
+        "--group",
+        "labpilot-control",
+        "--",
+        str(python),
+        "-E",
+        "-s",
+        "-c",
+    ]
+
+
+def test_activation_restarts_before_effective_and_readiness_verification(
+    tmp_path: Path,
+) -> None:
+    log = tmp_path / "activation.log"
+    command = f"""
+source '{INSTALLER}'
+systemctl() {{ printf 'systemctl:%s\n' "$*" >> '{log}'; }}
+verify_effective_service() {{ echo effective >> '{log}'; }}
+verify_runtime_boundary() {{ echo runtime >> '{log}'; }}
+activate_and_verify
+"""
+
+    result = subprocess.run(
+        ["bash", "-c", command], check=False, capture_output=True, text=True
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert log.read_text().splitlines() == [
+        "systemctl:daemon-reload",
+        "systemctl:enable labpilot-runner.service",
+        "systemctl:restart labpilot-runner.service",
+        "effective",
+        "runtime",
+    ]

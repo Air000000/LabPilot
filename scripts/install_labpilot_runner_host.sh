@@ -33,7 +33,8 @@ verify_runtime_boundary() {
   systemctl is-active --quiet "$service_name"
   [[ "$(stat -c '%U:%G %a' "$runtime_dir")" == "root:labpilot-control 750" ]] || fail "runtime directory metadata mismatch"
   [[ "$(stat -c '%U:%G %a' "$socket_path")" == "root:labpilot-control 660" ]] || fail "socket metadata mismatch"
-  "$app_root/.venv/bin/python" -E -s -c '
+  runuser --user labpilot-controller --group labpilot-control -- \
+    "$app_root/.venv/bin/python" -E -s -c '
 from labpilot.execution.runner_client import RunnerClient
 from labpilot.execution.runner_protocol import PROTOCOL_VERSION, RunnerInfoRequest, RunnerOperation
 response = RunnerClient("/run/labpilot-runner/control.sock").request(
@@ -41,6 +42,14 @@ response = RunnerClient("/run/labpilot-runner/control.sock").request(
 )
 assert response["outcome"] == "ok"
 '
+}
+
+activate_and_verify() {
+  systemctl daemon-reload
+  systemctl enable "$service_name"
+  systemctl restart "$service_name"
+  verify_effective_service
+  verify_runtime_boundary
 }
 
 main() {
@@ -73,10 +82,7 @@ main() {
   install -o root -g root -m 0644 \
     "$app_root/deploy/systemd/labpilot-runner.service" "$service_target"
 
-  systemctl daemon-reload
-  systemctl enable --now "$service_name"
-  verify_effective_service
-  verify_runtime_boundary
+  activate_and_verify
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
