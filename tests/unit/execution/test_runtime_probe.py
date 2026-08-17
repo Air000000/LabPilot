@@ -18,7 +18,10 @@ def _value() -> dict[str, object]:
         "runtime_profiles": {
             "python-3.12": {
                 "runtime_path": "/opt/python/bin/python",
-                "environment": {"PATH": "/opt/python/bin:/usr/bin"},
+                "environment": {
+                    "PATH": "/opt/python/bin:/usr/bin",
+                    "PYTHONPATH": "/opt/labpilot/packages",
+                },
             }
         },
         "allowed_local_dataset_roots": ["/datasets"],
@@ -34,16 +37,17 @@ def test_probe_is_fixed_non_shell_and_policy_owned() -> None:
 
     argv = build_probe_argv(policy, inspection)
 
-    assert argv[:5] == (
+    assert argv[:6] == (
         "/usr/sbin/runuser",
+        "--preserve-environment",
         "--user",
         "labpilot-train",
         "--",
         "/opt/python/bin/python",
     )
-    assert argv[5:8] == ("-E", "-s", "-c")
-    assert argv[8] == FIXED_PROBE_SOURCE
-    assert json.loads(argv[9]) == ["torch", "xformers"]
+    assert argv[6] == "-c"
+    assert argv[7] == FIXED_PROBE_SOURCE
+    assert json.loads(argv[8]) == ["torch", "xformers"]
 
 
 def test_caller_cannot_supply_probe_source_executable_or_imports() -> None:

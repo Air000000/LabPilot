@@ -10,6 +10,7 @@ from typing import NoReturn
 from labpilot.execution.runner_policy import RunnerPolicy, load_runner_policy
 from labpilot.execution.runner_protocol import (
     PROTOCOL_VERSION,
+    ProtocolError,
     RunnerInfoRequest,
     RunnerLaunchRequest,
     RunnerObserveRequest,
@@ -102,14 +103,20 @@ class RunnerDaemon:
                 self._serve_connection(connection)
 
     def _serve_connection(self, connection: socket.socket) -> None:
-        _, uid, gid = struct.unpack(
-            "3i",
-            connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")),
-        )
-        request = decode_request(recv_frame(connection))
-        send_frame(
-            connection, encode_response(self.handle_request(request, peer_uid=uid, peer_gid=gid))
-        )
+        try:
+            _, uid, gid = struct.unpack(
+                "3i",
+                connection.getsockopt(
+                    socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")
+                ),
+            )
+            request = decode_request(recv_frame(connection))
+            send_frame(
+                connection,
+                encode_response(self.handle_request(request, peer_uid=uid, peer_gid=gid)),
+            )
+        except (OSError, ProtocolError):
+            return
 
 
 def bind_listener(policy: RunnerPolicy) -> socket.socket:

@@ -1,4 +1,5 @@
 import stat
+import struct
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -200,3 +201,26 @@ def test_socket_metadata_mismatch_is_fatal(monkeypatch: pytest.MonkeyPatch) -> N
     )
     with pytest.raises(RuntimeError, match="socket_metadata"):
         bind_listener(parse_runner_policy(_value(), controller_uid=1, controller_gid=1001))
+
+
+def test_malformed_connection_is_dropped_without_crashing_daemon() -> None:
+    class MalformedConnection:
+        def __init__(self) -> None:
+            self.chunks = [struct.pack("!I", 1), b"{"]
+
+        def getsockopt(self, *args: object) -> bytes:
+            return struct.pack("3i", 1, 1000, 1001)
+
+        def recv(self, length: int) -> bytes:
+            del length
+            return self.chunks.pop(0)
+
+    supervisor = Supervisor()
+    daemon = RunnerDaemon(
+        parse_runner_policy(_value(), controller_uid=1000, controller_gid=1001),
+        supervisor,  # type: ignore[arg-type]
+    )
+
+    daemon._serve_connection(MalformedConnection())  # type: ignore[arg-type]
+
+    assert supervisor.calls == 0

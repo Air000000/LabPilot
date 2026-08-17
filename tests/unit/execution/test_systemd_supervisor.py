@@ -48,7 +48,7 @@ def _loaded(*, active: str, description: str) -> str:
         "LoadState=loaded\n"
         f"ActiveState={active}\n"
         f"Description={description}\n"
-        "Result=success\nMainPID=42\nInvocationID=inv-1\nExecMainCode=exited\nExecMainStatus=0\n"
+        "Result=success\nMainPID=42\nInvocationID=inv-1\nExecMainCode=1\nExecMainStatus=0\n"
     )
 
 
@@ -211,8 +211,8 @@ def test_launch_uses_exact_fixed_systemd_profile() -> None:
 def test_terminal_signal_is_not_invented_as_exit_code() -> None:
     expected = "a" * 64
     loaded = _loaded(active="failed", description=f"labpilot:{expected}").replace(
-        "ExecMainCode=exited\nExecMainStatus=0",
-        "ExecMainCode=killed\nExecMainStatus=15",
+        "ExecMainCode=1\nExecMainStatus=0",
+        "ExecMainCode=2\nExecMainStatus=15",
     )
     supervisor = SystemdSupervisor(
         Commands([(0, loaded)]),

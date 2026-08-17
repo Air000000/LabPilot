@@ -458,6 +458,14 @@ class AttemptExecutionService:
             if attempt is None or attempt.execution_spec_hash != coordinates.execution_spec_hash:
                 await uow.commit()
                 return
+            if attempt.status not in {
+                AttemptStatus.LAUNCH_PENDING.value,
+                AttemptStatus.RUNNING.value,
+                AttemptStatus.UNKNOWN.value,
+                AttemptStatus.IDENTITY_CONFLICT.value,
+            }:
+                await uow.commit()
+                return
             pre_status = attempt.status
             now = self._clock()
             if attempt.status != AttemptStatus.IDENTITY_CONFLICT.value:

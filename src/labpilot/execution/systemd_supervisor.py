@@ -110,8 +110,10 @@ class SystemdSupervisor:
                 observed_spec_hash=observed_hash,
                 invocation_id=properties.get("InvocationID") or None,
                 result=properties.get("Result") or None,
-                exit_code=status if code == "exited" else None,
-                termination_signal=status if code in {"killed", "dumped"} else None,
+                exit_code=status if code in {"1", "exited"} else None,
+                termination_signal=(
+                    status if code in {"2", "3", "killed", "dumped"} else None
+                ),
             )
         return PhysicalObservation(PhysicalObservationKind.UNKNOWN)
 

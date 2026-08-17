@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Lock
@@ -417,3 +418,51 @@ async def test_manifest_and_source_cannot_be_rewritten_together_before_dispatch(
             await service.dispatch_attempt(system.attempt_id)
 
         assert runner.requests == []
+
+
+@pytest.mark.integration
+async def test_stale_active_observation_cannot_resurrect_terminal_attempt(
+    isolated_database_url: str, tmp_path: Path
+) -> None:
+    async with _prepared_system(isolated_database_url, tmp_path) as system:
+        await _prepare(system)
+        initial = FakeRunner(system.workspace.parent, observations=[_active()])
+        await AttemptExecutionService(
+            system.database.session,  # type: ignore[attr-defined]
+            initial,
+            workspace_root=system.workspace.parent,
+        ).dispatch_attempt(system.attempt_id)
+
+        class TerminalThenStaleActive:
+            def __init__(self) -> None:
+                self.count = 0
+                self.lock = Lock()
+
+            def request(self, request: RunnerRequest) -> dict[str, object]:
+                assert isinstance(request, RunnerObserveRequest)
+                with self.lock:
+                    index = self.count
+                    self.count += 1
+                if index == 0:
+                    return _response("OBSERVE", _terminal(exit_code=0))
+                time.sleep(0.2)
+                return _response("OBSERVE", _active())
+
+        service = AttemptExecutionService(
+            system.database.session,  # type: ignore[attr-defined]
+            TerminalThenStaleActive(),
+            workspace_root=system.workspace.parent,
+        )
+
+        await asyncio.gather(
+            service.reconcile_attempt(
+                system.attempt_id, reason=ReconciliationReason.PERIODIC
+            ),
+            service.reconcile_attempt(
+                system.attempt_id, reason=ReconciliationReason.PERIODIC
+            ),
+        )
+
+        row = await _attempt(system)
+        assert row.status == AttemptStatus.TERMINAL.value
+        assert row.terminal_kind == TerminalKind.PROCESS_EXITED.value

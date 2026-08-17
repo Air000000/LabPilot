@@ -50,12 +50,11 @@ def build_probe_argv(policy: RunnerPolicy, inspection: InfoInspectionRequest) ->
     profile = policy.runtime_profile(inspection.python_profile)
     return (
         "/usr/sbin/runuser",
+        "--preserve-environment",
         "--user",
         policy.execution_user,
         "--",
         profile.runtime_path,
-        "-E",
-        "-s",
         "-c",
         FIXED_PROBE_SOURCE,
         json.dumps(list(inspection.framework_distribution_names), separators=(",", ":")),
