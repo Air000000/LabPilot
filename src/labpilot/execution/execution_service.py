@@ -519,7 +519,7 @@ class AttemptExecutionService:
             attempt.status = AttemptStatus.IDENTITY_CONFLICT.value
             attempt.unknown_since = None
             attempt.attention_required_at = now
-            attempt.execution_issue_code = "PHYSICAL_IDENTITY_CONFLICT"
+            attempt.execution_issue_code = "IDENTITY_CONFLICT"
             await _append_attempt_event(
                 uow,
                 project_id=project_id,
@@ -582,9 +582,9 @@ class AttemptExecutionService:
             PhysicalObservationKind.UNKNOWN,
             PhysicalObservationKind.NOT_FOUND,
         }:
-            attempt.status = AttemptStatus.UNKNOWN.value
             attempt.unknown_since = attempt.unknown_since or now
             if now - attempt.unknown_since >= self._unknown_grace:
+                attempt.status = AttemptStatus.UNKNOWN.value
                 attempt.attention_required_at = attempt.attention_required_at or now
                 attempt.execution_issue_code = "PHYSICAL_STATE_UNKNOWN"
 

@@ -337,6 +337,8 @@ async def test_identity_conflict_is_sticky_and_startup_audit_is_once_per_pass(
 
         row = await _attempt(system)
         assert row.status == AttemptStatus.IDENTITY_CONFLICT.value
+        assert row.execution_issue_code == "IDENTITY_CONFLICT"
+        assert row.attention_required_at is not None
         assert row.terminal_at is None
         async with system.database.session() as session:  # type: ignore[attr-defined]
             events = list(
@@ -357,7 +359,10 @@ async def test_unknown_attention_grace_and_fresh_process_never_relaunches(
     async with _prepared_system(isolated_database_url, tmp_path) as system:
         await _prepare(system)
         now = datetime(2026, 8, 17, tzinfo=UTC)
-        runner = FakeRunner(system.workspace.parent, observations=[_unknown()])
+        runner = FakeRunner(
+            system.workspace.parent,
+            observations=[_unknown(), _unknown(), _unknown(), _active()],
+        )
         service = AttemptExecutionService(
             system.database.session,  # type: ignore[attr-defined]
             runner,
@@ -367,26 +372,117 @@ async def test_unknown_attention_grace_and_fresh_process_never_relaunches(
         )
         await service.dispatch_attempt(system.attempt_id)
         row = await _attempt(system)
-        assert row.status == AttemptStatus.UNKNOWN.value
+        assert row.status == AttemptStatus.LAUNCH_PENDING.value
+        assert row.unknown_since == now
         assert row.attention_required_at is None
 
-        later = AttemptExecutionService(
+        before_expiry = AttemptExecutionService(
+            system.database.session,  # type: ignore[attr-defined]
+            runner,
+            workspace_root=system.workspace.parent,
+            unknown_attention_grace_seconds=60,
+            clock=lambda: now + timedelta(seconds=30),
+        )
+        await before_expiry.dispatch_attempt(system.attempt_id)
+        await before_expiry.reconcile_attempt(
+            system.attempt_id, reason=ReconciliationReason.PERIODIC
+        )
+        row = await _attempt(system)
+        assert row.status == AttemptStatus.LAUNCH_PENDING.value
+        assert row.unknown_since == now
+        assert row.attention_required_at is None
+
+        after_expiry = AttemptExecutionService(
             system.database.session,  # type: ignore[attr-defined]
             runner,
             workspace_root=system.workspace.parent,
             unknown_attention_grace_seconds=60,
             clock=lambda: now + timedelta(seconds=61),
         )
-        await later.dispatch_attempt(system.attempt_id)
-        await later.reconcile_attempt(
+        await after_expiry.reconcile_attempt(
             system.attempt_id, reason=ReconciliationReason.PERIODIC
         )
-
         row = await _attempt(system)
         assert runner.count(RunnerLaunchRequest) == 1
         assert row.status == AttemptStatus.UNKNOWN.value
         assert row.attention_required_at is not None
         assert row.execution_issue_code == "PHYSICAL_STATE_UNKNOWN"
+
+        await after_expiry.reconcile_attempt(
+            system.attempt_id, reason=ReconciliationReason.PERIODIC
+        )
+        row = await _attempt(system)
+        assert row.status == AttemptStatus.RUNNING.value
+        assert row.unknown_since is None
+        assert row.attention_required_at is None
+        assert row.execution_issue_code is None
+
+
+@pytest.mark.integration
+async def test_running_retains_status_during_first_unknown_grace(
+    isolated_database_url: str, tmp_path: Path
+) -> None:
+    async with _prepared_system(isolated_database_url, tmp_path) as system:
+        await _prepare(system)
+        now = datetime(2026, 8, 17, tzinfo=UTC)
+        runner = FakeRunner(system.workspace.parent, observations=[_active(), _unknown()])
+        service = AttemptExecutionService(
+            system.database.session,  # type: ignore[attr-defined]
+            runner,
+            workspace_root=system.workspace.parent,
+            clock=lambda: now,
+        )
+        await service.dispatch_attempt(system.attempt_id)
+
+        await service.reconcile_attempt(
+            system.attempt_id, reason=ReconciliationReason.PERIODIC
+        )
+
+        row = await _attempt(system)
+        assert row.status == AttemptStatus.RUNNING.value
+        assert row.unknown_since == now
+        assert row.attention_required_at is None
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("recovery", [_active(), _terminal(exit_code=0)])
+async def test_authoritative_observation_resolves_unknown_during_grace(
+    isolated_database_url: str,
+    tmp_path: Path,
+    recovery: dict[str, object],
+) -> None:
+    async with _prepared_system(isolated_database_url, tmp_path) as system:
+        await _prepare(system)
+        now = datetime(2026, 8, 17, tzinfo=UTC)
+        runner = FakeRunner(system.workspace.parent, observations=[_unknown(), recovery])
+        initial = AttemptExecutionService(
+            system.database.session,  # type: ignore[attr-defined]
+            runner,
+            workspace_root=system.workspace.parent,
+            clock=lambda: now,
+        )
+        await initial.dispatch_attempt(system.attempt_id)
+        row = await _attempt(system)
+        assert row.status == AttemptStatus.LAUNCH_PENDING.value
+
+        recovering = AttemptExecutionService(
+            system.database.session,  # type: ignore[attr-defined]
+            runner,
+            workspace_root=system.workspace.parent,
+            clock=lambda: now + timedelta(seconds=30),
+        )
+        await recovering.reconcile_attempt(
+            system.attempt_id, reason=ReconciliationReason.PERIODIC
+        )
+
+        row = await _attempt(system)
+        expected = (
+            AttemptStatus.RUNNING.value
+            if recovery["kind"] == "active_match"
+            else AttemptStatus.TERMINAL.value
+        )
+        assert row.status == expected
+        assert row.unknown_since is None
 
 
 @pytest.mark.integration
