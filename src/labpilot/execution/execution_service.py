@@ -287,6 +287,14 @@ class AttemptExecutionService:
         *,
         inspection_distributions: tuple[str, ...],
     ) -> tuple[FrozenLaunchSpec, ObservedEnvironment]:
+        if (
+            response.get("version") == PROTOCOL_VERSION
+            and response.get("operation") == RunnerOperation.INFO.value
+            and response.get("outcome") == "definite_non_acceptance"
+            and response.get("result")
+            == {"detail_code": "python_profile_not_admitted"}
+        ):
+            raise ExecutionInputError("PYTHON_PROFILE_NOT_ADMITTED")
         result = _successful_result(response, RunnerOperation.INFO)
         if (
             _string(result, "readiness_reason") != "ready"

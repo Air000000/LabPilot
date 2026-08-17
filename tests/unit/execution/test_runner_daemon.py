@@ -1,3 +1,5 @@
+import os
+import socket
 import stat
 import struct
 import subprocess
@@ -15,6 +17,10 @@ from labpilot.execution.runner_protocol import (
     RunnerLaunchRequest,
     RunnerObserveRequest,
     RunnerOperation,
+    decode_response,
+    encode_request,
+    recv_frame,
+    send_frame,
 )
 from labpilot.execution.systemd_supervisor import (
     PhysicalObservation,
@@ -315,3 +321,80 @@ def test_failed_info_probe_does_not_make_daemon_unusable(
         "cuda_device_count": None,
         "probe_issue_codes": [],
     }
+
+
+def test_unknown_info_profile_is_bounded_on_wire_and_next_info_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probe_calls = 0
+
+    def probe_run(*args: object, **kwargs: object) -> object:
+        nonlocal probe_calls
+        probe_calls += 1
+        return SimpleNamespace(
+            returncode=0,
+            stdout=(
+                '{"python_version":"3.12","framework_versions":[],'
+                '"cuda_runtime_version":null,"cuda_device_count":null,'
+                '"probe_issue_codes":[]}'
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr("labpilot.execution.runtime_probe.subprocess.run", probe_run)
+    monkeypatch.setattr("labpilot.execution.runner_daemon._boot_id", lambda: "b" * 32)
+    supervisor = Supervisor()
+    daemon = RunnerDaemon(
+        parse_runner_policy(
+            _value(), controller_uid=os.getuid(), controller_gid=os.getgid()
+        ),
+        supervisor,  # type: ignore[arg-type]
+    )
+
+    def request_on_wire(request: RunnerInfoRequest) -> dict[str, object]:
+        client, server = socket.socketpair()
+        try:
+            send_frame(client, encode_request(request))
+            daemon._serve_connection(server)
+            return decode_response(recv_frame(client))
+        finally:
+            client.close()
+            server.close()
+
+    rejected = request_on_wire(
+        RunnerInfoRequest(
+            PROTOCOL_VERSION,
+            RunnerOperation.INFO,
+            InfoInspectionRequest("python-profile-no-longer-in-policy", ()),
+        )
+    )
+
+    assert rejected == {
+        "version": PROTOCOL_VERSION,
+        "operation": "INFO",
+        "outcome": "definite_non_acceptance",
+        "result": {"detail_code": "python_profile_not_admitted"},
+    }
+    assert probe_calls == 0
+    assert supervisor.calls == 0
+
+    accepted = request_on_wire(
+        RunnerInfoRequest(
+            PROTOCOL_VERSION,
+            RunnerOperation.INFO,
+            InfoInspectionRequest("python-3.12", ()),
+        )
+    )
+
+    assert accepted["outcome"] == "ok"
+    accepted_result = accepted["result"]
+    assert isinstance(accepted_result, dict)
+    assert accepted_result["observed_environment"] == {
+        "python_version": "3.12",
+        "framework_versions": [],
+        "cuda_runtime_version": None,
+        "cuda_device_count": None,
+        "probe_issue_codes": [],
+    }
+    assert probe_calls == 1
+    assert supervisor.calls == 0

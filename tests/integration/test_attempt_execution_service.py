@@ -173,6 +173,62 @@ async def _prepare(system: object) -> None:
 
 
 @pytest.mark.integration
+async def test_rejected_info_profile_stops_before_launch_intent(
+    isolated_database_url: str, tmp_path: Path
+) -> None:
+    class RejectedInfoRunner:
+        def __init__(self) -> None:
+            self.requests: list[RunnerRequest] = []
+
+        def request(self, request: RunnerRequest) -> dict[str, object]:
+            encode_request(request)
+            self.requests.append(request)
+            assert isinstance(request, RunnerInfoRequest)
+            return {
+                "version": "labpilot-runner:v1",
+                "operation": "INFO",
+                "outcome": "definite_non_acceptance",
+                "result": {"detail_code": "python_profile_not_admitted"},
+            }
+
+    async with _prepared_system(isolated_database_url, tmp_path) as system:
+        await _prepare(system)
+        runner = RejectedInfoRunner()
+        service = AttemptExecutionService(
+            system.database.session,  # type: ignore[attr-defined]
+            runner,  # type: ignore[arg-type]
+            workspace_root=system.workspace.parent,
+        )
+
+        with pytest.raises(
+            ExecutionInputError, match="^PYTHON_PROFILE_NOT_ADMITTED$"
+        ):
+            await service.dispatch_attempt(system.attempt_id)
+
+        row = await _attempt(system)
+        assert row.status == AttemptStatus.LAUNCH_READY.value
+        assert row.frozen_launch_spec_json is None
+        assert row.execution_spec_hash is None
+        assert row.launch_intent_committed_at is None
+        assert row.observed_environment_json is None
+        assert not any(
+            isinstance(request, RunnerLaunchRequest) for request in runner.requests
+        )
+        async with system.database.session() as session:  # type: ignore[attr-defined]
+            events = list(
+                await session.scalars(
+                    select(RuntimeEventRow.event_type).where(
+                        RuntimeEventRow.aggregate_type == "attempt",
+                        RuntimeEventRow.aggregate_id == str(system.attempt_id),
+                        RuntimeEventRow.event_type
+                        == "attempt.launch_intent_committed",
+                    )
+                )
+            )
+        assert events == []
+
+
+@pytest.mark.integration
 async def test_one_cas_winner_dispatches_and_audits_without_outbox(
     isolated_database_url: str, tmp_path: Path
 ) -> None:

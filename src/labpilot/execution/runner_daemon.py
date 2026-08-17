@@ -44,6 +44,17 @@ class RunnerDaemon:
         if peer_uid != self._policy.controller_uid or peer_gid != self._policy.controller_gid:
             return _response(request, "peer_not_authorized", {})
         if isinstance(request, RunnerInfoRequest):
+            if request.inspection is not None:
+                try:
+                    self._policy.runtime_profile(request.inspection.python_profile)
+                except ValueError as error:
+                    if str(error) != "python_profile_not_admitted":
+                        raise
+                    return _response(
+                        request,
+                        "definite_non_acceptance",
+                        {"detail_code": "python_profile_not_admitted"},
+                    )
             result: dict[str, object] = {
                 "runner_version": RUNNER_VERSION,
                 "policy_identity": self._policy.policy_identity,

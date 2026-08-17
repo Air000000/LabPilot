@@ -17,6 +17,7 @@ from labpilot.execution.runner_protocol import (
     decode_request,
     decode_response,
     encode_request,
+    encode_response,
     recv_frame,
 )
 from labpilot.execution.types import FrozenLaunchSpec, frozen_launch_spec_hash
@@ -205,3 +206,14 @@ def test_response_result_rejects_excess_or_missing_fields(
 
     with pytest.raises(ProtocolError, match="result"):
         decode_response(json.dumps(payload).encode())
+
+
+def test_info_definite_non_acceptance_round_trips_with_bounded_detail() -> None:
+    response: dict[str, object] = {
+        "version": PROTOCOL_VERSION,
+        "operation": "INFO",
+        "outcome": "definite_non_acceptance",
+        "result": {"detail_code": "python_profile_not_admitted"},
+    }
+
+    assert decode_response(encode_response(response)) == response
