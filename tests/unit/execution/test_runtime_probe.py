@@ -2,9 +2,11 @@ import json
 import subprocess
 import sys
 
+import pytest
+
 from labpilot.execution.runner_policy import parse_runner_policy
 from labpilot.execution.runner_protocol import InfoInspectionRequest
-from labpilot.execution.runtime_probe import FIXED_PROBE_SOURCE, build_probe_argv
+from labpilot.execution.runtime_probe import FIXED_PROBE_SOURCE, build_probe_argv, run_probe
 
 
 def _value() -> dict[str, object]:
@@ -79,3 +81,55 @@ def test_fixed_probe_bounds_missing_distribution_and_cuda_failure() -> None:
         }
     ]
     assert all(isinstance(code, str) and len(code) <= 100 for code in payload["probe_issue_codes"])
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [subprocess.TimeoutExpired(("probe",), 10), OSError("runuser unavailable")],
+)
+def test_probe_execution_failure_becomes_bounded_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: BaseException,
+) -> None:
+    def fail(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise failure
+
+    monkeypatch.setattr("labpilot.execution.runtime_probe.subprocess.run", fail)
+    policy = parse_runner_policy(_value(), controller_uid=1, controller_gid=2)
+
+    result = run_probe(policy, InfoInspectionRequest("python-3.12", ("torch",)))
+
+    assert result == {"probe_issue_codes": ["PROBE_FAILED"]}
+
+
+@pytest.mark.parametrize(
+    ("completed", "expected"),
+    [
+        (
+            subprocess.CompletedProcess(("probe",), 1, "", "secret stderr"),
+            {"probe_issue_codes": ["PROBE_FAILED"]},
+        ),
+        (
+            subprocess.CompletedProcess(("probe",), 0, "not-json", ""),
+            {"probe_issue_codes": ["PROBE_OUTPUT_INVALID"]},
+        ),
+        (
+            subprocess.CompletedProcess(("probe",), 0, "x" * (64 * 1024 + 1), ""),
+            {"probe_issue_codes": ["PROBE_FAILED"]},
+        ),
+    ],
+)
+def test_probe_process_failures_never_return_raw_output(
+    monkeypatch: pytest.MonkeyPatch,
+    completed: subprocess.CompletedProcess[str],
+    expected: dict[str, object],
+) -> None:
+    monkeypatch.setattr(
+        "labpilot.execution.runtime_probe.subprocess.run",
+        lambda *args, **kwargs: completed,
+    )
+    policy = parse_runner_policy(_value(), controller_uid=1, controller_gid=2)
+
+    result = run_probe(policy, InfoInspectionRequest("python-3.12", ("torch",)))
+
+    assert result == expected

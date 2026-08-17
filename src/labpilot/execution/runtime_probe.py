@@ -62,17 +62,23 @@ def build_probe_argv(policy: RunnerPolicy, inspection: InfoInspectionRequest) ->
 
 
 def run_probe(policy: RunnerPolicy, inspection: InfoInspectionRequest) -> dict[str, object]:
-    result = subprocess.run(
-        build_probe_argv(policy, inspection),
-        check=False,
-        capture_output=True,
-        text=True,
-        shell=False,
-        timeout=10,
-        env=dict(policy.runtime_profile(inspection.python_profile).environment),
-    )
-    if result.returncode != 0 or len(result.stdout.encode("utf-8")) > 64 * 1024:
+    try:
+        result = subprocess.run(
+            build_probe_argv(policy, inspection),
+            check=False,
+            capture_output=True,
+            text=True,
+            shell=False,
+            timeout=10,
+            env=dict(policy.runtime_profile(inspection.python_profile).environment),
+        )
+        failed = result.returncode != 0 or len(result.stdout.encode("utf-8")) > 64 * 1024
+    except (OSError, subprocess.SubprocessError, UnicodeError):
+        failed = True
+        result = None
+    if failed:
         return {"probe_issue_codes": ["PROBE_FAILED"]}
+    assert result is not None
     try:
         value = json.loads(result.stdout)
     except json.JSONDecodeError:

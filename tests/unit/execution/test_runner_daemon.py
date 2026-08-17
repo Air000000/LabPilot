@@ -1,5 +1,6 @@
 import stat
 import struct
+import subprocess
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -9,6 +10,7 @@ from labpilot.execution.runner_daemon import RunnerDaemon, bind_listener
 from labpilot.execution.runner_policy import parse_runner_policy
 from labpilot.execution.runner_protocol import (
     PROTOCOL_VERSION,
+    InfoInspectionRequest,
     RunnerInfoRequest,
     RunnerLaunchRequest,
     RunnerObserveRequest,
@@ -261,3 +263,55 @@ def test_observe_preserves_historical_boot_id_from_supervisor(
     result = response["result"]
     assert isinstance(result, dict)
     assert result["boot_id"] == "a" * 32
+
+
+def test_failed_info_probe_does_not_make_daemon_unusable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+
+    def probe_run(*args: object, **kwargs: object) -> object:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise subprocess.TimeoutExpired(("probe",), 10)
+        return SimpleNamespace(
+            returncode=0,
+            stdout=(
+                '{"python_version":"3.12","framework_versions":[],'
+                '"cuda_runtime_version":null,"cuda_device_count":null,'
+                '"probe_issue_codes":[]}'
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr("labpilot.execution.runtime_probe.subprocess.run", probe_run)
+    monkeypatch.setattr(
+        "labpilot.execution.runner_daemon._boot_id", lambda: "b" * 32
+    )
+    daemon = RunnerDaemon(
+        parse_runner_policy(_value(), controller_uid=1000, controller_gid=1001),
+        Supervisor(),  # type: ignore[arg-type]
+    )
+    request = RunnerInfoRequest(
+        PROTOCOL_VERSION,
+        RunnerOperation.INFO,
+        InfoInspectionRequest("python-3.12", ()),
+    )
+
+    first = daemon.handle_request(request, peer_uid=1000, peer_gid=1001)
+    second = daemon.handle_request(request, peer_uid=1000, peer_gid=1001)
+
+    first_result = first["result"]
+    second_result = second["result"]
+    assert isinstance(first_result, dict) and isinstance(second_result, dict)
+    assert first_result["observed_environment"] == {
+        "probe_issue_codes": ["PROBE_FAILED"]
+    }
+    assert second_result["observed_environment"] == {
+        "python_version": "3.12",
+        "framework_versions": [],
+        "cuda_runtime_version": None,
+        "cuda_device_count": None,
+        "probe_issue_codes": [],
+    }
