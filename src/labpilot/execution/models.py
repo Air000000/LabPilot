@@ -2,11 +2,13 @@ from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import (
+    CHAR,
     BigInteger,
     CheckConstraint,
     DateTime,
     ForeignKeyConstraint,
     Index,
+    Integer,
     PrimaryKeyConstraint,
     String,
     Text,
@@ -124,6 +126,33 @@ class AttemptRow(Base):
             "'identity_conflict','terminal')",
             name="ck_attempts_status",
         ),
+        CheckConstraint(
+            "(frozen_launch_spec_json IS NULL) = (execution_spec_hash IS NULL)",
+            name="ck_attempts_physical_identity_pair",
+        ),
+        CheckConstraint(
+            "status <> 'identity_conflict' OR terminal_at IS NULL",
+            name="ck_attempts_physical_identity_conflict_nonterminal",
+        ),
+        CheckConstraint(
+            "(observed_environment_json IS NULL) = "
+            "(observed_environment_recorded_at IS NULL)",
+            name="ck_attempts_physical_observed_environment_pair",
+        ),
+        CheckConstraint(
+            "(status = 'terminal') = (terminal_kind IS NOT NULL)",
+            name="ck_attempts_physical_terminal_kind",
+        ),
+        CheckConstraint(
+            "(terminal_kind = 'process_exited' AND exit_code IS NOT NULL "
+            "AND termination_signal IS NULL) OR "
+            "(terminal_kind = 'process_signaled' AND exit_code IS NULL "
+            "AND termination_signal IS NOT NULL) OR "
+            "(terminal_kind IN ('process_terminal_unclassified','launch_not_accepted') "
+            "AND exit_code IS NULL AND termination_signal IS NULL) OR "
+            "terminal_kind IS NULL",
+            name="ck_attempts_physical_terminal_causality",
+        ),
     )
 
     attempt_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
@@ -140,6 +169,42 @@ class AttemptRow(Base):
     frozen_execution_spec_hash: Mapped[str | None] = mapped_column(
         String(64), nullable=True
     )
+    frozen_launch_spec_json: Mapped[dict[str, object] | None] = mapped_column(
+        JSONB, nullable=True
+    )
+    execution_spec_hash: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+    launch_intent_committed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    observed_environment_json: Mapped[dict[str, object] | None] = mapped_column(
+        JSONB, nullable=True
+    )
+    observed_environment_recorded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    physical_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    physical_ended_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    termination_signal: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    supervisor_result: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    terminal_kind: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    unknown_since: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    attention_required_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    execution_issue_code: Mapped[str | None] = mapped_column(
+        String(100), nullable=True
+    )
+    supervisor_invocation_id: Mapped[str | None] = mapped_column(
+        String(200), nullable=True
+    )
+    physical_boot_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     source_manifest_json: Mapped[dict[str, object] | None] = mapped_column(
         JSONB, nullable=True
     )

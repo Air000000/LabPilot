@@ -144,8 +144,41 @@ def _validate_foundation_probe(payload: EventJsonObject) -> None:
         raise CanonicalizationError("foundation probe value must be an integer")
 
 
+def _validate_attempt_restart_reconciliation(payload: EventJsonObject) -> None:
+    required = {
+        "attempt_id",
+        "X",
+        "H",
+        "coordinator_start_id",
+        "pre_reconciliation_status",
+        "physical_observation_kind",
+        "post_reconciliation_status",
+    }
+    allowed = required | {"physical_boot_id", "supervisor_invocation_id"}
+    unexpected = set(payload) - allowed
+    if unexpected:
+        raise CanonicalizationError(
+            f"attempt reconciliation contains unexpected fields: {sorted(unexpected)}"
+        )
+    missing = required - set(payload)
+    if missing:
+        raise CanonicalizationError(
+            f"attempt reconciliation is missing fields: {sorted(missing)}"
+        )
+    if any(type(payload[name]) is not str for name in required):
+        raise CanonicalizationError("attempt reconciliation fields must be strings")
+    for name in ("physical_boot_id", "supervisor_invocation_id"):
+        if name in payload and type(payload[name]) is not str:
+            raise CanonicalizationError(f"attempt reconciliation {name} must be a string")
+
+
 register_runtime_event_payload_schema(
     "foundation.probe.created",
     1,
     _validate_foundation_probe,
+)
+register_runtime_event_payload_schema(
+    "attempt.reconciled_after_restart",
+    1,
+    _validate_attempt_restart_reconciliation,
 )

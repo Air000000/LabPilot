@@ -99,6 +99,8 @@ async def _allocate_sequence(
 async def append_runtime_event(
     uow: UnitOfWork,
     envelope: RuntimeEventEnvelope,
+    *,
+    enqueue_outbox: bool = True,
 ) -> RuntimeEventRow:
     if envelope.payload.event_type != envelope.event_type:
         raise CanonicalizationError("prepared payload event_type mismatch")
@@ -133,17 +135,18 @@ async def append_runtime_event(
     )
     uow.session.add(event)
     await uow.session.flush()
-    outbox = OutboxRecordRow(
-        outbox_id=uuid4(),
-        event_id=event_id,
-        topic=envelope.topic,
-        partition_key=envelope.partition_key,
-        payload_ref=f"runtime-event:{event_id}",
-        status="pending",
-        available_at=db_now,
-        attempt_count=0,
-        lease_generation=0,
-    )
-    uow.session.add(outbox)
-    await uow.session.flush()
+    if enqueue_outbox:
+        outbox = OutboxRecordRow(
+            outbox_id=uuid4(),
+            event_id=event_id,
+            topic=envelope.topic,
+            partition_key=envelope.partition_key,
+            payload_ref=f"runtime-event:{event_id}",
+            status="pending",
+            available_at=db_now,
+            attempt_count=0,
+            lease_generation=0,
+        )
+        uow.session.add(outbox)
+        await uow.session.flush()
     return event
