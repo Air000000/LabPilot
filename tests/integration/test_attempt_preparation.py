@@ -147,6 +147,7 @@ async def test_preparation_materializes_exact_source_and_freezes_full_semantics(
         ]
         assert row.frozen_execution_spec_json is not None
         assert row.frozen_execution_spec_json["argv"][-1] == "{output_dir}"
+        assert row.frozen_execution_spec_json["output_dir_arg_indexes"] == [7]
         assert row.frozen_execution_spec_json["framework_requirements"] == ["torch==2.7.0"]
         assert row.frozen_execution_spec_json["environment_expectation_hash"]
         assert (system.workspace / "source" / "train.py").read_text() == "print('train')\n"

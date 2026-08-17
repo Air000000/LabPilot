@@ -312,9 +312,12 @@ def build_frozen_execution_spec(
         }
     )
     argv: list[str] = []
-    for token in semantics.train_argv_template:
+    output_dir_arg_indexes: list[int] = []
+    for index, token in enumerate(semantics.train_argv_template):
         if token.startswith("{") and token not in values:
             raise ExecutionInputError("EXECUTION_SEMANTICS_UNSUPPORTED")
+        if token == "{output_dir}":
+            output_dir_arg_indexes.append(index)
         argv.append(values.get(token, token))
     _validate_argv(tuple(argv))
 
@@ -335,6 +338,7 @@ def build_frozen_execution_spec(
         workdir_relative_path=semantics.workdir,
         python_profile=semantics.python_profile,
         argv=tuple(argv),
+        output_dir_arg_indexes=tuple(output_dir_arg_indexes),
         dataset_reference_type=semantics.dataset_reference_type,
         dataset_argument=semantics.dataset_path_or_uri,
         dataset_reference_hash=semantics.dataset_reference_hash,

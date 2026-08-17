@@ -1,7 +1,10 @@
 import hashlib
 import importlib
+from dataclasses import replace
 from pathlib import Path
 from uuid import UUID
+
+import pytest
 
 
 def _types():
@@ -100,6 +103,7 @@ def test_frozen_execution_spec_identity_exact_golden_vector() -> None:
             "--output-dir",
             "{output_dir}",
         ),
+        output_dir_arg_indexes=(7,),
         dataset_reference_type="uri",
         dataset_argument="s3://dataset/v1",
         dataset_reference_hash="d" * 64,
@@ -111,6 +115,14 @@ def test_frozen_execution_spec_identity_exact_golden_vector() -> None:
         timeout_seconds=3600,
     )
 
-    assert execution.frozen_execution_spec_hash(spec) == (
-        "3e28d21fbcebad3924b7d638040d30be67d7c721d2d659e0f3d092b80faaa9ef"
+    identity = execution.frozen_execution_spec_hash(spec)
+
+    assert identity == (
+        "aae3a70d772f59f38eb952c15de85b653e6b4310715b24a16283458c1fcd16d0"
     )
+    assert execution.frozen_execution_spec_hash(
+        replace(spec, output_dir_arg_indexes=())
+    ) != identity
+    for indexes in ((-1,), (7, 7), (7, 6), (8,)):
+        with pytest.raises(ValueError):
+            replace(spec, output_dir_arg_indexes=indexes)

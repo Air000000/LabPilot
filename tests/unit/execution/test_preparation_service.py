@@ -73,9 +73,66 @@ def test_build_frozen_spec_renders_only_approved_logical_tokens() -> None:
         "--empty", "null", "--seed", "7", "--dataset", "/datasets/main",
         "--output", "{output_dir}",
     )
+    assert spec.output_dir_arg_indexes == (13,)
     assert spec.framework_requirements == ("torch==2.8.0", "scikit-learn >= 1.7")
     assert spec.framework_distribution_names == ("torch", "scikit-learn")
     assert spec.environment_expectation_hash == "e" * 64
+
+
+def test_output_dir_provenance_ignores_parameter_value_collision() -> None:
+    from labpilot.execution.preparation_service import build_frozen_execution_spec
+
+    spec = build_frozen_execution_spec(
+        replace(
+            _semantics(),
+            train_argv_template=(
+                "--name", "{parameter:name}", "--output", "{output_dir}"
+            ),
+        ),
+        trial_identity="f" * 64,
+        resolved_parameters={"name": "{output_dir}"},
+        seed=7,
+    )
+
+    assert spec.argv == (
+        "--name", "{output_dir}", "--output", "{output_dir}"
+    )
+    assert spec.output_dir_arg_indexes == (3,)
+
+
+def test_output_dir_provenance_ignores_dataset_value_collision() -> None:
+    from labpilot.execution.preparation_service import build_frozen_execution_spec
+
+    spec = build_frozen_execution_spec(
+        replace(
+            _semantics(),
+            dataset_path_or_uri="{output_dir}",
+            train_argv_template=("{dataset}", "{output_dir}"),
+        ),
+        trial_identity="f" * 64,
+        resolved_parameters={},
+        seed=7,
+    )
+
+    assert spec.argv == ("{output_dir}", "{output_dir}")
+    assert spec.output_dir_arg_indexes == (1,)
+
+
+def test_output_dir_provenance_retains_multiple_real_slots() -> None:
+    from labpilot.execution.preparation_service import build_frozen_execution_spec
+
+    spec = build_frozen_execution_spec(
+        replace(
+            _semantics(),
+            train_argv_template=("{output_dir}", "--copy", "{output_dir}"),
+        ),
+        trial_identity="f" * 64,
+        resolved_parameters={},
+        seed=7,
+    )
+
+    assert spec.argv == ("{output_dir}", "--copy", "{output_dir}")
+    assert spec.output_dir_arg_indexes == (0, 2)
 
 
 @pytest.mark.parametrize(

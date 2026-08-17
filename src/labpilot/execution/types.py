@@ -81,6 +81,7 @@ class FrozenExecutionSpec:
     workdir_relative_path: str
     python_profile: str
     argv: tuple[str, ...]
+    output_dir_arg_indexes: tuple[int, ...]
     dataset_reference_type: str
     dataset_argument: str
     dataset_reference_hash: str
@@ -90,6 +91,17 @@ class FrozenExecutionSpec:
     device_requirement: str | None
     cuda_requirement: str | None
     timeout_seconds: int
+
+    def __post_init__(self) -> None:
+        indexes = self.output_dir_arg_indexes
+        if (
+            any(
+                type(index) is not int or index < 0 or index >= len(self.argv)
+                for index in indexes
+            )
+            or indexes != tuple(sorted(set(indexes)))
+        ):
+            raise ValueError("output_dir_arg_indexes must be unique ascending argv indexes")
 
 
 def _parameter_value(value: ParameterValue) -> CanonicalValue:
@@ -173,6 +185,7 @@ def frozen_execution_spec_value(
         "workdir_relative_path": spec.workdir_relative_path,
         "python_profile": spec.python_profile,
         "argv": list(spec.argv),
+        "output_dir_arg_indexes": list(spec.output_dir_arg_indexes),
         "dataset_reference_type": spec.dataset_reference_type,
         "dataset_argument": spec.dataset_argument,
         "dataset_reference_hash": spec.dataset_reference_hash,
