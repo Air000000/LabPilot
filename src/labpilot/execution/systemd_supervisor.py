@@ -9,6 +9,9 @@ from labpilot.execution.types import FrozenLaunchSpec, frozen_launch_spec_hash
 
 CommandRunner = Callable[[tuple[str, ...], float], subprocess.CompletedProcess[str]]
 _EXECUTION_IDENTITY = re.compile(r"^labpilot-v1-[0-9a-f]{64}-[0-9a-f]{32}$")
+_BOOT_ID = re.compile(
+    r"^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$"
+)
 
 
 class PhysicalObservationKind(StrEnum):
@@ -35,6 +38,7 @@ class PhysicalObservation:
     observed_spec_hash: str | None = None
     pid: int | None = None
     invocation_id: str | None = None
+    boot_id: str | None = None
     result: str | None = None
     exit_code: int | None = None
     termination_signal: int | None = None
@@ -54,11 +58,15 @@ class SystemdSupervisor:
         execution_user: str,
         execution_group: str,
         stop_timeout_seconds: int,
+        boot_id: str | None = None,
     ) -> None:
+        if boot_id is not None and _BOOT_ID.fullmatch(boot_id) is None:
+            raise ValueError("boot_id_invalid")
         self._run = command_runner
         self._user = execution_user
         self._group = execution_group
         self._stop_timeout = stop_timeout_seconds
+        self._boot_id = boot_id
 
     def observe(self, execution_identity: str, execution_spec_hash: str) -> PhysicalObservation:
         result = self._run(
@@ -94,6 +102,7 @@ class SystemdSupervisor:
             return PhysicalObservation(
                 PhysicalObservationKind.IDENTITY_CONFLICT,
                 observed_spec_hash=observed_hash,
+                boot_id=self._boot_id,
             )
         if properties.get("ActiveState") in {"active", "activating", "reloading"}:
             return PhysicalObservation(
@@ -101,6 +110,7 @@ class SystemdSupervisor:
                 observed_spec_hash=observed_hash,
                 pid=_integer(properties.get("MainPID")),
                 invocation_id=properties.get("InvocationID") or None,
+                boot_id=self._boot_id,
                 result=properties.get("Result") or None,
             )
         if properties.get("ActiveState") in {"inactive", "failed"}:
@@ -110,13 +120,14 @@ class SystemdSupervisor:
                 PhysicalObservationKind.TERMINAL_MATCH,
                 observed_spec_hash=observed_hash,
                 invocation_id=properties.get("InvocationID") or None,
+                boot_id=self._boot_id,
                 result=properties.get("Result") or None,
                 exit_code=status if code in {"1", "exited"} else None,
                 termination_signal=(
                     status if code in {"2", "3", "killed", "dumped"} else None
                 ),
             )
-        return PhysicalObservation(PhysicalObservationKind.UNKNOWN)
+        return PhysicalObservation(PhysicalObservationKind.UNKNOWN, boot_id=self._boot_id)
 
     def _observe_journal(
         self, execution_identity: str, execution_spec_hash: str
@@ -147,6 +158,7 @@ class SystemdSupervisor:
             message = record.get("MESSAGE")
             if type(message) is not str:
                 continue
+            boot_id = _journal_boot_id(record.get("_BOOT_ID"))
             marker = " - labpilot:"
             if marker not in message or not message.endswith("."):
                 continue
@@ -159,16 +171,19 @@ class SystemdSupervisor:
                 return PhysicalObservation(
                     PhysicalObservationKind.IDENTITY_CONFLICT,
                     observed_spec_hash=observed_hash,
+                    boot_id=boot_id,
                 )
             if message.startswith(("Stopped ", "Finished ", "Failed ")):
                 return PhysicalObservation(
                     PhysicalObservationKind.TERMINAL_MATCH,
                     observed_spec_hash=observed_hash,
+                    boot_id=boot_id,
                     result="systemd_manager_terminal",
                 )
             return PhysicalObservation(
                 PhysicalObservationKind.UNKNOWN,
                 observed_spec_hash=observed_hash,
+                boot_id=boot_id,
                 result="systemd_manager_start_retained",
             )
         return PhysicalObservation(PhysicalObservationKind.NOT_FOUND)
@@ -260,6 +275,10 @@ def _unit_name(execution_identity: str) -> str:
     if _EXECUTION_IDENTITY.fullmatch(execution_identity) is None:
         raise ValueError("execution_identity_invalid")
     return f"{execution_identity}.service"
+
+
+def _journal_boot_id(value: object) -> str | None:
+    return value if type(value) is str and _BOOT_ID.fullmatch(value) is not None else None
 
 
 def _properties(stdout: str) -> dict[str, str]:

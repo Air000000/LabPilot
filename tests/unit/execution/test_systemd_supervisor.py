@@ -12,6 +12,8 @@ from labpilot.execution.types import FrozenLaunchSpec, frozen_launch_spec_hash
 
 X = f"labpilot-v1-{'a' * 64}-{'b' * 32}"
 UNIT = f"{X}.service"
+BOOT_A = "a" * 32
+BOOT_B = "b" * 32
 
 
 def _spec() -> FrozenLaunchSpec:
@@ -274,3 +276,67 @@ def test_malformed_execution_identity_is_rejected_before_systemd(
         supervisor.observe(invalid_identity, "a" * 64)
 
     assert commands.argv == []
+
+
+def test_loaded_unit_reports_current_boot_id() -> None:
+    supervisor = SystemdSupervisor(
+        Commands([(0, _loaded(active="active", description=f"labpilot:{'a' * 64}"))]),
+        execution_user="labpilot-train",
+        execution_group="labpilot-train",
+        stop_timeout_seconds=30,
+        boot_id=BOOT_B,
+    )
+
+    observation = supervisor.observe(X, "a" * 64)
+
+    assert observation.boot_id == BOOT_B
+
+
+@pytest.mark.parametrize("journal_boot_id", [None, "not-a-boot-id"])
+def test_missing_or_malformed_journal_boot_id_is_not_replaced_with_current_boot(
+    journal_boot_id: str | None,
+) -> None:
+    record = {
+        "_PID": "1",
+        "_SYSTEMD_UNIT": "init.scope",
+        "SYSLOG_IDENTIFIER": "systemd",
+        "UNIT": UNIT,
+        "MESSAGE": f"Finished {UNIT} - labpilot:{'a' * 64}.",
+    }
+    if journal_boot_id is not None:
+        record["_BOOT_ID"] = journal_boot_id
+    supervisor = SystemdSupervisor(
+        Commands([(0, "LoadState=not-found\n"), (0, json.dumps(record))]),
+        execution_user="labpilot-train",
+        execution_group="labpilot-train",
+        stop_timeout_seconds=30,
+        boot_id=BOOT_B,
+    )
+
+    observation = supervisor.observe(X, "a" * 64)
+
+    assert observation.kind is PhysicalObservationKind.TERMINAL_MATCH
+    assert observation.boot_id is None
+
+
+def test_journal_terminal_preserves_historical_boot_id() -> None:
+    record = {
+        "_PID": "1",
+        "_SYSTEMD_UNIT": "init.scope",
+        "SYSLOG_IDENTIFIER": "systemd",
+        "UNIT": UNIT,
+        "_BOOT_ID": BOOT_A,
+        "MESSAGE": f"Finished {UNIT} - labpilot:{'a' * 64}.",
+    }
+    supervisor = SystemdSupervisor(
+        Commands([(0, "LoadState=not-found\n"), (0, json.dumps(record))]),
+        execution_user="labpilot-train",
+        execution_group="labpilot-train",
+        stop_timeout_seconds=30,
+        boot_id=BOOT_B,
+    )
+
+    observation = supervisor.observe(X, "a" * 64)
+
+    assert observation.kind is PhysicalObservationKind.TERMINAL_MATCH
+    assert observation.boot_id == BOOT_A

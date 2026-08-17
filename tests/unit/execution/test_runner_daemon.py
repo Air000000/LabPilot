@@ -14,6 +14,10 @@ from labpilot.execution.runner_protocol import (
     RunnerObserveRequest,
     RunnerOperation,
 )
+from labpilot.execution.systemd_supervisor import (
+    PhysicalObservation,
+    PhysicalObservationKind,
+)
 from labpilot.execution.types import FrozenLaunchSpec, frozen_launch_spec_hash
 
 X = f"labpilot-v1-{'a' * 64}-{'b' * 32}"
@@ -226,3 +230,34 @@ def test_malformed_connection_is_dropped_without_crashing_daemon() -> None:
     daemon._serve_connection(MalformedConnection())  # type: ignore[arg-type]
 
     assert supervisor.calls == 0
+
+
+def test_observe_preserves_historical_boot_id_from_supervisor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class HistoricalSupervisor:
+        def observe(self, *args: object) -> PhysicalObservation:
+            return PhysicalObservation(
+                PhysicalObservationKind.TERMINAL_MATCH,
+                observed_spec_hash="a" * 64,
+                boot_id="a" * 32,
+                result="systemd_manager_terminal",
+            )
+
+    monkeypatch.setattr(
+        "labpilot.execution.runner_daemon._boot_id", lambda: "b" * 32
+    )
+    daemon = RunnerDaemon(
+        parse_runner_policy(_value(), controller_uid=1000, controller_gid=1001),
+        HistoricalSupervisor(),  # type: ignore[arg-type]
+    )
+
+    response = daemon.handle_request(
+        RunnerObserveRequest(PROTOCOL_VERSION, RunnerOperation.OBSERVE, X, "a" * 64),
+        peer_uid=1000,
+        peer_gid=1001,
+    )
+
+    result = response["result"]
+    assert isinstance(result, dict)
+    assert result["boot_id"] == "a" * 32

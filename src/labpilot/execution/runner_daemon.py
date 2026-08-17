@@ -74,7 +74,6 @@ class RunnerDaemon:
                 request.execution_identity, request.execution_spec_hash
             )
             result = _object_dict(observation)
-            result["boot_id"] = _boot_id()
             return _response(request, "ok", result)
         if isinstance(request, RunnerLaunchRequest):
             policy_error = _validate_launch_spec(self._policy, request.spec)
@@ -221,6 +220,7 @@ def main() -> NoReturn:
             execution_user=policy.execution_user,
             execution_group=policy.execution_group,
             stop_timeout_seconds=policy.stop_timeout_seconds,
+            boot_id=_boot_id(),
         ),
     ).serve_forever()
 
