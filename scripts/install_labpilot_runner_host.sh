@@ -23,6 +23,7 @@ verify_effective_service() {
   [[ "$(systemd_value User)" == root ]] || fail "loaded User mismatch"
   [[ "$(systemd_value Group)" == labpilot-control ]] || fail "loaded Group mismatch"
   [[ "$(systemd_value UMask)" == 0077 ]] || fail "loaded UMask mismatch"
+  [[ "$(systemd_value RuntimeDirectoryPreserve)" == restart ]] || fail "loaded RuntimeDirectoryPreserve mismatch"
   [[ "$(systemd_value NoNewPrivileges)" == yes ]] || fail "loaded NoNewPrivileges mismatch"
   [[ "$(systemd_value RestrictAddressFamilies)" == AF_UNIX ]] || fail "loaded address family mismatch"
   exec_start=$(systemd_value ExecStart)

@@ -130,21 +130,83 @@ class RunnerDaemon:
 
 
 def bind_listener(policy: RunnerPolicy) -> socket.socket:
+    _remove_trusted_stale_socket(policy)
     listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    listener.bind(policy.socket_path)
-    os.chown(policy.socket_path, 0, policy.controller_gid)
-    os.chmod(policy.socket_path, 0o660)
-    metadata = os.stat(policy.socket_path)
-    if (
-        metadata.st_uid != 0
-        or metadata.st_gid != policy.controller_gid
-        or stat.S_IMODE(metadata.st_mode) != 0o660
-        or not stat.S_ISSOCK(metadata.st_mode)
-    ):
+    try:
+        listener.bind(policy.socket_path)
+        os.chown(policy.socket_path, 0, policy.controller_gid)
+        os.chmod(policy.socket_path, 0o660)
+        metadata = os.lstat(policy.socket_path)
+        if (
+            metadata.st_uid != 0
+            or metadata.st_gid != policy.controller_gid
+            or stat.S_IMODE(metadata.st_mode) != 0o660
+            or not stat.S_ISSOCK(metadata.st_mode)
+        ):
+            raise RuntimeError("socket_metadata_mismatch")
+        listener.listen(16)
+        return listener
+    except Exception:
         listener.close()
+        raise
+
+
+def _remove_trusted_stale_socket(policy: RunnerPolicy) -> None:
+    runtime_path = str(Path(policy.socket_path).parent)
+    runtime = os.lstat(runtime_path)
+    if (
+        not stat.S_ISDIR(runtime.st_mode)
+        or runtime.st_uid != 0
+        or runtime.st_gid != policy.controller_gid
+        or stat.S_IMODE(runtime.st_mode) != 0o750
+    ):
+        raise RuntimeError("socket_runtime_directory_metadata_mismatch")
+    try:
+        original = os.lstat(policy.socket_path)
+    except FileNotFoundError:
+        return
+    if (
+        not stat.S_ISSOCK(original.st_mode)
+        or original.st_uid != 0
+        or original.st_gid != policy.controller_gid
+        or stat.S_IMODE(original.st_mode) not in {0o700, 0o660}
+    ):
         raise RuntimeError("socket_metadata_mismatch")
-    listener.listen(16)
-    return listener
+
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        try:
+            probe.connect(policy.socket_path)
+        except ConnectionRefusedError:
+            pass
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise RuntimeError("socket_liveness_unknown") from exc
+        else:
+            raise RuntimeError("socket_listener_already_active")
+    finally:
+        probe.close()
+
+    try:
+        current = os.lstat(policy.socket_path)
+    except FileNotFoundError:
+        return
+    if (
+        current.st_dev,
+        current.st_ino,
+        current.st_mode,
+        current.st_uid,
+        current.st_gid,
+    ) != (
+        original.st_dev,
+        original.st_ino,
+        original.st_mode,
+        original.st_uid,
+        original.st_gid,
+    ):
+        raise RuntimeError("socket_metadata_changed")
+    os.unlink(policy.socket_path)
 
 
 def _response(request: RunnerRequest, outcome: str, result: dict[str, object]) -> dict[str, object]:

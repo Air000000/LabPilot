@@ -183,6 +183,31 @@ class Listener:
         pass
 
 
+class Probe:
+    def __init__(self, *, live: bool) -> None:
+        self.live = live
+
+    def connect(self, path: str) -> None:
+        self.path = path
+        if not self.live:
+            raise ConnectionRefusedError
+
+    def close(self) -> None:
+        pass
+
+
+def _metadata(
+    mode: int, *, uid: int = 0, gid: int = 1001, device: int = 1, inode: int = 2
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        st_mode=mode,
+        st_uid=uid,
+        st_gid=gid,
+        st_dev=device,
+        st_ino=inode,
+    )
+
+
 def test_socket_metadata_is_set_and_reread_exactly(monkeypatch: pytest.MonkeyPatch) -> None:
     listener = Listener()
     calls: list[tuple[object, ...]] = []
@@ -194,8 +219,14 @@ def test_socket_metadata_is_set_and_reread_exactly(monkeypatch: pytest.MonkeyPat
         "labpilot.execution.runner_daemon.os.chmod", lambda *args: calls.append(("chmod", *args))
     )
     monkeypatch.setattr(
-        "labpilot.execution.runner_daemon.os.stat",
-        lambda path: SimpleNamespace(st_uid=0, st_gid=1001, st_mode=stat.S_IFSOCK | 0o660),
+        "labpilot.execution.runner_daemon.os.lstat",
+        lambda path: (
+            _metadata(stat.S_IFDIR | 0o750)
+            if path == "/run/labpilot-runner"
+            else _metadata(stat.S_IFSOCK | 0o660)
+            if hasattr(listener, "path")
+            else (_ for _ in ()).throw(FileNotFoundError)
+        ),
     )
     policy = parse_runner_policy(_value(), controller_uid=1000, controller_gid=1001)
 
@@ -210,11 +241,102 @@ def test_socket_metadata_mismatch_is_fatal(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr("labpilot.execution.runner_daemon.os.chown", lambda *args: None)
     monkeypatch.setattr("labpilot.execution.runner_daemon.os.chmod", lambda *args: None)
     monkeypatch.setattr(
-        "labpilot.execution.runner_daemon.os.stat",
-        lambda path: SimpleNamespace(st_uid=0, st_gid=1001, st_mode=stat.S_IFSOCK | 0o600),
+        "labpilot.execution.runner_daemon.os.lstat",
+        lambda path: (
+            _metadata(stat.S_IFDIR | 0o750)
+            if path == "/run/labpilot-runner"
+            else _metadata(stat.S_IFSOCK | 0o600)
+            if hasattr(listener, "path")
+            else (_ for _ in ()).throw(FileNotFoundError)
+        ),
     )
     with pytest.raises(RuntimeError, match="socket_metadata"):
         bind_listener(parse_runner_policy(_value(), controller_uid=1, controller_gid=1001))
+
+
+@pytest.mark.parametrize("mode", (0o700, 0o660))
+def test_trusted_stale_socket_is_replaced(
+    monkeypatch: pytest.MonkeyPatch, mode: int
+) -> None:
+    listener = Listener()
+    sockets = iter((Probe(live=False), listener))
+    unlinked: list[str] = []
+    monkeypatch.setattr(
+        "labpilot.execution.runner_daemon.socket.socket", lambda *args: next(sockets)
+    )
+    monkeypatch.setattr("labpilot.execution.runner_daemon.os.chown", lambda *args: None)
+    monkeypatch.setattr("labpilot.execution.runner_daemon.os.chmod", lambda *args: None)
+    monkeypatch.setattr(
+        "labpilot.execution.runner_daemon.os.unlink", lambda path: unlinked.append(path)
+    )
+    monkeypatch.setattr(
+        "labpilot.execution.runner_daemon.os.lstat",
+        lambda path: (
+            _metadata(stat.S_IFDIR | 0o750)
+            if path == "/run/labpilot-runner"
+            else _metadata(stat.S_IFSOCK | 0o660)
+            if hasattr(listener, "path")
+            else _metadata(stat.S_IFSOCK | mode)
+        ),
+    )
+
+    assert bind_listener(
+        parse_runner_policy(_value(), controller_uid=1000, controller_gid=1001)
+    ) is listener
+    assert unlinked == ["/run/labpilot-runner/control.sock"]
+
+
+def test_live_socket_is_not_unlinked(monkeypatch: pytest.MonkeyPatch) -> None:
+    unlinked: list[str] = []
+    monkeypatch.setattr(
+        "labpilot.execution.runner_daemon.socket.socket",
+        lambda *args: Probe(live=True),
+    )
+    monkeypatch.setattr(
+        "labpilot.execution.runner_daemon.os.unlink", lambda path: unlinked.append(path)
+    )
+    monkeypatch.setattr(
+        "labpilot.execution.runner_daemon.os.lstat",
+        lambda path: _metadata(
+            stat.S_IFDIR | 0o750
+            if path == "/run/labpilot-runner"
+            else stat.S_IFSOCK | 0o660
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="socket_listener_already_active"):
+        bind_listener(
+            parse_runner_policy(_value(), controller_uid=1000, controller_gid=1001)
+        )
+    assert unlinked == []
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    (
+        _metadata(stat.S_IFLNK | 0o777),
+        _metadata(stat.S_IFREG | 0o660),
+        _metadata(stat.S_IFSOCK | 0o660, uid=1),
+        _metadata(stat.S_IFSOCK | 0o660, gid=1),
+        _metadata(stat.S_IFSOCK | 0o600),
+    ),
+)
+def test_unsafe_preexisting_socket_is_fatal(
+    monkeypatch: pytest.MonkeyPatch, metadata: SimpleNamespace
+) -> None:
+    monkeypatch.setattr(
+        "labpilot.execution.runner_daemon.os.lstat",
+        lambda path: (
+            _metadata(stat.S_IFDIR | 0o750)
+            if path == "/run/labpilot-runner"
+            else metadata
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="socket_metadata"):
+        bind_listener(
+            parse_runner_policy(_value(), controller_uid=1000, controller_gid=1001)
+        )
 
 
 def test_malformed_connection_is_dropped_without_crashing_daemon() -> None:

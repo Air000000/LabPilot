@@ -65,7 +65,12 @@ services:
       - ${LABPILOT_REPOSITORY_HOST_ROOT:-.}:/repositories:ro
       - labpilot_content:/var/lib/labpilot/content
       - "${LABPILOT_ATTEMPT_WORKSPACE_ROOT:?LABPILOT_ATTEMPT_WORKSPACE_ROOT is required}:${LABPILOT_ATTEMPT_WORKSPACE_ROOT:?LABPILOT_ATTEMPT_WORKSPACE_ROOT is required}"
-      - /run/labpilot-runner/control.sock:/run/labpilot-runner/control.sock
+      - type: bind
+        source: /run/labpilot-runner
+        target: /run/labpilot-runner
+        read_only: true
+        bind:
+          create_host_path: false
     depends_on:
       migrate:
         condition: service_completed_successfully

@@ -116,3 +116,16 @@ def test_compose_grants_execution_authority_only_to_coordinator() -> None:
         '${LABPILOT_CONTROLLER_GID:?LABPILOT_CONTROLLER_GID is required}"'
         in coordinator
     )
+    assert (
+        "- /run/labpilot-runner/control.sock:/run/labpilot-runner/control.sock"
+        not in coordinator
+    )
+    for value in (
+        "- type: bind",
+        "source: /run/labpilot-runner",
+        "target: /run/labpilot-runner",
+        "read_only: true",
+        "create_host_path: false",
+    ):
+        assert value in coordinator
+        assert value not in api

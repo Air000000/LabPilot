@@ -23,6 +23,7 @@ def test_service_freezes_candidate_b_hardening() -> None:
         "umask": "0077",
         "runtimedirectory": "labpilot-runner",
         "runtimedirectorymode": "0750",
+        "runtimedirectorypreserve": "restart",
         "execstart": (
             "/opt/labpilot-runner/app/.venv/bin/python -E -s -m "
             "labpilot.execution.runner_daemon --policy /etc/labpilot/runner-policy.json"
@@ -67,13 +68,16 @@ def test_installer_rejects_non_exact_sha_before_archive(tmp_path: Path) -> None:
 
 def test_effective_service_verifier_checks_loaded_properties(tmp_path: Path) -> None:
     fake_systemctl = tmp_path / "systemctl"
+    log = tmp_path / "properties.log"
     fake_systemctl.write_text(
-        """#!/bin/sh
+        f"""#!/bin/sh
+printf '%s\n' "$4" >> '{log}'
 case "$4" in
   FragmentPath) echo /etc/systemd/system/labpilot-runner.service ;;
   User) echo root ;;
   Group) echo labpilot-control ;;
   UMask) echo 0077 ;;
+  RuntimeDirectoryPreserve) echo restart ;;
   NoNewPrivileges) echo yes ;;
   RestrictAddressFamilies) echo AF_UNIX ;;
   ExecStart) printf '%s%s\n' \
@@ -86,6 +90,7 @@ esac
     command = f"PATH='{tmp_path}':$PATH; source '{INSTALLER}'; verify_effective_service"
     result = subprocess.run(["bash", "-c", command], check=False, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+    assert "RuntimeDirectoryPreserve" in log.read_text().splitlines()
 
 
 def test_installer_script_has_valid_bash_syntax() -> None:
