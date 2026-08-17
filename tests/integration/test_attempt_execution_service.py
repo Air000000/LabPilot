@@ -571,6 +571,152 @@ async def test_stop_ack_does_not_terminalize_but_natural_terminal_observation_do
         assert row.terminal_kind == TerminalKind.PROCESS_EXITED.value
 
 
+async def _request_cancel(system: object) -> None:
+    async with system.database.session() as session:  # type: ignore[attr-defined]
+        async with session.begin():
+            batch = await session.get(BatchRow, system.batch_id)  # type: ignore[attr-defined]
+            assert batch is not None
+            batch.cancel_requested_at = datetime.now(UTC)
+
+
+async def _restart_events(system: object) -> list[RuntimeEventRow]:
+    async with system.database.session() as session:  # type: ignore[attr-defined]
+        return list(
+            await session.scalars(
+                select(RuntimeEventRow).where(
+                    RuntimeEventRow.aggregate_id == str(system.attempt_id),  # type: ignore[attr-defined]
+                    RuntimeEventRow.event_type == "attempt.reconciled_after_restart",
+                )
+            )
+        )
+
+
+@pytest.mark.integration
+async def test_startup_stop_terminal_observation_persists_truth_and_audit_without_stop(
+    isolated_database_url: str, tmp_path: Path
+) -> None:
+    async with _prepared_system(isolated_database_url, tmp_path) as system:
+        await _prepare(system)
+        runner = FakeRunner(
+            system.workspace.parent,
+            observations=[_active(), _terminal(exit_code=0)],
+        )
+        service = AttemptExecutionService(
+            system.database.session,
+            runner,
+            workspace_root=system.workspace.parent,
+        )
+        await service.dispatch_attempt(system.attempt_id)
+        await _request_cancel(system)
+        start_id = uuid4()
+
+        await service.request_stop(
+            system.attempt_id,
+            reason=ReconciliationReason.STARTUP,
+            coordinator_start_id=start_id,
+        )
+
+        row = await _attempt(system)
+        events = await _restart_events(system)
+        assert row.status == AttemptStatus.TERMINAL.value
+        assert row.terminal_kind == TerminalKind.PROCESS_EXITED.value
+        assert row.exit_code == 0
+        assert runner.count(RunnerStopRequest) == 0
+        assert len(events) == 1
+        assert events[0].payload_json["coordinator_start_id"] == str(start_id)
+        assert events[0].payload_json["physical_observation_kind"] == "terminal_match"
+        assert events[0].payload_json["post_reconciliation_status"] == "terminal"
+
+
+@pytest.mark.integration
+async def test_startup_stop_active_observation_audits_then_stops_without_fabrication(
+    isolated_database_url: str, tmp_path: Path
+) -> None:
+    async with _prepared_system(isolated_database_url, tmp_path) as system:
+        await _prepare(system)
+        runner = FakeRunner(
+            system.workspace.parent,
+            observations=[_active(), _active(), _active()],
+        )
+        service = AttemptExecutionService(
+            system.database.session,
+            runner,
+            workspace_root=system.workspace.parent,
+        )
+        await service.dispatch_attempt(system.attempt_id)
+        await _request_cancel(system)
+        start_id = uuid4()
+
+        await service.request_stop(
+            system.attempt_id,
+            reason=ReconciliationReason.STARTUP,
+            coordinator_start_id=start_id,
+        )
+
+        row = await _attempt(system)
+        events = await _restart_events(system)
+        assert runner.count(RunnerStopRequest) == 1
+        assert row.status == AttemptStatus.RUNNING.value
+        assert row.terminal_at is None
+        assert len(events) == 1
+        assert events[0].payload_json["physical_observation_kind"] == "active_match"
+
+
+@pytest.mark.integration
+async def test_startup_stop_unknown_observation_audits_without_blind_stop(
+    isolated_database_url: str, tmp_path: Path
+) -> None:
+    async with _prepared_system(isolated_database_url, tmp_path) as system:
+        await _prepare(system)
+        runner = FakeRunner(system.workspace.parent, observations=[_active(), _unknown()])
+        service = AttemptExecutionService(
+            system.database.session,
+            runner,
+            workspace_root=system.workspace.parent,
+        )
+        await service.dispatch_attempt(system.attempt_id)
+        await _request_cancel(system)
+
+        await service.request_stop(
+            system.attempt_id,
+            reason=ReconciliationReason.STARTUP,
+            coordinator_start_id=uuid4(),
+        )
+
+        events = await _restart_events(system)
+        assert runner.count(RunnerStopRequest) == 0
+        assert len(events) == 1
+        assert events[0].payload_json["physical_observation_kind"] == "unknown"
+
+
+@pytest.mark.integration
+async def test_identity_conflict_request_stop_has_zero_physical_calls(
+    isolated_database_url: str, tmp_path: Path
+) -> None:
+    async with _prepared_system(isolated_database_url, tmp_path) as system:
+        await _prepare(system)
+        runner = FakeRunner(system.workspace.parent, observations=[_conflict(), _active()])
+        service = AttemptExecutionService(
+            system.database.session,
+            runner,
+            workspace_root=system.workspace.parent,
+        )
+        await service.dispatch_attempt(system.attempt_id)
+        await _request_cancel(system)
+        requests_before = len(runner.requests)
+
+        await service.request_stop(
+            system.attempt_id,
+            reason=ReconciliationReason.STARTUP,
+            coordinator_start_id=uuid4(),
+        )
+
+        row = await _attempt(system)
+        assert row.status == AttemptStatus.IDENTITY_CONFLICT.value
+        assert len(runner.requests) == requests_before
+        assert runner.count(RunnerStopRequest) == 0
+
+
 @pytest.mark.integration
 async def test_launch_state_rolls_back_when_same_uow_audit_fails(
     isolated_database_url: str,

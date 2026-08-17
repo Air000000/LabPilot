@@ -219,7 +219,14 @@ class AttemptExecutionService:
             coordinator_start_id=coordinator_start_id,
         )
 
-    async def request_stop(self, attempt_id: UUID) -> None:
+    async def request_stop(
+        self,
+        attempt_id: UUID,
+        *,
+        reason: ReconciliationReason = ReconciliationReason.PERIODIC,
+        coordinator_start_id: UUID | None = None,
+    ) -> None:
+        self.validate_reconciliation(reason, coordinator_start_id=coordinator_start_id)
         coordinates = await self._load_coordinates(attempt_id, require_cancel=True)
         if coordinates is None:
             return
@@ -238,8 +245,8 @@ class AttemptExecutionService:
         await self._persist_observation(
             coordinates,
             observation,
-            reason=ReconciliationReason.PERIODIC,
-            coordinator_start_id=None,
+            reason=reason,
+            coordinator_start_id=coordinator_start_id,
         )
         if observation.kind is not PhysicalObservationKind.ACTIVE_MATCH:
             return
@@ -419,6 +426,8 @@ class AttemptExecutionService:
                 AttemptStatus.UNKNOWN.value,
                 AttemptStatus.IDENTITY_CONFLICT.value,
             }:
+                return None
+            if require_cancel and attempt.status == AttemptStatus.IDENTITY_CONFLICT.value:
                 return None
             if attempt.execution_spec_hash is None:
                 raise ExecutionInputError("PHYSICAL_IDENTITY_MISSING")

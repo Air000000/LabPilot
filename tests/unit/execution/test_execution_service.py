@@ -1,6 +1,6 @@
 from dataclasses import replace
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -92,4 +92,34 @@ def test_startup_reconciliation_requires_start_id() -> None:
     with pytest.raises(ValueError, match="coordinator_start_id"):
         service.validate_reconciliation(
             ReconciliationReason.STARTUP, coordinator_start_id=None
+        )
+
+
+@pytest.mark.asyncio
+async def test_startup_stop_requires_start_id_before_loading_attempt() -> None:
+    from labpilot.execution.execution_service import (
+        AttemptExecutionService,
+        ReconciliationReason,
+    )
+
+    service = AttemptExecutionService(object(), object(), workspace_root=Path("/attempts"))  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="coordinator_start_id"):
+        await service.request_stop(uuid4(), reason=ReconciliationReason.STARTUP)
+
+
+@pytest.mark.asyncio
+async def test_periodic_stop_rejects_start_id_before_loading_attempt() -> None:
+    from labpilot.execution.execution_service import (
+        AttemptExecutionService,
+        ReconciliationReason,
+    )
+
+    service = AttemptExecutionService(object(), object(), workspace_root=Path("/attempts"))  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="coordinator_start_id"):
+        await service.request_stop(
+            uuid4(),
+            reason=ReconciliationReason.PERIODIC,
+            coordinator_start_id=uuid4(),
         )
