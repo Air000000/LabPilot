@@ -174,4 +174,3 @@ def test_execution_gets_use_bounded_query_projection() -> None:
         "probe_issue_codes",
     }
     assert "frozen_launch_spec" not in attempt.json()
-

@@ -184,7 +184,6 @@ async def test_capacity_four_stops_after_one_dispatch_when_three_are_active() ->
 
     assert execution.dispatched == [oldest]
 
-
 @pytest.mark.asyncio
 async def test_unchanged_oldest_launch_ready_blocks_younger_admission() -> None:
     from labpilot.coordinator.service import CoordinatorService
@@ -213,4 +212,3 @@ async def test_unchanged_oldest_launch_ready_blocks_younger_admission() -> None:
     await service._admit_launch_ready()
 
     assert execution.dispatched == [oldest]
-

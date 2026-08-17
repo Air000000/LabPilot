@@ -37,4 +37,3 @@ def test_coordination_attention_is_derived_above_exact_attempt_status() -> None:
     assert derive_batch_presentation(
         ("needs_attention",), started=True, cancelled=False
     ) == "failed_to_coordinate"
-
