@@ -29,7 +29,7 @@ async def test_upgrade_head_succeeds_on_an_isolated_empty_database(
     try:
         with engine.connect() as connection:
             version = connection.scalar(text("SELECT version_num FROM alembic_version"))
-        assert version == "0009_execution_preparation"
+        assert version == "0010_attempt_physical_execution"
     finally:
         engine.dispose()
 
@@ -149,7 +149,7 @@ async def test_task3_migration_upgrade_downgrade_upgrade_round_trip(
         with engine.connect() as connection:
             assert (
                 connection.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0009_execution_preparation"
+                == "0010_attempt_physical_execution"
             )
             assert connection.scalar(text("SELECT to_regclass('public.projects')")) == "projects"
 
@@ -165,7 +165,7 @@ async def test_task3_migration_upgrade_downgrade_upgrade_round_trip(
         with engine.connect() as connection:
             assert (
                 connection.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0009_execution_preparation"
+                == "0010_attempt_physical_execution"
             )
             assert connection.scalar(text("SELECT to_regclass('public.projects')")) == "projects"
     finally:
@@ -185,7 +185,7 @@ async def test_task4_migration_upgrade_downgrade_upgrade_round_trip(
         with engine.connect() as connection:
             assert (
                 connection.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0009_execution_preparation"
+                == "0010_attempt_physical_execution"
             )
             assert (
                 connection.scalar(text("SELECT to_regclass('public.agent_steps')")) == "agent_steps"
@@ -204,7 +204,7 @@ async def test_task4_migration_upgrade_downgrade_upgrade_round_trip(
         with engine.connect() as connection:
             assert (
                 connection.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0009_execution_preparation"
+                == "0010_attempt_physical_execution"
             )
             assert (
                 connection.scalar(text("SELECT to_regclass('public.agent_steps')")) == "agent_steps"
