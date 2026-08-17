@@ -53,7 +53,7 @@ class FakeBatches:
 
     async def cancel_batch(self, *, context: object, idempotency_key: str, command: object):
         self.calls.append(("cancel", command, idempotency_key))
-        return _outcome("cancelled")
+        return _outcome("cancel_requested")
 
 
 class FakeQueries:
@@ -154,6 +154,11 @@ def test_batch_commands_call_only_batch_service() -> None:
     assert created.json() == {
         "batch_id": str(BATCH_ID),
         "committed_state": "created",
+        "replayed": False,
+    }
+    assert cancelled.json() == {
+        "batch_id": str(BATCH_ID),
+        "committed_state": "cancel_requested",
         "replayed": False,
     }
 

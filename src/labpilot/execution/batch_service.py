@@ -19,7 +19,7 @@ from labpilot.db.idempotency import (
 )
 from labpilot.db.uow import SessionContextFactory, UnitOfWork
 from labpilot.execution.models import AttemptRow, BatchRow, TrialRow
-from labpilot.execution.ports import VersionExecutionSemanticsPort
+from labpilot.execution.ports import ExecutionInputError, VersionExecutionSemanticsPort
 from labpilot.execution.repository import build_preparing_attempt
 from labpilot.execution.types import (
     ParameterValue,
@@ -103,6 +103,12 @@ class BatchNotFound(LabPilotError):
         super().__init__(f"batch not found: {batch_id}")
 
 
+class BatchExperimentVersionNotFound(LabPilotError):
+    def __init__(self, experiment_version_id: UUID) -> None:
+        self.experiment_version_id = experiment_version_id
+        super().__init__(f"experiment version not found: {experiment_version_id}")
+
+
 class TrialNotFound(LabPilotError):
     def __init__(self, trial_id: UUID) -> None:
         self.trial_id = trial_id
@@ -174,7 +180,14 @@ class BatchApplicationService:
         )
 
         async def prepare() -> VersionExecutionSemantics:
-            return await self._version_semantics.load(command.experiment_version_id)
+            try:
+                return await self._version_semantics.load(command.experiment_version_id)
+            except ExecutionInputError as exc:
+                if exc.reason_code == "EXPERIMENT_VERSION_NOT_FOUND":
+                    raise BatchExperimentVersionNotFound(
+                        command.experiment_version_id
+                    ) from exc
+                raise
 
         async def operation(
             uow: UnitOfWork,

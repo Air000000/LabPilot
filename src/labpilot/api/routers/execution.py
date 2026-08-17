@@ -93,7 +93,7 @@ async def cancel_batch(
         await service.cancel_batch(
             context=context, idempotency_key=idempotency_key, command=command
         ),
-        committed_state="cancelled",
+        committed_state="cancel_requested",
     )
 
 

@@ -8,6 +8,7 @@ from labpilot.common.errors import LabPilotError
 from labpilot.context.repository_source import RepositorySourceReadError
 from labpilot.db.idempotency import IdempotencyKeyConflict
 from labpilot.execution.batch_service import (
+    BatchExperimentVersionNotFound,
     BatchNotFound,
     BatchStateConflict,
     BatchVersionConflict,
@@ -275,7 +276,10 @@ async def _proposal_not_found_handler(
     _: Request,
     exc: Exception,
 ) -> JSONResponse:
-    assert isinstance(exc, ProposalNotFound | ExperimentVersionNotFound)
+    assert isinstance(
+        exc,
+        ProposalNotFound | ExperimentVersionNotFound | BatchExperimentVersionNotFound,
+    )
     return _response(
         status_code=404,
         error_code="resource_not_found",
@@ -373,6 +377,10 @@ def register_error_handlers(app: FastAPI) -> None:
     app.add_exception_handler(ProposalNotFound, _proposal_not_found_handler)
     app.add_exception_handler(
         ExperimentVersionNotFound,
+        _proposal_not_found_handler,
+    )
+    app.add_exception_handler(
+        BatchExperimentVersionNotFound,
         _proposal_not_found_handler,
     )
     app.add_exception_handler(
