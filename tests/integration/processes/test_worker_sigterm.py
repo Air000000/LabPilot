@@ -374,6 +374,8 @@ async def test_worker_process_exits_zero_on_sigterm(
                 "LABPILOT_RUNNER_SOCKET_PATH": (
                     "/run/labpilot-runner/control.sock"
                 ),
+                "LABPILOT_CONTROLLER_UID": "1234",
+                "LABPILOT_CONTROLLER_GID": "2345",
                 "LABPILOT_TRAIN_GID": "1234",
             }
         )
