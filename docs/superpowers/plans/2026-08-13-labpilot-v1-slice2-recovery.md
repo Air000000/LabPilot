@@ -22,9 +22,11 @@
 
 **Native S2.0 evidence:** `docs/superpowers/evidence/2026-08-13-labpilot-v1-slice2-runner-supervision-poc.md`
 
-**Status:** r4.1 is **APPROVED AT G0**. Task 1 remains **COMPLETE / SELECT_B**, and Task 2 implementation is **AUTHORIZED**. Tasks 3–5 remain **NOT AUTHORIZED FOR IMPLEMENTATION**. This governance-only approval does not imply Slice 2 acceptance. `DOCUMENT-STATUS.md` remains unchanged and may be updated only after full Slice 2 acceptance.
+**Status:** r4.1 is **APPROVED AT G0**. Task 1 remains **COMPLETE / SELECT_B**. Task 2 is in **G1 REMEDIATION / CHANGES REQUIRED** after a review with 0 Critical and 2 Important findings. Tasks 3–5 remain **NOT AUTHORIZED FOR IMPLEMENTATION**. This governance-only approval does not imply Slice 2 acceptance. `DOCUMENT-STATUS.md` remains unchanged and may be updated only after full Slice 2 acceptance.
 
 **Historical governance note:** Candidate B was admitted and implemented before a separate focused pre-implementation amendment was committed. This plan records the post-S2.0 production contract and does not backdate or rewrite that history.
+
+**G1 remediation scope:** G1-1 requires `FrozenExecutionSpec` to preserve exact `{output_dir}` argument provenance. G1-2 requires Attempt preparation to establish supported-Linux group ownership so `labpilot-train` can traverse/read frozen source and write `runtime/output`. This amendment closes only those two findings and does not authorize Task 3.
 
 ---
 
@@ -77,7 +79,7 @@ The final G0 re-review checks R4-D1 and direct consistency edits only. A second 
 
 ```text
 Task 1 — S2.0 Runner Supervision PoC + ADR                        COMPLETE / SELECT_B
-Task 2 — S2.1 Attempt Preparation + Exact Source Materialization  AUTHORIZED AT G0
+Task 2 — S2.1 Attempt Preparation + Exact Source Materialization  G1 CHANGES REQUIRED
 Task 3 — S2.2 Durable Launch / Observe / Stop                     NOT AUTHORIZED
 Task 4 — S2.3 Coordinator Reconciliation + S2.4 API Composition  NOT AUTHORIZED
 Task 5 — S2.5 Real Recovery / Fault-Injection Acceptance         NOT AUTHORIZED
@@ -314,6 +316,7 @@ class FrozenExecutionSpec:
     workdir_relative_path: str
     python_profile: str
     argv: tuple[str, ...]
+    output_dir_arg_indexes: tuple[int, ...]
     dataset_reference_type: str
     dataset_argument: str
     dataset_reference_hash: str
@@ -325,7 +328,9 @@ class FrozenExecutionSpec:
     timeout_seconds: int
 ```
 
-`FrozenExecutionSpec.argv` is fully resolved for parameter/seed/dataset semantics, except the literal token `"{output_dir}"` remains as the only host-dependent substitution for Task 3. No other unresolved template token is legal.
+`FrozenExecutionSpec.argv` is fully resolved for parameter/seed/dataset semantics, except the literal token `"{output_dir}"` remains as the only host-dependent substitution for Task 3. `output_dir_arg_indexes` contains the zero-based, strictly ascending, unique, in-bounds positions that originated from exact `"{output_dir}"` tokens in the original Proposal template. Parameter or dataset values equal to `"{output_dir}"` remain ordinary values and create no index. Multiple real output slots are allowed and all are retained. Task 3 substitutes only these recorded positions and must not scan rendered argv for string equality. No other unresolved template token is legal.
+
+The canonical `FrozenExecutionSpec` value includes `"output_dir_arg_indexes": list(spec.output_dir_arg_indexes)`. This remains the pre-G1-acceptance v1 representation; no v2 namespace or schema is introduced.
 
 `src/labpilot/execution/ports.py` defines dependency-inversion contracts; concrete adapters live in Coordinator:
 
@@ -476,6 +481,8 @@ LABPILOT_ATTEMPT_WORKSPACE_ROOT
 
 is required outside test mode, absolute/canonical as specified in §4.1, and has no guessed default. The PoC path `/var/lib/labpilot-s2-poc/*` is never a production default.
 
+`AttemptPreparationService` also requires an explicit numeric `execution_gid: int` with `type(execution_gid) is int` and `execution_gid >= 0`. It is preparation/deployment authority, not scientific execution semantics, and does not enter Trial identity, `FrozenExecutionSpec`, or `FrozenLaunchSpec`/H. Future production composition resolves the fixed `labpilot-train` GID; Task 2 does not infer it from the process, workspace, environment, account lookup, or Runner.
+
 Per Attempt:
 
 ```text
@@ -490,10 +497,15 @@ Per Attempt:
 After successful materialization:
 
 ```text
-source directories: readable/executable as needed by labpilot-train, not writable
-source regular files: read-only to labpilot-train, preserving approved executable bit
-runtime/output: writable by labpilot-train
+<workspace>                  group = execution_gid, mode 0750
+<workspace>/source dirs      group = execution_gid, mode 0550
+source regular non-exec      group = execution_gid, mode 0440
+source regular executable    group = execution_gid, mode 0550
+<workspace>/runtime          group = execution_gid, mode 0770
+<workspace>/runtime/output   group = execution_gid, mode 0770
 ```
+
+On supported POSIX/Linux hosts, preparation changes only group ownership of the Attempt workspace and its non-symlink descendants, never follows symlinks, and re-verifies exact GID/modes before `LAUNCH_READY`. It does not mutate the administrator-provisioned `attempt_workspace_root`. Failure to establish or verify ownership/modes fails closed. Windows remains a development/test platform and is not native Linux ownership evidence. Nothing is world-writable.
 
 Task 2 does not add logs/artifacts/checkpoints/metrics directories and does not implement retention or a janitor.
 
@@ -528,8 +540,9 @@ outside UoW:
     verify manifest and source identity
     render logical argv and enforce §4.3 budgets
     build FrozenExecutionSpec including full EnvironmentExpectation + hash
-    set source permissions
+    set exact Attempt workspace group ownership and permissions
     atomic rename staging -> final workspace
+    re-verify exact final GID/modes
 
 short UoW:
     reload Attempt + parent Trial/Batch authority
@@ -546,7 +559,7 @@ Resume rules:
 ```text
 PREPARING + no final workspace       -> delete exact staging if present; rematerialize
 PREPARING + staging only             -> staging is non-authoritative; delete/rebuild
-PREPARING + final workspace present  -> verify exact final manifest; finalize same Attempt; do not rematerialize
+PREPARING + final workspace present  -> verify exact final manifest plus GID/modes; finalize same Attempt; do not rematerialize
 process interruption                 -> remain PREPARING
 safety/deterministic preparation failure -> PREPARATION_FAILED + terminal_at
 ```
@@ -799,7 +812,7 @@ python_profile
 runtime_path
 train_entrypoint_relative_path
 workdir_relative_path
-argv with concrete output path
+argv with concrete output path substituted only at recorded output_dir_arg_indexes
 dataset_reference_type
 dataset_argument
 dataset_reference_hash
@@ -821,7 +834,7 @@ output_dir  = <workspace>/runtime/output
 ExecStart   = (runtime_path, entrypoint, *argv)
 ```
 
-Task 3 rechecks the §4.3 final ExecStart token/byte budget after `{output_dir}` substitution.
+Task 3 replaces only `FrozenExecutionSpec.output_dir_arg_indexes` with the concrete absolute `output_dir`; it must not scan argv for `"{output_dir}"` string equality. It then rechecks the §4.3 final ExecStart token/byte budget.
 
 The only V1 policy environment keys admitted are:
 
@@ -1432,7 +1445,7 @@ snapshot/content-store access needed for Task 2
 Attempt workspace mounted at the SAME canonical absolute path as host policy
 Runner AF_UNIX socket
 host-compatible labpilot-controller UID/GID
-labpilot-train supplementary GID for workspace preparation
+labpilot-train supplementary GID for workspace preparation; composition resolves that fixed group to numeric execution_gid and passes it explicitly to AttemptPreparationService
 ```
 
 Do not create a container-path ↔ host-path translation table.
@@ -1611,6 +1624,8 @@ docs/superpowers/evidence/2026-08-16-labpilot-v1-slice2-production-acceptance.md
 Test fault decorators may delay/fail communication or delegate and drop a response, but must never fabricate `ACTIVE_MATCH`, `TERMINAL_MATCH`, wrong-H evidence, journal records, Attempt state, environment observation, or terminal state. Privileged setup/teardown actions are external test-admin actions and are not exposed through production APIs.
 
 The tiny training fixture accepts deterministic argv for seed/value/dataset/output/duration/exit behavior, writes bounded test-oracle records under `runtime/output`, and may spawn a child for control-group cancellation testing. Those records are acceptance oracles only; production reconciliation never trusts them as physical authority.
+
+Native acceptance must exercise a real prepared Attempt as `labpilot-train` and prove it can traverse the workspace and source tree, read source, execute an approved executable source file, and create/write inside `runtime/output`, while it cannot modify frozen source.
 
 Each native scenario installs/starts the exact committed root-owned Runner using §5.6 or verifies the already-installed service matches the tested commit/policy identity **and the effective loaded hardening contract** before running. The preflight records and checks:
 
