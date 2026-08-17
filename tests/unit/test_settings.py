@@ -161,6 +161,8 @@ def test_settings_allow_missing_execution_configuration_for_api() -> None:
 
     assert settings.attempt_workspace_root is None
     assert settings.runner_socket_path is None
+    assert settings.controller_uid is None
+    assert settings.controller_gid is None
     assert settings.train_gid is None
     assert settings.runner_request_timeout_seconds == 10
     assert settings.unknown_attention_grace_seconds == 60
@@ -209,10 +211,14 @@ def test_settings_parse_coordinator_execution_configuration(tmp_path: Path) -> N
         runner_socket_path=Path("/run/labpilot-runner/control.sock"),
         runner_request_timeout_seconds=11,
         unknown_attention_grace_seconds=61,
+        controller_uid=1234,
+        controller_gid=2345,
         train_gid=1234,
     )
 
     assert settings.runner_socket_path == Path("/run/labpilot-runner/control.sock")
+    assert settings.controller_uid == 1234
+    assert settings.controller_gid == 2345
     assert settings.train_gid == 1234
 
 
@@ -224,6 +230,10 @@ def test_settings_parse_coordinator_execution_configuration(tmp_path: Path) -> N
         ("runner_request_timeout_seconds", 301),
         ("unknown_attention_grace_seconds", 0),
         ("unknown_attention_grace_seconds", 301),
+        ("controller_uid", 0),
+        ("controller_uid", -1),
+        ("controller_gid", 0),
+        ("controller_gid", -1),
         ("train_gid", 0),
     ],
 )

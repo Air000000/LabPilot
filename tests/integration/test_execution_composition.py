@@ -20,14 +20,34 @@ def _settings(tmp_path: Path, **execution: object) -> Settings:
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize(
+    "missing",
+    (
+        "attempt_workspace_root",
+        "runner_socket_path",
+        "controller_uid",
+        "controller_gid",
+        "train_gid",
+    ),
+)
 def test_coordinator_composition_fails_closed_without_execution_authority(
-    tmp_path: Path,
+    tmp_path: Path, missing: str
 ) -> None:
     from labpilot.coordinator.worker import build_coordinator
 
+    workspace = tmp_path / "attempts"
+    workspace.mkdir()
+    execution: dict[str, object] = {
+        "attempt_workspace_root": workspace,
+        "runner_socket_path": Path("/run/labpilot-runner/control.sock"),
+        "controller_uid": 1234,
+        "controller_gid": 2345,
+        "train_gid": 3456,
+    }
+    execution.pop(missing)
     with pytest.raises(RuntimeError, match="Coordinator execution configuration"):
         build_coordinator(
-            _settings(tmp_path),
+            _settings(tmp_path, **execution),
             Database("postgresql+asyncpg://user:pass@db:5432/labpilot"),
         )
 
@@ -45,6 +65,8 @@ def test_coordinator_composition_uses_exact_train_gid(tmp_path: Path) -> None:
             runner_socket_path=Path("/run/labpilot-runner/control.sock"),
             runner_request_timeout_seconds=12,
             unknown_attention_grace_seconds=62,
+            controller_uid=1234,
+            controller_gid=2345,
             train_gid=3456,
         ),
         Database("postgresql+asyncpg://user:pass@db:5432/labpilot"),
@@ -83,3 +105,14 @@ def test_compose_grants_execution_authority_only_to_coordinator() -> None:
         "LABPILOT_ATTEMPT_WORKSPACE_ROOT",
     ):
         assert f"${{{name}:?" in coordinator
+    assert (
+        "LABPILOT_CONTROLLER_UID: ${LABPILOT_CONTROLLER_UID:?" in coordinator
+    )
+    assert (
+        "LABPILOT_CONTROLLER_GID: ${LABPILOT_CONTROLLER_GID:?" in coordinator
+    )
+    assert (
+        'user: "${LABPILOT_CONTROLLER_UID:?LABPILOT_CONTROLLER_UID is required}:'
+        '${LABPILOT_CONTROLLER_GID:?LABPILOT_CONTROLLER_GID is required}"'
+        in coordinator
+    )

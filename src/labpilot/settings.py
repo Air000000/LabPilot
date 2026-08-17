@@ -39,6 +39,8 @@ class Settings(BaseSettings):
     runner_socket_path: Path | None = None
     runner_request_timeout_seconds: int = Field(default=10, ge=1, le=300)
     unknown_attention_grace_seconds: int = Field(default=60, ge=1, le=300)
+    controller_uid: int | None = Field(default=None, gt=0)
+    controller_gid: int | None = Field(default=None, gt=0)
     train_gid: int | None = Field(default=None, gt=0)
 
     @field_validator("database_url")

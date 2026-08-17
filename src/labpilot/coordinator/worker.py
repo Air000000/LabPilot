@@ -25,8 +25,16 @@ from labpilot.settings import Settings, get_settings
 def build_coordinator(settings: Settings, database: Database) -> CoordinatorService:
     workspace_root = settings.attempt_workspace_root
     socket_path = settings.runner_socket_path
+    controller_uid = settings.controller_uid
+    controller_gid = settings.controller_gid
     train_gid = settings.train_gid
-    if workspace_root is None or socket_path is None or train_gid is None:
+    if (
+        workspace_root is None
+        or socket_path is None
+        or controller_uid is None
+        or controller_gid is None
+        or train_gid is None
+    ):
         raise RuntimeError("Coordinator execution configuration is incomplete")
     repository_source = RepositorySnapshotSourceService(
         database.session,
