@@ -22,7 +22,7 @@
 
 **Native S2.0 evidence:** `docs/superpowers/evidence/2026-08-13-labpilot-v1-slice2-runner-supervision-poc.md`
 
-**Status:** r4.1 is **APPROVED AT G0**. Task 1 remains **COMPLETE / SELECT_B**. Task 2 is **ACCEPTED AT G1**. Task 3 implementation is **COMPLETE**, and Task 3 G2 is **CHANGES REQUIRED** with 0 Critical and 7 Important findings (`G2-1` through `G2-7`) open. Tasks 4–5 remain **NOT AUTHORIZED FOR IMPLEMENTATION**. This governance state does not imply Slice 2 acceptance. `DOCUMENT-STATUS.md` remains unchanged and may be updated only after full Slice 2 acceptance.
+**Status:** r4.1 is **APPROVED AT G0**. Task 1 remains **COMPLETE / SELECT_B**. Task 2 is **ACCEPTED AT G1**. Task 3 implementation is **COMPLETE**, and Task 3 G2 remains **CHANGES REQUIRED** with 0 Critical and 1 Important finding: `G2-1` through `G2-6` are closed by the finding-specific review, while `G2-7` remains open. Tasks 4–5 remain **NOT AUTHORIZED FOR IMPLEMENTATION**. This governance state does not imply Slice 2 acceptance. `DOCUMENT-STATUS.md` remains unchanged and may be updated only after full Slice 2 acceptance.
 
 **Historical governance note:** Candidate B was admitted and implemented before a separate focused pre-implementation amendment was committed. This plan records the post-S2.0 production contract and does not backdate or rewrite that history.
 
@@ -75,16 +75,16 @@ The final G0 re-review checks R4-D1 and direct consistency edits only. A second 
 
 ## 0.1 Task 3 G2 finding status
 
-Task 3 G2 is **CHANGES REQUIRED** with 0 Critical and 7 Important findings open:
+Task 3 G2 remains **CHANGES REQUIRED** with 0 Critical and 1 Important finding open:
 
 ```text
-G2-1  restore exact X -> X.service supervisor identity mapping
-G2-2  canonicalize INFO inspection without rewriting accepted G1 identity
-G2-3  implement the frozen ordinary-UNKNOWN grace state machine
-G2-4  run installer INFO readiness as labpilot-controller:labpilot-control
-G2-5  preserve historical journal _BOOT_ID provenance
-G2-6  explicitly activate the newly installed Runner tree/policy on update
-G2-7  contain runtime-probe execution failures as bounded evidence
+G2-1  CLOSED — restore exact X -> X.service supervisor identity mapping
+G2-2  CLOSED — canonicalize INFO inspection without rewriting accepted G1 identity
+G2-3  CLOSED — implement the frozen ordinary-UNKNOWN grace state machine
+G2-4  CLOSED — run installer INFO readiness as labpilot-controller:labpilot-control
+G2-5  CLOSED — preserve historical journal _BOOT_ID provenance
+G2-6  CLOSED — explicitly activate the newly installed Runner tree/policy on update
+G2-7  OPEN — a syntactically valid but policy-unadmitted INFO python_profile can raise ValueError before probe execution and escape the Runner connection boundary
 ```
 
 Task 4 and Task 5 remain **NOT AUTHORIZED**. Task 5 native root/systemd/persistent-journald acceptance has not been performed. `DOCUMENT-STATUS.md` remains unchanged.
@@ -96,7 +96,7 @@ Task 4 and Task 5 remain **NOT AUTHORIZED**. Task 5 native root/systemd/persiste
 ```text
 Task 1 — S2.0 Runner Supervision PoC + ADR                        COMPLETE / SELECT_B
 Task 2 — S2.1 Attempt Preparation + Exact Source Materialization  ACCEPTED AT G1
-Task 3 — S2.2 Durable Launch / Observe / Stop                     G2 CHANGES REQUIRED (implementation complete; G2-1..G2-7 open)
+Task 3 — S2.2 Durable Launch / Observe / Stop                     G2 CHANGES REQUIRED (implementation complete; G2-1..G2-6 closed; G2-7 open)
 Task 4 — S2.3 Coordinator Reconciliation + S2.4 API Composition  NOT AUTHORIZED
 Task 5 — S2.5 Real Recovery / Fault-Injection Acceptance         NOT AUTHORIZED
 ```
