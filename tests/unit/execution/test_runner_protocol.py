@@ -15,6 +15,7 @@ from labpilot.execution.runner_protocol import (
     RunnerOperation,
     RunnerStopRequest,
     decode_request,
+    decode_response,
     encode_request,
     recv_frame,
 )
@@ -165,3 +166,24 @@ def test_oversized_frame_is_rejected_before_payload_read() -> None:
     finally:
         left.close()
         right.close()
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {"kind": "created", "detail_code": "accepted", "unit": "forbidden"},
+        {"kind": "created"},
+    ],
+)
+def test_response_result_rejects_excess_or_missing_fields(
+    result: dict[str, object],
+) -> None:
+    payload = {
+        "version": PROTOCOL_VERSION,
+        "operation": "LAUNCH",
+        "outcome": "ok",
+        "result": result,
+    }
+
+    with pytest.raises(ProtocolError, match="result"):
+        decode_response(json.dumps(payload).encode())

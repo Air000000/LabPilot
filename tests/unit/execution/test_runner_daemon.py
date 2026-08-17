@@ -8,6 +8,7 @@ from labpilot.execution.runner_daemon import RunnerDaemon, bind_listener
 from labpilot.execution.runner_policy import parse_runner_policy
 from labpilot.execution.runner_protocol import (
     PROTOCOL_VERSION,
+    RunnerInfoRequest,
     RunnerLaunchRequest,
     RunnerObserveRequest,
     RunnerOperation,
@@ -63,6 +64,31 @@ def test_peer_credential_mismatch_causes_zero_systemd_calls() -> None:
 
     assert response["outcome"] == "peer_not_authorized"
     assert supervisor.calls == 0
+
+
+def test_info_returns_complete_nonsecret_policy_and_readiness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "labpilot.execution.runner_daemon._boot_id", lambda: "boot-1"
+    )
+    daemon = RunnerDaemon(
+        parse_runner_policy(_value(), controller_uid=1000, controller_gid=1001),
+        Supervisor(),  # type: ignore[arg-type]
+    )
+
+    response = daemon.handle_request(
+        RunnerInfoRequest(PROTOCOL_VERSION, RunnerOperation.INFO, None),
+        peer_uid=1000,
+        peer_gid=1001,
+    )
+
+    result = response["result"]
+    assert isinstance(result, dict)
+    assert result["allowed_local_dataset_roots"] == ["/datasets"]
+    assert result["max_runtime_seconds"] == 3600
+    assert result["boot_id"] == "boot-1"
+    assert result["readiness_reason"] == "ready"
 
 
 def test_launch_rechecks_current_root_policy_before_systemd() -> None:

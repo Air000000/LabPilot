@@ -48,7 +48,7 @@ def _loaded(*, active: str, description: str) -> str:
         "LoadState=loaded\n"
         f"ActiveState={active}\n"
         f"Description={description}\n"
-        "Result=success\nMainPID=42\nInvocationID=inv-1\nExecMainStatus=0\n"
+        "Result=success\nMainPID=42\nInvocationID=inv-1\nExecMainCode=exited\nExecMainStatus=0\n"
     )
 
 
@@ -206,3 +206,22 @@ def test_launch_uses_exact_fixed_systemd_profile() -> None:
         "--property=TimeoutStopSec=30s",
     ):
         assert exact in argv
+
+
+def test_terminal_signal_is_not_invented_as_exit_code() -> None:
+    expected = "a" * 64
+    loaded = _loaded(active="failed", description=f"labpilot:{expected}").replace(
+        "ExecMainCode=exited\nExecMainStatus=0",
+        "ExecMainCode=killed\nExecMainStatus=15",
+    )
+    supervisor = SystemdSupervisor(
+        Commands([(0, loaded)]),
+        execution_user="labpilot-train",
+        execution_group="labpilot-train",
+        stop_timeout_seconds=30,
+    )
+
+    observation = supervisor.observe("labpilot-v1-x", expected)
+
+    assert observation.exit_code is None
+    assert observation.termination_signal == 15

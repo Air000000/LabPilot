@@ -30,7 +30,16 @@ def _response_frame() -> bytes:
             "version": PROTOCOL_VERSION,
             "operation": "OBSERVE",
             "outcome": "ok",
-            "result": {"observation_kind": "not_found"},
+            "result": {
+                "kind": "not_found",
+                "observed_spec_hash": None,
+                "pid": None,
+                "invocation_id": None,
+                "boot_id": "boot-1",
+                "result": None,
+                "exit_code": None,
+                "termination_signal": None,
+            },
         },
         separators=(",", ":"),
         sort_keys=True,
@@ -77,13 +86,19 @@ def test_client_uses_one_af_unix_connection_without_retry(monkeypatch: pytest.Mo
     ).request(_request())
 
     assert _Socket.calls == 1
-    assert response["result"] == {"observation_kind": "not_found"}
+    assert response["result"]["kind"] == "not_found"  # type: ignore[index]
 
 
 def test_connect_failure_proves_zero_request_bytes_sent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class ConnectFailure(_Socket):
+        instance: "ConnectFailure | None" = None
+
+        def __init__(self, *args: object) -> None:
+            super().__init__(*args)
+            type(self).instance = self
+
         def connect(self, path: str) -> None:
             del path
             raise FileNotFoundError("socket absent")
@@ -95,6 +110,8 @@ def test_connect_failure_proves_zero_request_bytes_sent(
             "/run/labpilot-runner/control.sock", timeout_seconds=2.0
         ).request(_request())
     assert captured.value.request_bytes_sent == 0
+    assert ConnectFailure.instance is not None
+    assert ConnectFailure.instance.closed
 
 
 def test_partial_send_then_timeout_is_control_unknown(

@@ -172,6 +172,37 @@ def _validate_attempt_restart_reconciliation(payload: EventJsonObject) -> None:
             raise CanonicalizationError(f"attempt reconciliation {name} must be a string")
 
 
+def _validate_exact_attempt_strings(
+    payload: EventJsonObject, required: set[str]
+) -> None:
+    if set(payload) != required:
+        raise CanonicalizationError("attempt audit payload fields are invalid")
+    if any(type(payload[name]) is not str for name in required):
+        raise CanonicalizationError("attempt audit payload fields must be strings")
+
+
+def _validate_attempt_launch(payload: EventJsonObject) -> None:
+    _validate_exact_attempt_strings(payload, {"attempt_id", "X", "H"})
+
+
+def _validate_attempt_conflict(payload: EventJsonObject) -> None:
+    _validate_exact_attempt_strings(payload, {"attempt_id", "X", "H", "observed_H"})
+
+
+def _validate_attempt_terminal(payload: EventJsonObject) -> None:
+    required = {"attempt_id", "X", "H", "terminal_kind"}
+    allowed = required | {"exit_code", "termination_signal", "supervisor_result"}
+    if not required <= set(payload) or set(payload) - allowed:
+        raise CanonicalizationError("attempt terminal payload fields are invalid")
+    if any(type(payload[name]) is not str for name in required):
+        raise CanonicalizationError("attempt terminal identity fields must be strings")
+    for name in ("exit_code", "termination_signal"):
+        if name in payload and type(payload[name]) is not int:
+            raise CanonicalizationError(f"attempt terminal {name} must be an integer")
+    if "supervisor_result" in payload and type(payload["supervisor_result"]) is not str:
+        raise CanonicalizationError("attempt terminal supervisor_result must be a string")
+
+
 register_runtime_event_payload_schema(
     "foundation.probe.created",
     1,
@@ -181,4 +212,16 @@ register_runtime_event_payload_schema(
     "attempt.reconciled_after_restart",
     1,
     _validate_attempt_restart_reconciliation,
+)
+register_runtime_event_payload_schema(
+    "attempt.launch_intent_committed", 1, _validate_attempt_launch
+)
+register_runtime_event_payload_schema(
+    "attempt.physical_started_observed", 1, _validate_attempt_launch
+)
+register_runtime_event_payload_schema(
+    "attempt.identity_conflict_observed", 1, _validate_attempt_conflict
+)
+register_runtime_event_payload_schema(
+    "attempt.terminal_observed", 1, _validate_attempt_terminal
 )

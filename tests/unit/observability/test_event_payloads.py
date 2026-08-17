@@ -63,3 +63,40 @@ def test_decimal_is_rejected_at_event_json_boundary() -> None:
             event_schema_version=1,
             payload={"aggregate_id": "probe-1", "value": Decimal("1.2")},
         )
+
+
+@pytest.mark.parametrize(
+    ("event_type", "payload"),
+    [
+        (
+            "attempt.launch_intent_committed",
+            {"attempt_id": "a", "X": "x", "H": "h"},
+        ),
+        (
+            "attempt.physical_started_observed",
+            {"attempt_id": "a", "X": "x", "H": "h"},
+        ),
+        (
+            "attempt.identity_conflict_observed",
+            {"attempt_id": "a", "X": "x", "H": "h", "observed_H": "other"},
+        ),
+        (
+            "attempt.terminal_observed",
+            {
+                "attempt_id": "a",
+                "X": "x",
+                "H": "h",
+                "terminal_kind": "process_exited",
+                "exit_code": 0,
+            },
+        ),
+    ],
+)
+def test_attempt_audit_payload_schemas_are_registered(
+    event_type: str, payload: dict[str, object]
+) -> None:
+    assert prepare_runtime_event_payload(
+        event_type=event_type,
+        event_schema_version=1,
+        payload=payload,  # type: ignore[arg-type]
+    ).event_type == event_type

@@ -152,12 +152,14 @@ def decode_response(payload: bytes) -> dict[str, object]:
     if _require_str(value, "version") != PROTOCOL_VERSION:
         raise ProtocolError("protocol_version_unsupported")
     try:
-        RunnerOperation(_require_str(value, "operation"))
+        operation = RunnerOperation(_require_str(value, "operation"))
     except ValueError as error:
         raise ProtocolError("operation_unsupported") from error
-    _require_str(value, "outcome")
-    if type(value["result"]) is not dict:
+    outcome = _require_str(value, "outcome")
+    result = value["result"]
+    if type(result) is not dict:
         raise ProtocolError("invalid_result")
+    _validate_response_result(operation, outcome, result)
     return value
 
 
@@ -229,6 +231,128 @@ def _validate_inspection(inspection: InfoInspectionRequest) -> None:
         or names != tuple(sorted(set(names)))
     ):
         raise ProtocolError("invalid_inspection")
+
+
+def _validate_response_result(
+    operation: RunnerOperation, outcome: str, result: dict[str, object]
+) -> None:
+    if outcome == "peer_not_authorized":
+        if result:
+            raise ProtocolError("invalid_result")
+        return
+    if outcome == "definite_non_acceptance":
+        _require_exact_result(result, {"detail_code"})
+        _require_str(result, "detail_code")
+        return
+    if outcome != "ok":
+        raise ProtocolError("invalid_outcome")
+    if operation in {RunnerOperation.LAUNCH, RunnerOperation.STOP}:
+        _require_exact_result(result, {"kind", "detail_code"})
+        _require_str(result, "kind")
+        _require_str(result, "detail_code")
+        return
+    if operation is RunnerOperation.OBSERVE:
+        _require_exact_result(
+            result,
+            {
+                "kind",
+                "observed_spec_hash",
+                "pid",
+                "invocation_id",
+                "boot_id",
+                "result",
+                "exit_code",
+                "termination_signal",
+            },
+        )
+        _require_str(result, "kind")
+        for name in ("observed_spec_hash", "invocation_id", "boot_id", "result"):
+            _optional_wire(result[name], str)
+        for name in ("pid", "exit_code", "termination_signal"):
+            _optional_wire(result[name], int)
+        return
+    base = {
+        "runner_version",
+        "policy_identity",
+        "workspace_root",
+        "execution_user",
+        "execution_group",
+        "launch_profile_version",
+        "allowed_local_dataset_roots",
+        "max_runtime_seconds",
+        "boot_id",
+        "readiness_reason",
+        "runtime_profiles",
+    }
+    if set(result) not in {frozenset(base), frozenset(base | {"observed_environment"})}:
+        raise ProtocolError("invalid_result_fields")
+    for name in base - {
+        "allowed_local_dataset_roots",
+        "max_runtime_seconds",
+        "runtime_profiles",
+    }:
+        _require_str(result, name)
+    _require_str_list(result["allowed_local_dataset_roots"], "invalid_result")
+    if type(result["max_runtime_seconds"]) is not int:
+        raise ProtocolError("invalid_result")
+    profiles = result["runtime_profiles"]
+    if type(profiles) is not list:
+        raise ProtocolError("invalid_result")
+    for profile in profiles:
+        if type(profile) is not dict:
+            raise ProtocolError("invalid_result")
+        _require_exact_result(profile, {"python_profile", "runtime_path", "environment"})
+        _require_str(profile, "python_profile")
+        _require_str(profile, "runtime_path")
+        environment = profile["environment"]
+        if type(environment) is not dict or any(
+            type(key) is not str or type(item) is not str
+            for key, item in environment.items()
+        ):
+            raise ProtocolError("invalid_result")
+    if "observed_environment" in result:
+        _validate_probe_result(result["observed_environment"])
+
+
+def _validate_probe_result(value: object) -> None:
+    if type(value) is not dict:
+        raise ProtocolError("invalid_result")
+    if set(value) == {"probe_issue_codes"}:
+        _require_str_list(value["probe_issue_codes"], "invalid_result")
+        return
+    _require_exact_result(
+        value,
+        {
+            "python_version",
+            "framework_versions",
+            "cuda_runtime_version",
+            "cuda_device_count",
+            "probe_issue_codes",
+        },
+    )
+    _require_str(value, "python_version")
+    _require_str_list(value["probe_issue_codes"], "invalid_result")
+    _optional_wire(value["cuda_runtime_version"], int)
+    _optional_wire(value["cuda_device_count"], int)
+    versions = value["framework_versions"]
+    if type(versions) is not list:
+        raise ProtocolError("invalid_result")
+    for version in versions:
+        if type(version) is not dict:
+            raise ProtocolError("invalid_result")
+        _require_exact_result(version, {"distribution_name", "installed_version"})
+        _require_str(version, "distribution_name")
+        _optional_wire(version["installed_version"], str)
+
+
+def _require_exact_result(value: dict[str, object], expected: set[str]) -> None:
+    if set(value) != expected:
+        raise ProtocolError("invalid_result_fields")
+
+
+def _optional_wire(value: object, expected_type: type[object]) -> None:
+    if value is not None and type(value) is not expected_type:
+        raise ProtocolError("invalid_result")
 
 
 def _spec_from_wire(value: object) -> FrozenLaunchSpec:

@@ -50,6 +50,12 @@ class RunnerDaemon:
                 "execution_user": self._policy.execution_user,
                 "execution_group": self._policy.execution_group,
                 "launch_profile_version": self._policy.launch_profile_version,
+                "allowed_local_dataset_roots": list(
+                    self._policy.allowed_local_dataset_roots
+                ),
+                "max_runtime_seconds": self._policy.max_runtime_seconds,
+                "boot_id": _boot_id(),
+                "readiness_reason": "ready",
                 "runtime_profiles": [
                     {
                         "python_profile": profile.name,
@@ -66,7 +72,9 @@ class RunnerDaemon:
             observation = self._supervisor.observe(
                 request.execution_identity, request.execution_spec_hash
             )
-            return _response(request, "ok", _object_dict(observation))
+            result = _object_dict(observation)
+            result["boot_id"] = _boot_id()
+            return _response(request, "ok", result)
         if isinstance(request, RunnerLaunchRequest):
             policy_error = _validate_launch_spec(self._policy, request.spec)
             if policy_error is not None:
@@ -185,6 +193,13 @@ def _under_root(candidate: Path, root: Path) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _boot_id() -> str:
+    value = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
+    if not value or len(value) > 200:
+        raise RuntimeError("boot_id_unavailable")
+    return value
 
 
 def main() -> NoReturn:

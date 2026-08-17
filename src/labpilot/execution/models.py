@@ -170,14 +170,14 @@ class AttemptRow(Base):
         String(64), nullable=True
     )
     frozen_launch_spec_json: Mapped[dict[str, object] | None] = mapped_column(
-        JSONB, nullable=True
+        JSONB(none_as_null=True), nullable=True
     )
     execution_spec_hash: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
     launch_intent_committed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
     observed_environment_json: Mapped[dict[str, object] | None] = mapped_column(
-        JSONB, nullable=True
+        JSONB(none_as_null=True), nullable=True
     )
     observed_environment_recorded_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True

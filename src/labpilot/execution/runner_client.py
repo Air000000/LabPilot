@@ -25,14 +25,18 @@ class RunnerClient:
         self._timeout_seconds = timeout_seconds
 
     def request(self, request: RunnerRequest) -> dict[str, object]:
+        connection: socket.socket | None = None
         try:
             frame = pack_frame(encode_request(request))
             connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             connection.settimeout(self._timeout_seconds)
             connection.connect(self._socket_path)
         except Exception as error:
+            if connection is not None:
+                connection.close()
             raise RunnerPreSendError("runner request could not be sent") from error
 
+        assert connection is not None
         sent = 0
         try:
             while sent < len(frame):

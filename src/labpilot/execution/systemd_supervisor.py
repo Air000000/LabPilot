@@ -36,6 +36,7 @@ class PhysicalObservation:
     invocation_id: str | None = None
     result: str | None = None
     exit_code: int | None = None
+    termination_signal: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +73,7 @@ class SystemdSupervisor:
                 "--property=Result",
                 "--property=MainPID",
                 "--property=InvocationID",
+                "--property=ExecMainCode",
                 "--property=ExecMainStatus",
             ),
             10.0,
@@ -101,12 +103,15 @@ class SystemdSupervisor:
                 result=properties.get("Result") or None,
             )
         if properties.get("ActiveState") in {"inactive", "failed"}:
+            status = _integer(properties.get("ExecMainStatus"))
+            code = properties.get("ExecMainCode")
             return PhysicalObservation(
                 PhysicalObservationKind.TERMINAL_MATCH,
                 observed_spec_hash=observed_hash,
                 invocation_id=properties.get("InvocationID") or None,
                 result=properties.get("Result") or None,
-                exit_code=_integer(properties.get("ExecMainStatus")),
+                exit_code=status if code == "exited" else None,
+                termination_signal=status if code in {"killed", "dumped"} else None,
             )
         return PhysicalObservation(PhysicalObservationKind.UNKNOWN)
 
