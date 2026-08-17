@@ -39,6 +39,7 @@ markers = [
   "integration: requires PostgreSQL",
   "architecture: verifies module dependency rules",
   "destructive: creates and drops an isolated PostgreSQL database",
+  "native: requires the dedicated native Slice 2 acceptance host",
 ]
 
 [tool.ruff]
