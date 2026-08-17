@@ -22,11 +22,11 @@
 
 **Native S2.0 evidence:** `docs/superpowers/evidence/2026-08-13-labpilot-v1-slice2-runner-supervision-poc.md`
 
-**Status:** r4.1 is **APPROVED AT G0**. Task 1 remains **COMPLETE / SELECT_B**. Task 2 is in **G1 REMEDIATION / CHANGES REQUIRED** after a review with 0 Critical and 2 Important findings. Tasks 3–5 remain **NOT AUTHORIZED FOR IMPLEMENTATION**. This governance-only approval does not imply Slice 2 acceptance. `DOCUMENT-STATUS.md` remains unchanged and may be updated only after full Slice 2 acceptance.
+**Status:** r4.1 is **APPROVED AT G0**. Task 1 remains **COMPLETE / SELECT_B**. Task 2 is **ACCEPTED AT G1**, and Task 3 is **AUTHORIZED**. Tasks 4–5 remain **NOT AUTHORIZED FOR IMPLEMENTATION**. This governance approval does not imply Slice 2 acceptance. `DOCUMENT-STATUS.md` remains unchanged and may be updated only after full Slice 2 acceptance.
 
 **Historical governance note:** Candidate B was admitted and implemented before a separate focused pre-implementation amendment was committed. This plan records the post-S2.0 production contract and does not backdate or rewrite that history.
 
-**G1 remediation scope:** G1-1 requires `FrozenExecutionSpec` to preserve exact `{output_dir}` argument provenance. G1-2 requires Attempt preparation to establish supported-Linux group ownership so `labpilot-train` can traverse/read frozen source and write `runtime/output`. This amendment closes only those two findings and does not authorize Task 3.
+**G1 finding-specific review:** **APPROVE** with 0 Critical and 0 Important findings. G1-1 (`FrozenExecutionSpec` exact `{output_dir}` argument provenance) and G1-2 (supported-Linux Attempt workspace execution-group ownership) are **CLOSED**. CI evidence is run **#60** at exact HEAD `e5c13fbbc846f0a1c173817a7231e39e071e094a`, completed successfully. This was a finding-specific review of `f908cc0..e5c13fb`, not a new broad Task 2 review.
 
 ---
 
@@ -79,8 +79,8 @@ The final G0 re-review checks R4-D1 and direct consistency edits only. A second 
 
 ```text
 Task 1 — S2.0 Runner Supervision PoC + ADR                        COMPLETE / SELECT_B
-Task 2 — S2.1 Attempt Preparation + Exact Source Materialization  G1 CHANGES REQUIRED
-Task 3 — S2.2 Durable Launch / Observe / Stop                     NOT AUTHORIZED
+Task 2 — S2.1 Attempt Preparation + Exact Source Materialization  ACCEPTED AT G1
+Task 3 — S2.2 Durable Launch / Observe / Stop                     AUTHORIZED
 Task 4 — S2.3 Coordinator Reconciliation + S2.4 API Composition  NOT AUTHORIZED
 Task 5 — S2.5 Real Recovery / Fault-Injection Acceptance         NOT AUTHORIZED
 ```
@@ -330,7 +330,7 @@ class FrozenExecutionSpec:
 
 `FrozenExecutionSpec.argv` is fully resolved for parameter/seed/dataset semantics, except the literal token `"{output_dir}"` remains as the only host-dependent substitution for Task 3. `output_dir_arg_indexes` contains the zero-based, strictly ascending, unique, in-bounds positions that originated from exact `"{output_dir}"` tokens in the original Proposal template. Parameter or dataset values equal to `"{output_dir}"` remain ordinary values and create no index. Multiple real output slots are allowed and all are retained. Task 3 substitutes only these recorded positions and must not scan rendered argv for string equality. No other unresolved template token is legal.
 
-The canonical `FrozenExecutionSpec` value includes `"output_dir_arg_indexes": list(spec.output_dir_arg_indexes)`. This remains the pre-G1-acceptance v1 representation; no v2 namespace or schema is introduced.
+The canonical `FrozenExecutionSpec` value includes `"output_dir_arg_indexes": list(spec.output_dir_arg_indexes)`. This is the G1-accepted v1 representation; no v2 namespace or schema is introduced.
 
 `src/labpilot/execution/ports.py` defines dependency-inversion contracts; concrete adapters live in Coordinator:
 
@@ -697,7 +697,7 @@ uv run mypy src scripts
 git diff --check
 ```
 
-Acceptance requires zero Runner/systemd calls in all Task 2 tests. Stop for G1 review before Task 3.
+Acceptance requires zero Runner/systemd calls in all Task 2 tests. G1 is satisfied by the finding-specific approval recorded above; Task 3 starts in a new implementation window from the governance closure commit containing this record.
 
 ---
 
