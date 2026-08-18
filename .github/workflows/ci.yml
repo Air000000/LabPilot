@@ -37,3 +37,20 @@ jobs:
           python-version: "3.12"
       - name: Run local-equivalent CI gate
         run: ./scripts/check_ci.sh
+      - name: Verify production image runtime dependencies
+        env:
+          LABPILOT_CI_IMAGE: labpilot-ci:${{ github.sha }}
+        run: |
+          docker build --tag "$LABPILOT_CI_IMAGE" .
+          docker run --rm \
+            --entrypoint /bin/sh \
+            "$LABPILOT_CI_IMAGE" \
+            -ceu '
+              test -x /usr/bin/git
+              test "$(command -v git)" = /usr/bin/git
+              /usr/bin/git --version
+            '
+          docker run --rm \
+            --entrypoint /app/.venv/bin/python \
+            "$LABPILOT_CI_IMAGE" \
+            -c 'from pathlib import Path; from labpilot.context.git_adapter import GitAdapter; GitAdapter(git_executable=Path("/usr/bin/git"), timeout_seconds=1)'
