@@ -1874,6 +1874,68 @@ hostname must equal `expected_hostname`, and WSL is rejected even if systemd is
 available. Task 5 remains AUTHORIZED / IN PROGRESS; G4 has not occurred and
 `DOCUMENT-STATUS.md` remains unchanged.
 
+### 7.0.2 Task 5 scenario verdict evidence contract
+
+Every new F01-F22 scenario evidence directory has exactly one authoritative
+acceptance status field in `verdict.json`: `verdict`. Its allowed values and
+semantics are:
+
+```text
+PASS     every required scenario obligation was positively established from
+         real evidence and no relevant critical-class violation was observed
+FAIL     determinate evidence established that the system under test violated
+         a required invariant
+STOPPED  the harness cannot produce a valid determinate scenario verdict due
+         to an environment, authority, infrastructure, evidence, or mandated-
+         stop condition
+```
+
+`STOPPED` is never `PASS`. `UNKNOWN` and `IDENTITY_CONFLICT` are domain states
+or physical observations, not scenario verdicts. F14 may therefore end with
+domain state `UNKNOWN` and verdict `PASS` when every required UNKNOWN invariant
+holds. F15 may similarly end with domain state `IDENTITY_CONFLICT` and verdict
+`PASS` when every conflict invariant holds.
+
+The exact core schema is:
+
+```json
+{
+  "schema_version": 1,
+  "scenario": "F01",
+  "tested_sha": "<40 lowercase hex>",
+  "verdict": "PASS",
+  "reason_code": "obligations_satisfied",
+  "sealed": true,
+  "administrative_cleanup_is_domain_evidence": false
+}
+```
+
+The requirements are exact:
+
+- `schema_version` is integer `1`; a boolean is invalid;
+- `scenario` is exactly `F01` through `F22`;
+- `tested_sha` is exactly 40 lowercase hexadecimal characters;
+- `verdict` is exactly `PASS`, `FAIL`, or `STOPPED`;
+- `reason_code` is non-empty lowercase ASCII snake case and at most 80 ASCII
+  bytes;
+- `sealed=true` and `administrative_cleanup_is_domain_evidence=false` are
+  added by `EvidenceWriter` and are not caller-controlled; and
+- top-level `outcome`, `passing_verdict`, `status`, `success`, and `passed`
+  aliases are forbidden. Scenario-specific domain facts belong in the other
+  authorized evidence files, not in competing verdict fields.
+
+No second authoritative boolean is introduced. Canonical bounded JSON bytes
+are mode `0600`, data-fsynced, and published atomically without replacing an
+existing `verdict.json`. Sealing is filesystem write-once for a scenario
+evidence directory: neither the same writer nor a new process/new
+`EvidenceWriter` may create, replace, or reseal the target through the harness
+API, and generic `write_json("verdict.json", ...)` cannot bypass sealing. The
+returned digest is SHA-256 of the exact published bytes. Publication must fail
+closed when the target already exists and must not follow or replace a symlink.
+
+The authorized evidence filename set is unchanged. Historical evidence is
+immutable and is not migrated to this schema.
+
 ## 7.1 Test-only files
 
 Create:
