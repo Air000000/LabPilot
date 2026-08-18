@@ -1069,6 +1069,44 @@ The amended deployment contract is:
 This follow-up changes no Task 5, G4, or Slice 2 acceptance state and leaves
 `DOCUMENT-STATUS.md` unchanged.
 
+### 5.6.3 Task 5 production-image Git dependency follow-up
+
+Task 5 native acceptance at `TESTED_SHA`
+`fe81c7839651aa773274bdef397d1c24adc091b8` exposed a production container
+dependency-closure defect. The committed API composition in
+`src/labpilot/main.py` and Coordinator composition in
+`src/labpilot/coordinator/worker.py` both construct `GitAdapter` with the
+deterministic absolute executable authority `/usr/bin/git`. `GitAdapter`
+requires that path to be absolute, a file, and executable, but the production
+Dockerfile did not provide it. The resulting API and Coordinator containers
+therefore failed before readiness with `RepositoryGitExecutableInvalid`.
+
+The production-image contract is narrowly amended:
+
+1. the production image contains executable `/usr/bin/git`;
+2. the Dockerfile installs only the Debian `git` package needed for this
+   contract, using `apt-get update`, `apt-get install -y
+   --no-install-recommends`, and `/var/lib/apt/lists/*` cleanup in one layer;
+3. `FROM python:3.12-slim`, the existing uv version and sync semantics, and the
+   existing `CMD` remain unchanged;
+4. no source-level Git executable authority changes: both composition paths
+   continue to use exact `/usr/bin/git`;
+5. no PATH lookup, configurable executable, Compose host bind, host Git
+   injection, or runtime package installation workaround is permitted;
+6. ordinary CI gains a real production-image gate that builds the committed
+   Dockerfile, executes `/usr/bin/git --version`, and constructs the real
+   `GitAdapter` against `/usr/bin/git` inside the built container;
+7. native N4 independently repeats the executable and `GitAdapter` proofs on
+   images built from the exact tested commit before runtime acceptance;
+8. Task 5 build-only proxy authority remains test-admin state and must not be
+   persisted in production image configuration or history;
+9. because this is a repository change, the production Runner is reinstalled
+   from the new exact `TESTED_SHA` before native acceptance continues;
+10. historical failing evidence at `fe81c7839651aa773274bdef397d1c24adc091b8`
+    remains immutable and retains its failing verdict;
+11. Task 5 remains **AUTHORIZED / IN PROGRESS** and G4 has not occurred; and
+12. `DOCUMENT-STATUS.md` remains unchanged.
+
 ## 5.7 First-dispatch authority
 
 `dispatch_attempt(attempt_id)`:
