@@ -129,7 +129,7 @@ def test_effective_runner_service_contract_is_exact() -> None:
         "RestrictAddressFamilies": "AF_UNIX",
         "ExecStart": (
             "{ path=/opt/labpilot-runner/app/.venv/bin/python ; "
-            "argv[]=/opt/labpilot-runner/app/.venv/bin/python -E -s "
+            "argv[]=/opt/labpilot-runner/app/.venv/bin/python -E -s -B "
             "-m labpilot.execution.runner_daemon "
             "--policy /etc/labpilot/runner-policy.json ; ignore_errors=no ; }"
         ),

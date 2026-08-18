@@ -27,7 +27,7 @@ verify_effective_service() {
   [[ "$(systemd_value NoNewPrivileges)" == yes ]] || fail "loaded NoNewPrivileges mismatch"
   [[ "$(systemd_value RestrictAddressFamilies)" == AF_UNIX ]] || fail "loaded address family mismatch"
   exec_start=$(systemd_value ExecStart)
-  [[ "$exec_start" == *"/opt/labpilot-runner/app/.venv/bin/python -E -s -m labpilot.execution.runner_daemon --policy /etc/labpilot/runner-policy.json"* ]] || fail "loaded ExecStart mismatch"
+  [[ "$exec_start" == *"/opt/labpilot-runner/app/.venv/bin/python -E -s -B -m labpilot.execution.runner_daemon --policy /etc/labpilot/runner-policy.json"* ]] || fail "loaded ExecStart mismatch"
 }
 
 verify_runtime_boundary() {
@@ -35,7 +35,7 @@ verify_runtime_boundary() {
   [[ "$(stat -c '%U:%G %a' "$runtime_dir")" == "root:labpilot-control 750" ]] || fail "runtime directory metadata mismatch"
   [[ "$(stat -c '%U:%G %a' "$socket_path")" == "root:labpilot-control 660" ]] || fail "socket metadata mismatch"
   runuser --user labpilot-controller --group labpilot-control -- \
-    "$app_root/.venv/bin/python" -E -s -c '
+    "$app_root/.venv/bin/python" -E -s -B -c '
 from labpilot.execution.runner_client import RunnerClient
 from labpilot.execution.runner_protocol import PROTOCOL_VERSION, RunnerInfoRequest, RunnerOperation
 response = RunnerClient("/run/labpilot-runner/control.sock").request(
@@ -45,12 +45,51 @@ assert response["outcome"] == "ok"
 '
 }
 
+verify_final_import() {
+  "$app_root/.venv/bin/python" -E -s -B - "$app_root" <<'PY'
+import sys
+import sysconfig
+from pathlib import Path
+
+import labpilot
+
+app_root = Path(sys.argv[1]).resolve(strict=True)
+venv_root = (app_root / ".venv").resolve(strict=True)
+site_packages = Path(sysconfig.get_path("purelib")).resolve(strict=True)
+module_file = getattr(labpilot, "__file__", None)
+if not module_file:
+    raise SystemExit("labpilot must resolve from final installed venv")
+resolved_module = Path(module_file).resolve(strict=True)
+if not site_packages.is_relative_to(venv_root) or not resolved_module.is_relative_to(
+    site_packages
+):
+    raise SystemExit("labpilot must resolve from final installed venv")
+if any(part.startswith(".stage.") for part in resolved_module.parts):
+    raise SystemExit("labpilot must not resolve from staging")
+PY
+}
+
+verify_install_tree() {
+  find -P "$app_root" -printf '%U %G %m %y %p\0' |
+    while IFS=' ' read -r -d '' uid gid mode kind path; do
+      if [[ "$uid" != 0 || "$gid" != 0 ]]; then
+        fail "installed application tree ownership mismatch: $path"
+        exit 1
+      fi
+      if [[ "$kind" != l ]] && (( (8#$mode & 8#022) != 0 )); then
+        fail "installed application tree writable node: $path"
+        exit 1
+      fi
+    done
+}
+
 activate_and_verify() {
   systemctl daemon-reload
   systemctl enable "$service_name"
   systemctl restart "$service_name"
   verify_effective_service
   verify_runtime_boundary
+  verify_install_tree
 }
 
 main() {
@@ -70,13 +109,14 @@ main() {
   git -C "$repo_root" archive "$git_sha" | tar -x -C "$staging"
   chown -R root:root "$staging"
   chmod -R go-w "$staging"
-  (cd "$staging" && uv sync --locked --no-dev)
+  (cd "$staging" && uv sync --locked --no-dev --no-editable)
 
   rm -rf -- "$app_root"
   mv "$staging" "$app_root"
   trap - EXIT
   chown -R root:root "$app_root"
   chmod -R go-w "$app_root"
+  verify_final_import
 
   install -d -o root -g root -m 0755 /etc/labpilot
   install -o root -g root -m 0600 "$policy_source" "$policy_target"

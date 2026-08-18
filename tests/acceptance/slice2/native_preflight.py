@@ -47,6 +47,7 @@ _EXPECTED_EXEC_START = (
     "/opt/labpilot-runner/app/.venv/bin/python",
     "-E",
     "-s",
+    "-B",
     "-m",
     "labpilot.execution.runner_daemon",
     "--policy",

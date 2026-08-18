@@ -1,6 +1,7 @@
 import configparser
 import os
 import subprocess
+import venv
 from pathlib import Path
 
 ROOT = Path(__file__).parents[3]
@@ -25,7 +26,7 @@ def test_service_freezes_candidate_b_hardening() -> None:
         "runtimedirectorymode": "0750",
         "runtimedirectorypreserve": "restart",
         "execstart": (
-            "/opt/labpilot-runner/app/.venv/bin/python -E -s -m "
+            "/opt/labpilot-runner/app/.venv/bin/python -E -s -B -m "
             "labpilot.execution.runner_daemon --policy /etc/labpilot/runner-policy.json"
         ),
         "restart": "on-failure",
@@ -81,7 +82,7 @@ case "$4" in
   NoNewPrivileges) echo yes ;;
   RestrictAddressFamilies) echo AF_UNIX ;;
   ExecStart) printf '%s%s\n' \
-    '/opt/labpilot-runner/app/.venv/bin/python -E -s -m ' \
+    '/opt/labpilot-runner/app/.venv/bin/python -E -s -B -m ' \
     'labpilot.execution.runner_daemon --policy /etc/labpilot/runner-policy.json' ;;
 esac
 """
@@ -126,7 +127,7 @@ verify_runtime_boundary
     )
 
     assert result.returncode == 0, result.stderr
-    assert log.read_text().splitlines()[:9] == [
+    assert log.read_text().splitlines()[:10] == [
         "--user",
         "labpilot-controller",
         "--group",
@@ -135,8 +136,120 @@ verify_runtime_boundary
         str(python),
         "-E",
         "-s",
+        "-B",
         "-c",
     ]
+
+
+def test_installer_uses_non_editable_sync_and_checks_final_import_before_activation(
+    tmp_path: Path,
+) -> None:
+    events = tmp_path / "events.log"
+    policy = tmp_path / "policy.json"
+    policy.write_text("{}")
+    sha = "a" * 40
+    command = f"""
+source '{INSTALLER}'
+test_root='{tmp_path}'
+app_root="$test_root/app"
+policy_target="$test_root/runner-policy.json"
+service_target="$test_root/labpilot-runner.service"
+id() {{ echo 0; }}
+git() {{
+  if [[ "$*" == 'rev-parse --show-toplevel' ]]; then
+    echo "$test_root/repository"
+  elif [[ "$*" == *'rev-parse'* ]]; then
+    echo '{sha}'
+  fi
+}}
+install() {{ :; }}
+tar() {{ :; }}
+chown() {{ :; }}
+chmod() {{ :; }}
+mktemp() {{ command mktemp -d "$test_root/.stage.XXXXXX"; }}
+uv() {{
+  printf 'uv:%s\n' "$*" >> '{events}'
+  mkdir -p .venv/bin
+  printf '#!/bin/sh\nprintf "python:%%s\\n" "$*" >> "%s"\n' '{events}' > .venv/bin/python
+  command chmod 755 .venv/bin/python
+}}
+mv() {{ printf 'move\n' >> '{events}'; command mv "$@"; }}
+activate_and_verify() {{ printf 'activate\n' >> '{events}'; }}
+main '{sha}' '{policy}'
+"""
+
+    result = subprocess.run(
+        ["bash", "-c", command], check=False, capture_output=True, text=True
+    )
+
+    assert result.returncode == 0, result.stderr
+    lines = events.read_text().splitlines()
+    assert lines[0] == "uv:sync --locked --no-dev --no-editable"
+    assert lines[1] == "move"
+    assert lines[2] == f"python:-E -s -B - {tmp_path}/app"
+    assert lines[3] == "activate"
+
+
+def test_final_import_smoke_uses_only_the_final_venv_site_packages(tmp_path: Path) -> None:
+    app_root = tmp_path / "app"
+    venv.create(app_root / ".venv", with_pip=False)
+    site_packages = next((app_root / ".venv/lib").glob("python*/site-packages"))
+    package = site_packages / "labpilot"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    command = f"source '{INSTALLER}'; app_root='{app_root}'; verify_final_import"
+
+    result = subprocess.run(
+        ["bash", "-c", command], check=False, capture_output=True, text=True
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not list(package.glob("__pycache__"))
+
+
+def test_final_import_smoke_rejects_stale_staging_resolution(tmp_path: Path) -> None:
+    app_root = tmp_path / "app"
+    venv.create(app_root / ".venv", with_pip=False)
+    site_packages = next((app_root / ".venv/lib").glob("python*/site-packages"))
+    stale_source = tmp_path / ".stage.dead/src"
+    package = stale_source / "labpilot"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("")
+    (site_packages / "_editable_impl_labpilot.pth").write_text(f"{stale_source}\n")
+    command = f"source '{INSTALLER}'; app_root='{app_root}'; verify_final_import"
+
+    result = subprocess.run(
+        ["bash", "-c", command], check=False, capture_output=True, text=True
+    )
+
+    assert result.returncode != 0
+    assert "final installed venv" in result.stderr
+
+
+def test_install_tree_verifier_checks_ownership_writes_and_symlink_mode(
+    tmp_path: Path,
+) -> None:
+    scenarios = {
+        "valid": ("0 0 755 d", "0 0 777 l", 0),
+        "wrong-user": ("1000 0 755 d", "0 0 777 l", 1),
+        "wrong-group": ("0 983 755 d", "0 0 777 l", 1),
+        "group-write": ("0 0 775 d", "0 0 777 l", 1),
+        "symlink-wrong-group": ("0 0 755 d", "0 983 777 l", 1),
+    }
+    for name, (root_stat, link_stat, expected_status) in scenarios.items():
+        command = f"""
+source '{INSTALLER}'
+app_root='{tmp_path}/app'
+find() {{
+  [[ "$1" == '-P' ]] || return 9
+  printf '%s %s\\0%s %s\\0' '{root_stat}' "$app_root" '{link_stat}' "$app_root/link"
+}}
+verify_install_tree
+"""
+        result = subprocess.run(
+            ["bash", "-c", command], check=False, capture_output=True, text=True
+        )
+        assert result.returncode == expected_status, f"{name}: {result.stderr}"
 
 
 def test_activation_restarts_before_effective_and_readiness_verification(
@@ -148,6 +261,7 @@ source '{INSTALLER}'
 systemctl() {{ printf 'systemctl:%s\n' "$*" >> '{log}'; }}
 verify_effective_service() {{ echo effective >> '{log}'; }}
 verify_runtime_boundary() {{ echo runtime >> '{log}'; }}
+verify_install_tree() {{ echo tree >> '{log}'; }}
 activate_and_verify
 """
 
@@ -162,4 +276,5 @@ activate_and_verify
         "systemctl:restart labpilot-runner.service",
         "effective",
         "runtime",
+        "tree",
     ]
