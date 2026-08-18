@@ -1001,6 +1001,42 @@ The effective-service check must interrogate systemd's loaded unit/properties af
 
 No site-specific `workspace_root` or runtime path is guessed by the repository. The explicit policy source supplied to the installer owns those deployment values.
 
+### 5.6.1 Task 5 native deployment finding amendment
+
+Task 5 native acceptance at `TESTED_SHA`
+`5a6271a7a077d11f7200611e7d84ad2e39874106` exposed a production deployment
+defect after the historical G2/G3 acceptance: `uv sync --locked --no-dev`
+created an editable LabPilot installation whose `.pth` retained the temporary
+`/opt/labpilot-runner/.stage.*` source path after that staging tree was moved to
+`/opt/labpilot-runner/app`. The effective service therefore failed with
+`ModuleNotFoundError`, and Python startup also created installation-tree
+bytecode owned by `root:labpilot-control`.
+
+The historical G2/G3 record above remains unchanged. For all deployment and
+Task 5 acceptance work after this finding, its contract is narrowly amended:
+
+1. dependency installation is `uv sync --locked --no-dev --no-editable`;
+2. after the staging tree is moved and normalized, but before service
+   activation, the final interpreter runs with `-E -s -B` and must import
+   `labpilot` from the final installed venv site-packages tree, never a deleted
+   `.stage.*` path;
+3. the effective Runner `ExecStart` is exactly
+   `/opt/labpilot-runner/app/.venv/bin/python -E -s -B -m labpilot.execution.runner_daemon --policy /etc/labpilot/runner-policy.json`;
+4. the controller-identity `INFO` readiness interpreter also uses `-E -s -B`;
+5. only after activation, effective-service verification, active/runtime/socket
+   verification, and controller `INFO` readiness, the installer re-verifies
+   the complete application tree without following symlinks: every node is
+   `root:root`, and every non-symlink has no group/world write bits. Symlink
+   ownership is checked, but Linux symlink mode `0777` is not treated as
+   writable-file authority. This final verifier fails closed and does not
+   repair detected mutation.
+
+Task 5 native preflight and evidence must require the amended `-E -s -B`
+contract. Loss of `-E`, `-s`, `-B`, `NoNewPrivileges=yes`, the `AF_UNIX`
+restriction, or `UMask=0077` is a C17 critical acceptance failure. This
+amendment does not accept Task 5, G4, or Slice 2, and `DOCUMENT-STATUS.md`
+remains unchanged.
+
 ## 5.7 First-dispatch authority
 
 `dispatch_attempt(attempt_id)`:
@@ -1792,7 +1828,7 @@ Native acceptance must exercise a real prepared Attempt as `labpilot-train` and 
 Each native scenario installs/starts the exact committed root-owned Runner using §5.6 or verifies the already-installed service matches the tested commit/policy identity **and the effective loaded hardening contract** before running. The preflight records and checks:
 
 ```text
-ExecStart Python flags include -E -s
+ExecStart Python flags include -E -s -B
 UMask=0077
 NoNewPrivileges=yes
 RestrictAddressFamilies=AF_UNIX
@@ -1866,7 +1902,7 @@ C13 API gains Runner/systemd physical-control authority
 C14 Attempt lacks bounded observed environment for its approved EnvironmentExpectation
 C15 restart reconciliation lacks its immutable audit event
 C16 production Runner imports/executes from controller-writable checkout
-C17 effective production Runner service drops Python -E/-s, NoNewPrivileges, AF_UNIX restriction, or UMask=0077
+C17 effective production Runner service drops Python -E/-s/-B, NoNewPrivileges, AF_UNIX restriction, or UMask=0077
 ```
 
 ## 7.4 Evidence package
@@ -2010,6 +2046,7 @@ Before G0 implementation authorization, verify:
 - Task 1 is historical/complete and no step reruns P0–P13 merely for familiarity.
 - Tasks 2–5 preserve the five-task outer shape.
 - R4-D1 is the only semantic change after r4: Runner service restores Python `-E -s`, `NoNewPrivileges=yes`, `RestrictAddressFamilies=AF_UNIX`, and `UMask=0077`; direct consistency edits only add verification/evidence for those properties.
+- the §5.6.1 post-G3 Task 5 native-finding amendment additionally requires a relocatable non-editable install, Python `-B`, final-path import proof, and post-readiness application-tree integrity verification without changing the historical G2/G3 record.
 - `Group=labpilot-control` remains allowed only for the runtime-directory/socket boundary; restrictive `UMask=0077` prevents accidental group exposure of other daemon-created files.
 - Runner explicitly sets and verifies `control.sock` as `root:labpilot-control 0660` before readiness; socket sharing does not depend on service-wide umask relaxation.
 - deployment unit tests and installer/native checks verify the **effective loaded systemd service**, not only the repository unit file.
