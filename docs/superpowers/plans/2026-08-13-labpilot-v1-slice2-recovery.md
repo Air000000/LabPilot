@@ -1037,6 +1037,38 @@ restriction, or `UMask=0077` is a C17 critical acceptance failure. This
 amendment does not accept Task 5, G4, or Slice 2, and `DOCUMENT-STATUS.md`
 remains unchanged.
 
+### 5.6.2 Task 5 native controller-traversal follow-up
+
+Task 5 deployment remediation at `TESTED_SHA`
+`95ed4c35c0530f9a86a12a48412b46a54abe050e` exposed a second narrow
+deployment defect: the final `/opt/labpilot-runner/app` root retained the
+staging directory's `mktemp -d` mode `0700`. The root Runner could start, but
+`labpilot-controller:labpilot-control` could not traverse the final application
+root to execute the readiness interpreter.
+
+The amended deployment contract is:
+
+1. `/opt/labpilot-runner/app` is exactly `root:root 0711`. Non-root identities
+   receive traversal only; listing permission is intentionally unnecessary;
+2. the rest of the installed tree remains recursively `root:root`, and every
+   non-symlink retains no group/world write bits;
+3. after the staging tree is moved, ownership and no-write normalization are
+   complete, the installer explicitly establishes app-root mode `0711`;
+4. before systemd activation, the installer runs a controller-identity
+   final-path import smoke test as `labpilot-controller:labpilot-control` with
+   `/opt/labpilot-runner/app/.venv/bin/python -E -s -B`;
+5. that smoke test must execute the final interpreter, import `labpilot` and
+   the Runner client/protocol modules required by readiness, resolve LabPilot
+   from final venv site-packages, and reject any `.stage.*` resolution;
+6. post-readiness installed-tree verification additionally requires the app
+   root itself to remain exactly `root:root 0711`, while preserving all prior
+   descendant ownership/write and symlink rules;
+7. Task 5 native preflight independently re-verifies app-root
+   `root:root 0711` and controller final-path Python/import capability.
+
+This follow-up changes no Task 5, G4, or Slice 2 acceptance state and leaves
+`DOCUMENT-STATUS.md` unchanged.
+
 ## 5.7 First-dispatch authority
 
 `dispatch_attempt(attempt_id)`:
