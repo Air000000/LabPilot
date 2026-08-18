@@ -9,6 +9,52 @@ SERVICE = ROOT / "deploy/systemd/labpilot-runner.service"
 INSTALLER = ROOT / "scripts/install_labpilot_runner_host.sh"
 
 
+def _run_fake_installer(
+    tmp_path: Path, *, controller_import_status: int = 0
+) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    events = tmp_path / "events.log"
+    policy = tmp_path / "policy.json"
+    policy.write_text("{}")
+    sha = "a" * 40
+    command = f"""
+source '{INSTALLER}'
+test_root='{tmp_path}'
+app_root="$test_root/app"
+policy_target="$test_root/runner-policy.json"
+service_target="$test_root/labpilot-runner.service"
+id() {{ echo 0; }}
+git() {{
+  if [[ "$*" == 'rev-parse --show-toplevel' ]]; then
+    echo "$test_root/repository"
+  elif [[ "$*" == *'rev-parse'* ]]; then
+    echo '{sha}'
+  fi
+}}
+install() {{ :; }}
+tar() {{ :; }}
+chown() {{ printf 'chown:%s\n' "$*" >> '{events}'; }}
+chmod() {{ printf 'chmod:%s\n' "$*" >> '{events}'; }}
+mktemp() {{ command mktemp -d "$test_root/.stage.XXXXXX"; }}
+uv() {{
+  printf 'uv:%s\n' "$*" >> '{events}'
+  mkdir -p .venv/bin
+  printf '#!/bin/sh\nprintf "root-import:%%s\\n" "$*" >> "%s"\n' '{events}' > .venv/bin/python
+  command chmod 755 .venv/bin/python
+}}
+mv() {{ printf 'move\n' >> '{events}'; command mv "$@"; }}
+runuser() {{
+  printf 'controller-import:%s\n' "$*" >> '{events}'
+  return {controller_import_status}
+}}
+activate_and_verify() {{ printf 'activate\n' >> '{events}'; }}
+main '{sha}' '{policy}'
+"""
+    result = subprocess.run(
+        ["bash", "-c", command], check=False, capture_output=True, text=True
+    )
+    return result, events.read_text().splitlines()
+
+
 def test_service_freezes_candidate_b_hardening() -> None:
     parser = configparser.ConfigParser(interpolation=None, strict=True)
     parser.read(SERVICE)
@@ -141,41 +187,65 @@ verify_runtime_boundary
     ]
 
 
-def test_installer_uses_non_editable_sync_and_checks_final_import_before_activation(
+def test_installer_sets_exact_app_root_mode_before_controller_import_and_activation(
     tmp_path: Path,
 ) -> None:
-    events = tmp_path / "events.log"
-    policy = tmp_path / "policy.json"
-    policy.write_text("{}")
-    sha = "a" * 40
+    result, lines = _run_fake_installer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    lines = [line for line in lines if ".stage." not in line]
+    assert lines[0] == "uv:sync --locked --no-dev --no-editable"
+    final_events = lines[1:]
+    assert final_events == [
+        "move",
+        f"chown:-R root:root {tmp_path}/app",
+        f"chmod:-R go-w {tmp_path}/app",
+        f"chmod:0711 {tmp_path}/app",
+        f"root-import:-E -s -B - {tmp_path}/app",
+        (
+            "controller-import:--user labpilot-controller --group "
+            f"labpilot-control -- {tmp_path}/app/.venv/bin/python -E -s -B - "
+            f"{tmp_path}/app"
+        ),
+        "activate",
+    ]
+
+
+def test_installer_stops_before_activation_when_controller_final_import_fails(
+    tmp_path: Path,
+) -> None:
+    result, lines = _run_fake_installer(tmp_path, controller_import_status=19)
+
+    assert result.returncode == 19
+    assert not any(line == "activate" for line in lines)
+
+
+def test_controller_final_import_runs_as_controller_and_imports_runner_modules(
+    tmp_path: Path,
+) -> None:
+    app_root = tmp_path / "app"
+    venv.create(app_root / ".venv", with_pip=False)
+    site_packages = next((app_root / ".venv/lib").glob("python*/site-packages"))
+    execution = site_packages / "labpilot/execution"
+    execution.mkdir(parents=True)
+    (execution.parent / "__init__.py").write_text("")
+    (execution / "__init__.py").write_text("")
+    (execution / "runner_client.py").write_text("class RunnerClient: pass\n")
+    (execution / "runner_protocol.py").write_text(
+        "PROTOCOL_VERSION = 1\n"
+        "class RunnerInfoRequest: pass\n"
+        "class RunnerOperation: pass\n"
+    )
+    log = tmp_path / "runuser.argv"
     command = f"""
 source '{INSTALLER}'
-test_root='{tmp_path}'
-app_root="$test_root/app"
-policy_target="$test_root/runner-policy.json"
-service_target="$test_root/labpilot-runner.service"
-id() {{ echo 0; }}
-git() {{
-  if [[ "$*" == 'rev-parse --show-toplevel' ]]; then
-    echo "$test_root/repository"
-  elif [[ "$*" == *'rev-parse'* ]]; then
-    echo '{sha}'
-  fi
+app_root='{app_root}'
+runuser() {{
+  printf '%s\n' "$@" > '{log}'
+  shift 5
+  "$@"
 }}
-install() {{ :; }}
-tar() {{ :; }}
-chown() {{ :; }}
-chmod() {{ :; }}
-mktemp() {{ command mktemp -d "$test_root/.stage.XXXXXX"; }}
-uv() {{
-  printf 'uv:%s\n' "$*" >> '{events}'
-  mkdir -p .venv/bin
-  printf '#!/bin/sh\nprintf "python:%%s\\n" "$*" >> "%s"\n' '{events}' > .venv/bin/python
-  command chmod 755 .venv/bin/python
-}}
-mv() {{ printf 'move\n' >> '{events}'; command mv "$@"; }}
-activate_and_verify() {{ printf 'activate\n' >> '{events}'; }}
-main '{sha}' '{policy}'
+verify_controller_final_import
 """
 
     result = subprocess.run(
@@ -183,11 +253,19 @@ main '{sha}' '{policy}'
     )
 
     assert result.returncode == 0, result.stderr
-    lines = events.read_text().splitlines()
-    assert lines[0] == "uv:sync --locked --no-dev --no-editable"
-    assert lines[1] == "move"
-    assert lines[2] == f"python:-E -s -B - {tmp_path}/app"
-    assert lines[3] == "activate"
+    assert log.read_text().splitlines()[:10] == [
+        "--user",
+        "labpilot-controller",
+        "--group",
+        "labpilot-control",
+        "--",
+        str(app_root / ".venv/bin/python"),
+        "-E",
+        "-s",
+        "-B",
+        "-",
+    ]
+    assert not list((site_packages / "labpilot").rglob("__pycache__"))
 
 
 def test_final_import_smoke_uses_only_the_final_venv_site_packages(tmp_path: Path) -> None:
@@ -230,11 +308,13 @@ def test_install_tree_verifier_checks_ownership_writes_and_symlink_mode(
     tmp_path: Path,
 ) -> None:
     scenarios = {
-        "valid": ("0 0 755 d", "0 0 777 l", 0),
-        "wrong-user": ("1000 0 755 d", "0 0 777 l", 1),
-        "wrong-group": ("0 983 755 d", "0 0 777 l", 1),
-        "group-write": ("0 0 775 d", "0 0 777 l", 1),
-        "symlink-wrong-group": ("0 0 755 d", "0 983 777 l", 1),
+        "valid": ("0 0 711 d", "0 0 777 l", 0),
+        "app-root-700": ("0 0 700 d", "0 0 777 l", 1),
+        "app-root-755": ("0 0 755 d", "0 0 777 l", 1),
+        "wrong-user": ("1000 0 711 d", "0 0 777 l", 1),
+        "wrong-group": ("0 983 711 d", "0 0 777 l", 1),
+        "group-write": ("0 0 711 d", "0 0 775 d", 1),
+        "symlink-wrong-group": ("0 0 711 d", "0 983 777 l", 1),
     }
     for name, (root_stat, link_stat, expected_status) in scenarios.items():
         command = f"""

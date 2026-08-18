@@ -53,6 +53,30 @@ _EXPECTED_EXEC_START = (
     "--policy",
     "/etc/labpilot/runner-policy.json",
 )
+_APP_ROOT = Path("/opt/labpilot-runner/app")
+_APP_PYTHON = str(_APP_ROOT / ".venv/bin/python")
+_CONTROLLER_IMPORT_PROOF = """
+import sysconfig
+from pathlib import Path
+
+import labpilot
+from labpilot.execution.runner_client import RunnerClient
+from labpilot.execution.runner_protocol import PROTOCOL_VERSION, RunnerInfoRequest, RunnerOperation
+
+app_root = Path("/opt/labpilot-runner/app").resolve(strict=True)
+venv_root = (app_root / ".venv").resolve(strict=True)
+site_packages = Path(sysconfig.get_path("purelib")).resolve(strict=True)
+module_file = getattr(labpilot, "__file__", None)
+if not module_file:
+    raise SystemExit("labpilot must resolve from final installed venv")
+resolved_module = Path(module_file).resolve(strict=True)
+if not site_packages.is_relative_to(venv_root) or not resolved_module.is_relative_to(site_packages):
+    raise SystemExit("labpilot must resolve from final installed venv")
+if any(part.startswith(".stage.") for part in resolved_module.parts):
+    raise SystemExit("labpilot must not resolve from staging")
+assert RunnerClient and PROTOCOL_VERSION and RunnerInfoRequest and RunnerOperation
+print(resolved_module)
+""".strip()
 _EXPECTED_WORKSPACE = {
     "workspace": {"kind": "directory", "gid": 982, "mode": 0o750},
     "source_directory": {"kind": "directory", "gid": 982, "mode": 0o550},
@@ -95,6 +119,12 @@ def run_preflight_request(request: Mapping[str, object]) -> dict[str, object]:
         "labpilot-train": {"uid": train.pw_uid, "gid": train.pw_gid},
     }
     require_identities(identities)
+
+    application_root = _metadata(_APP_ROOT)
+    require_metadata(
+        "application root", application_root, kind="directory", uid=0, gid=0, mode=0o711
+    )
+    controller_final_import = _controller_final_import()
 
     service_names = (*_EXPECTED_SERVICE, "ExecStart")
     service = _properties(
@@ -145,6 +175,8 @@ def run_preflight_request(request: Mapping[str, object]) -> dict[str, object]:
     return {
         "tested_sha": tested_sha,
         "identities": identities,
+        "application_root": application_root,
+        "controller_final_import": controller_final_import,
         "runner_service": service,
         "runtime_directory": runtime,
         "socket": socket,
@@ -227,6 +259,35 @@ def require_effective_service(properties: Mapping[str, str]) -> None:
     match = re.search(r"(?:^|;\s*)argv\[\]=(.*?)\s*;", properties.get("ExecStart", ""))
     if match is None or tuple(shlex.split(match.group(1))) != _EXPECTED_EXEC_START:
         raise NativePreflightError("effective Runner property mismatch: ExecStart")
+
+
+def _controller_final_import() -> dict[str, str]:
+    resolved = _text(
+        run_command(
+            (
+                "runuser",
+                "--user",
+                "labpilot-controller",
+                "--group",
+                "labpilot-control",
+                "--",
+                _APP_PYTHON,
+                "-E",
+                "-s",
+                "-B",
+                "-c",
+                _CONTROLLER_IMPORT_PROOF,
+            ),
+            max_output_bytes=4096,
+        )
+    )
+    if (
+        not Path(resolved).is_absolute()
+        or not _at_or_below(resolved, str(_APP_ROOT / ".venv"))
+        or any(part.startswith(".stage.") for part in Path(resolved).parts)
+    ):
+        raise NativePreflightError("controller final import resolution mismatch")
+    return {"labpilot_path": resolved}
 
 
 def require_metadata(

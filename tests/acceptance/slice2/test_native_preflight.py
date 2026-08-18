@@ -4,8 +4,116 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+
+
+def _run_fake_native_preflight(
+    monkeypatch: pytest.MonkeyPatch, *, app_mode: int
+) -> tuple[dict[str, object], list[tuple[str, ...]], list[Path]]:
+    from tests.acceptance.slice2 import native_preflight
+
+    calls: list[tuple[str, ...]] = []
+    metadata_paths: list[Path] = []
+    service = {
+        **native_preflight._EXPECTED_SERVICE,
+        "ExecStart": (
+            "{ path=/opt/labpilot-runner/app/.venv/bin/python ; "
+            "argv[]=/opt/labpilot-runner/app/.venv/bin/python -E -s -B "
+            "-m labpilot.execution.runner_daemon "
+            "--policy /etc/labpilot/runner-policy.json ; ignore_errors=no ; }"
+        ),
+    }
+
+    def fake_run_command(argv: tuple[str, ...], **_kwargs: object) -> object:
+        command = tuple(argv)
+        calls.append(command)
+        if command[:4] == ("git", "-C", "/repo", "rev-parse"):
+            stdout = "a" * 40
+        elif command[:4] == ("git", "-C", "/repo", "status"):
+            stdout = ""
+        elif command[:3] == ("systemctl", "show", "labpilot-runner.service"):
+            stdout = "\n".join(f"{name}={value}" for name, value in service.items())
+        elif command[:2] == ("docker", "ps"):
+            service_name = next(
+                value.rsplit("=", 1)[-1]
+                for value in command
+                if value.startswith("label=com.docker.compose.service=")
+            )
+            stdout = f"{service_name}-container"
+        elif command[:2] == ("docker", "inspect"):
+            if command[2] == "postgres-container":
+                value = {
+                    "NetworkSettings": {
+                        "Ports": {
+                            "5432/tcp": [
+                                {"HostIp": "127.0.0.1", "HostPort": "55432"}
+                            ]
+                        }
+                    }
+                }
+            else:
+                value = {
+                    "Mounts": [
+                        {
+                            "Destination": "/app/content",
+                            "Source": "/srv/labpilot/content",
+                        }
+                    ]
+                }
+            stdout = json.dumps([value])
+        elif command[:3] == ("docker", "exec", "coordinator-container"):
+            stdout = {"-u": "999", "-g": "983", "-G": "999 983 982"}[command[-1]]
+        elif command[:5] == (
+            "runuser",
+            "--user",
+            "labpilot-controller",
+            "--group",
+            "labpilot-control",
+        ):
+            stdout = (
+                "/opt/labpilot-runner/app/.venv/lib/python3.12/site-packages/"
+                "labpilot/__init__.py"
+            )
+        else:
+            raise AssertionError(f"unexpected native command: {command}")
+        return native_preflight.CommandResult(command, stdout.encode(), b"")
+
+    def fake_metadata(path: Path) -> dict[str, object]:
+        metadata_paths.append(path)
+        if path == Path("/opt/labpilot-runner/app"):
+            return {"kind": "directory", "uid": 0, "gid": 0, "mode": app_mode}
+        if path == Path("/run/labpilot-runner"):
+            return {"kind": "directory", "uid": 0, "gid": 983, "mode": 0o750}
+        return {"kind": "socket", "uid": 0, "gid": 983, "mode": 0o660}
+
+    monkeypatch.setattr(native_preflight, "run_command", fake_run_command)
+    monkeypatch.setattr(native_preflight, "_metadata", fake_metadata)
+    monkeypatch.setattr(
+        native_preflight.pwd,
+        "getpwnam",
+        lambda name: SimpleNamespace(
+            pw_uid=999 if name == "labpilot-controller" else 995,
+            pw_gid=983 if name == "labpilot-controller" else 982,
+        ),
+    )
+    monkeypatch.setattr(
+        native_preflight.grp,
+        "getgrnam",
+        lambda _name: SimpleNamespace(gr_gid=983),
+    )
+    result = native_preflight.run_preflight_request(
+        {
+            "tested_sha": "a" * 40,
+            "config": {
+                "repository_root": "/repo",
+                "workspace_root": "/srv/labpilot/attempts",
+                "compose_project": "labpilot-slice2-acceptance",
+            },
+        }
+    )
+    return result, calls, metadata_paths
 
 
 def test_preflight_cli_requires_and_binds_exact_tested_sha(tmp_path: Path) -> None:
@@ -179,6 +287,67 @@ def test_runner_runtime_metadata_is_exact(
             gid=983,
             mode=expected_mode,
         )
+
+
+def test_native_preflight_records_exact_app_root_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result, _calls, metadata_paths = _run_fake_native_preflight(
+        monkeypatch, app_mode=0o711
+    )
+
+    assert Path("/opt/labpilot-runner/app") in metadata_paths
+    assert result["application_root"] == {
+        "kind": "directory",
+        "uid": 0,
+        "gid": 0,
+        "mode": 0o711,
+    }
+
+
+@pytest.mark.parametrize("app_mode", [0o700, 0o755])
+def test_native_preflight_rejects_non_exact_app_root_mode(
+    monkeypatch: pytest.MonkeyPatch, app_mode: int
+) -> None:
+    from tests.acceptance.slice2.native_preflight import NativePreflightError
+
+    with pytest.raises(NativePreflightError, match="application root"):
+        _run_fake_native_preflight(monkeypatch, app_mode=app_mode)
+
+
+def test_native_preflight_controller_import_command_is_fixed_and_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result, calls, _metadata_paths = _run_fake_native_preflight(
+        monkeypatch, app_mode=0o711
+    )
+    controller_calls = [command for command in calls if command[0] == "runuser"]
+
+    assert len(controller_calls) == 1
+    command = controller_calls[0]
+    assert command[:11] == (
+        "runuser",
+        "--user",
+        "labpilot-controller",
+        "--group",
+        "labpilot-control",
+        "--",
+        "/opt/labpilot-runner/app/.venv/bin/python",
+        "-E",
+        "-s",
+        "-B",
+        "-c",
+    )
+    proof = command[11]
+    assert "import labpilot" in proof
+    assert "labpilot.execution.runner_client" in proof
+    assert "labpilot.execution.runner_protocol" in proof
+    assert result["controller_final_import"] == {
+        "labpilot_path": (
+            "/opt/labpilot-runner/app/.venv/lib/python3.12/site-packages/"
+            "labpilot/__init__.py"
+        )
+    }
 
 
 def test_compose_network_and_api_mount_authority_are_narrow() -> None:

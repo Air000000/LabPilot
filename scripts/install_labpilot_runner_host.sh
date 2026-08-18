@@ -69,11 +69,47 @@ if any(part.startswith(".stage.") for part in resolved_module.parts):
 PY
 }
 
+verify_controller_final_import() {
+  runuser --user labpilot-controller --group labpilot-control -- \
+    "$app_root/.venv/bin/python" -E -s -B - "$app_root" <<'PY'
+import sys
+import sysconfig
+from pathlib import Path
+
+import labpilot
+from labpilot.execution.runner_client import RunnerClient
+from labpilot.execution.runner_protocol import (
+    PROTOCOL_VERSION,
+    RunnerInfoRequest,
+    RunnerOperation,
+)
+
+app_root = Path(sys.argv[1]).resolve(strict=True)
+venv_root = (app_root / ".venv").resolve(strict=True)
+site_packages = Path(sysconfig.get_path("purelib")).resolve(strict=True)
+module_file = getattr(labpilot, "__file__", None)
+if not module_file:
+    raise SystemExit("labpilot must resolve from final installed venv")
+resolved_module = Path(module_file).resolve(strict=True)
+if not site_packages.is_relative_to(venv_root) or not resolved_module.is_relative_to(
+    site_packages
+):
+    raise SystemExit("labpilot must resolve from final installed venv")
+if any(part.startswith(".stage.") for part in resolved_module.parts):
+    raise SystemExit("labpilot must not resolve from staging")
+assert RunnerClient and PROTOCOL_VERSION and RunnerInfoRequest and RunnerOperation
+PY
+}
+
 verify_install_tree() {
   find -P "$app_root" -printf '%U %G %m %y %p\0' |
     while IFS=' ' read -r -d '' uid gid mode kind path; do
       if [[ "$uid" != 0 || "$gid" != 0 ]]; then
         fail "installed application tree ownership mismatch: $path"
+        exit 1
+      fi
+      if [[ "$path" == "$app_root" && ( "$kind" != d || "$mode" != 711 ) ]]; then
+        fail "installed application root mode mismatch: $path"
         exit 1
       fi
       if [[ "$kind" != l ]] && (( (8#$mode & 8#022) != 0 )); then
@@ -116,7 +152,9 @@ main() {
   trap - EXIT
   chown -R root:root "$app_root"
   chmod -R go-w "$app_root"
+  chmod 0711 "$app_root"
   verify_final_import
+  verify_controller_final_import
 
   install -d -o root -g root -m 0755 /etc/labpilot
   install -o root -g root -m 0600 "$policy_source" "$policy_target"
