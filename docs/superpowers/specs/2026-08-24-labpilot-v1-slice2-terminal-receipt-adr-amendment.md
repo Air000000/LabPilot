@@ -12,7 +12,7 @@
 
 **Selected physical evidence stack:** `systemd + persistent journald`
 
-This document is a focused amendment to the original Candidate B Runner Supervision ADR. The original ADR remains Accepted. This amendment, while Proposed, supersedes only its affected clauses concerning terminal-cause retention, the fixed Candidate B launch profile, the narrow privileged `TerminalReceiptV1` producer, receipt-related `UNKNOWN` semantics, and security review of the new root post-stop surface.
+This document proposes a focused amendment to the original Candidate B Runner Supervision ADR. The original ADR remains the currently Accepted authority. If externally accepted, this amendment will supersede only its affected clauses concerning terminal-cause retention, the fixed Candidate B launch profile, the narrow privileged `TerminalReceiptV1` producer, receipt-related `UNKNOWN` semantics, and security review of the new root post-stop surface.
 
 This amendment does not accept Slice 2, authorize implementation, authorize Task 5 native revalidation, authorize F18, or change G3/G4 status. It does not modify the Task 5 recovery plan or authorize an implementation plan. Historical F01 remains sealed and stopped.
 
@@ -277,14 +277,30 @@ signal / killed / KILL
 
 timeout / killed / TERM
 → TERMINAL_MATCH
-→ supervisor_result=timeout
-→ no fabricated process exit code
-→ current domain boundary may remain PROCESS_TERMINAL_UNCLASSIFIED
+→ supervisor_result = "timeout"
+→ exit_code = None
+→ termination_signal = None
+→ PROCESS_TERMINAL_UNCLASSIFIED
 ```
+
+For a trusted `RuntimeMaxSec` terminal result, `SERVICE_RESULT=timeout` is the stronger physical supervisor classification. The `TERM` wait status is the mechanism systemd used to terminate the process; it must not classify the execution as an ordinary `PROCESS_SIGNALED` event at the current unchanged domain boundary.
 
 For an explicit stop producing `success / killed / TERM`, the strongest physical wait-status truth may retain `termination_signal=15`. It must not claim that Batch cancellation caused the signal unless independent workflow ordering proves that causality.
 
 `Deactivated successfully` never again proves `exit_code=0` by itself. Only trusted retained cause evidence may establish `PROCESS_EXITED(0)`.
+
+### 7.1 Observation-consistency invariant
+
+For the same trusted physical terminal facts, semantic classification must not depend on whether observation occurs while the exact systemd unit remains loaded or after unit GC through retained ManagerEvidence and ReceiptEvidence. The loaded-unit and post-GC paths must produce equivalent `PhysicalObservation` fields and domain mapping for:
+
+- natural exit zero;
+- normal nonzero exit;
+- clean `SIGTERM`;
+- `SIGKILL`;
+- `RuntimeMaxSec` timeout;
+- explicit-stop physical wait-status truth.
+
+In particular, both paths apply timeout precedence for `RuntimeMaxSec`: `TERMINAL_MATCH`, `supervisor_result = "timeout"`, `exit_code = None`, `termination_signal = None`, and `PROCESS_TERMINAL_UNCLASSIFIED`. Observation timing or unit GC must not turn the same trusted timeout facts into `PROCESS_SIGNALED`.
 
 ## 8. Candidate B v1 compatibility
 
@@ -359,6 +375,12 @@ Execution uses an absolute trusted interpreter in isolated Python mode, conceptu
 This is a required boundary, not yet a frozen production command line. Native systemd 259 TDD must verify the final exact construction.
 
 Reporter resolution must not depend on Attempt cwd, Attempt workspace, `PYTHONPATH`, user site, caller `PATH`, or a caller-controlled module path.
+
+The privileged producer's executable-loading environment must also be mechanically independent of mutable or untrusted main-workload environment values. No main-workload environment value may influence executable loading, dynamic-library resolution, interpreter code resolution, or privileged reporter code resolution. This prohibition explicitly includes `LD_LIBRARY_PATH` and any future equivalent loader-sensitive environment key admitted for the main workload.
+
+Python `-I` isolated mode is necessary for Python import isolation but is not by itself proof of ELF or dynamic-loader isolation. This amendment does not prematurely select the implementation mechanism. A later implementation may use a sanitized per-hook environment or another equivalently strong fixed mechanism, but the selected boundary must be proven on the native systemd 259 host. It must not introduce shell execution, a generic environment bridge, a caller-controlled reporter environment, or a generic hook API.
+
+If reporter executable/code resolution cannot be isolated from main-workload environment influence without widening those authorities, architecture review must reopen.
 
 ## 11. Immutable artifact rule
 
@@ -570,12 +592,14 @@ Production implementation must be TDD-driven across all six layers.
 - root provenance;
 - cardinality;
 - natural zero, exit 7, `SIGTERM`, `SIGKILL`, timeout, and explicit stop;
+- equivalent `PhysicalObservation` and domain semantics for the same trusted facts while loaded and after unit GC, including timeout precedence on both paths;
 - missing, malformed, duplicate, unavailable-query, and unsupported-valid receipt semantics.
 
 ### T3 — Launch/profile
 
 - exact fixed hook;
 - caller cannot select hook, path, or argv;
+- caller and main-workload environment cannot influence privileged executable, dynamic-library, interpreter-code, or reporter-code resolution;
 - main UID/GID/NNP/capabilities remain unchanged;
 - v2 profile participates mechanically in H.
 
@@ -597,6 +621,7 @@ Production implementation must be TDD-driven across all six layers.
 - privileged fixed hook;
 - failure-neutral hook;
 - anti-spoof behavior;
+- adversarial loader-sensitive unit environment, including `LD_LIBRARY_PATH`, cannot alter the trusted interpreter, dynamic libraries, or fixed reporter code selected for the root producer;
 - post-GC recovery;
 - Runner restart;
 - Coordinator restart;
@@ -619,6 +644,8 @@ Implementation cannot be accepted unless all of these negative properties hold:
 - caller cannot choose `ExecStopPost`;
 - caller cannot choose privileged reporter argv;
 - malicious workspace Python or LabPilot module cannot affect the root reporter;
+- loader-sensitive main-workload environment cannot affect privileged reporter executable or code resolution;
+- loaded-unit and post-GC observation of the same trusted terminal facts cannot yield different semantics, including timeout precedence;
 - a running v1 execution survives v2 Runner deployment;
 - v2-to-v1 hot downgrade is not claimed safe.
 
@@ -670,7 +697,7 @@ DB schema, Runner protocol, and Coordinator scheduling/retry state machine do no
 
 ### TR-D12 — Retained proven cause
 
-GC, reboot, or Runner loss can retain and recover every terminal cause actually proven by the selected evidence stack.
+GC, reboot, or Runner loss can retain and recover every terminal cause actually proven by the selected evidence stack. For the same trusted physical facts, loaded-unit and retained post-GC observation produce equivalent semantics.
 
 ## 23. Relationship to the original ADR
 
@@ -680,7 +707,7 @@ The original document:
 docs/superpowers/specs/2026-08-13-labpilot-v1-slice2-runner-supervision-adr.md
 ```
 
-remains Accepted. This amendment supersedes only affected clauses concerning:
+remains the currently Accepted authority. If externally accepted, this amendment will supersede only affected clauses concerning:
 
 - the fixed systemd launch profile;
 - terminal-cause retention;
