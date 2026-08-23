@@ -366,6 +366,22 @@ Implementation review may select a stronger equivalent fixed path. The artifact 
 - free of shell, network, database, subprocess, Runner-socket, and workspace read/write behavior;
 - free of caller-selected arguments.
 
+### 10.1 Trusted filesystem path chain
+
+The complete fixed reporter deployment path used by privileged `ExecStopPost` must reside in a trusted root-controlled filesystem namespace. This contract covers the path chain through which the artifact is resolved, not only the final file:
+
+- the reporter deployment directory is root-owned;
+- the reporter deployment directory is not group/world writable;
+- reporter resolution does not traverse an untrusted symlink or another attacker-controlled redirectable path component;
+- the final reporter remains a regular, non-symlink, root-owned artifact;
+- the final reporter remains not group/world writable;
+- the final reporter digest exactly matches the fixed `candidate-b-v2` profile manifest;
+- no unprivileged workload or user can replace, rename, redirect, or substitute the reporter through writable ancestor-directory or path-component authority.
+
+This invariant freezes trusted path immutability rather than an arbitrary numeric mode. It applies across the time separation between Runner readiness verification and later systemd `ExecStopPost` execution. Checking only the final file at readiness is insufficient when a mutable or untrusted ancestor could redirect the fixed path before delayed privileged execution.
+
+The later implementation and TDD must prove an appropriate TOCTOU-resistant filesystem boundary; this ADR does not select the exact filesystem API and does not introduce a generic filesystem sandbox.
+
 Execution uses an absolute trusted interpreter in isolated Python mode, conceptually equivalent to:
 
 ```text
@@ -380,7 +396,7 @@ The privileged producer's executable-loading environment must also be mechanical
 
 Python `-I` isolated mode is necessary for Python import isolation but is not by itself proof of ELF or dynamic-loader isolation. This amendment does not prematurely select the implementation mechanism. A later implementation may use a sanitized per-hook environment or another equivalently strong fixed mechanism, but the selected boundary must be proven on the native systemd 259 host. It must not introduce shell execution, a generic environment bridge, a caller-controlled reporter environment, or a generic hook API.
 
-If reporter executable/code resolution cannot be isolated from main-workload environment influence without widening those authorities, architecture review must reopen.
+Neither process environment nor a mutable filesystem namespace may redirect the privileged reporter's executable or code resolution. If that combined boundary cannot be enforced without widening authority, architecture review must reopen.
 
 ## 11. Immutable artifact rule
 
@@ -469,7 +485,19 @@ readiness_reason=ready
 launch_profile_version=candidate-b-v2
 ```
 
-must already have verified the static reporter deployment contract. At minimum, the Runner is not ready when the reporter is absent, is a symlink, has wrong owner/mode or digest, disagrees with the fixed profile identity, lacks the trusted interpreter, or fails an isolated-execution sanity check.
+must already have verified both the trusted reporter path chain and the final reporter artifact against the fixed deployment contract. At minimum, the Runner is not ready when:
+
+- the reporter deployment directory is not root-owned;
+- the reporter deployment directory is group/world writable;
+- the reporter path traverses an untrusted symlink or another attacker-controlled redirection;
+- the final reporter is absent, a symlink, or not a regular file;
+- the final reporter has unsafe ownership or write permissions;
+- the final reporter digest is wrong;
+- the reporter disagrees with the fixed profile identity;
+- the trusted interpreter is unavailable;
+- isolated-execution sanity verification fails.
+
+Installer and readiness verification fail closed for every condition above. Candidate B v2 launch authority must not be advertised from a path boundary that an unprivileged actor can redirect between readiness and delayed `ExecStopPost` execution.
 
 A half-installed v2 Runner must not allow the Coordinator to freeze a `candidate-b-v2` `FrozenLaunchSpec`/H.
 
@@ -613,7 +641,10 @@ Production implementation must be TDD-driven across all six layers.
 
 - immutable install or exact reuse;
 - byte drift rejection;
-- root metadata verification;
+- trusted path-chain validation, including root-controlled, non-group/world-writable deployment-directory metadata;
+- rejection of untrusted symlink or attacker-controlled path redirection;
+- final regular non-symlink artifact ownership, write-safety, and digest verification;
+- proof that unprivileged ancestor/path authority cannot replace, rename, redirect, or substitute the reporter;
 - application upgrades do not replace an in-use reporter semantic artifact.
 
 ### T6 — Native systemd 259
@@ -645,6 +676,8 @@ Implementation cannot be accepted unless all of these negative properties hold:
 - caller cannot choose privileged reporter argv;
 - malicious workspace Python or LabPilot module cannot affect the root reporter;
 - loader-sensitive main-workload environment cannot affect privileged reporter executable or code resolution;
+- an unprivileged actor controlling an unsafe ancestor or path component cannot substitute or redirect the fixed privileged reporter; unsafe parent/path metadata makes the installer fail closed or the Runner remain not ready;
+- neither process environment nor a mutable filesystem namespace can redirect privileged reporter executable/code resolution;
 - loaded-unit and post-GC observation of the same trusted terminal facts cannot yield different semantics, including timeout precedence;
 - a running v1 execution survives v2 Runner deployment;
 - v2-to-v1 hot downgrade is not claimed safe.
