@@ -127,6 +127,37 @@ def test_native_worker_registry_is_exact_and_unknown_operation_fails_closed() ->
     assert calls == []
 
 
+def test_native_worker_fresh_interpreter_registers_complete_model_metadata() -> None:
+    code = (
+        "import json\n"
+        "import tests.acceptance.slice2.native_worker\n"
+        "from labpilot.db.base import Base\n"
+        "from labpilot.execution.models import BatchRow\n"
+        "required = {'batches', 'experiment_versions', 'projects'}\n"
+        "targets = sorted(f'{fk.column.table.name}.{fk.column.name}' "
+        "for fk in BatchRow.__table__.foreign_keys)\n"
+        "print(json.dumps({'foreign_key_targets': targets, "
+        "'required_tables': sorted(required & set(Base.metadata.tables))}))\n"
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "foreign_key_targets": [
+            "experiment_versions.experiment_version_id",
+            "projects.project_id",
+        ],
+        "required_tables": ["batches", "experiment_versions", "projects"],
+    }
+
+
 def test_native_worker_fixture_profiles_cover_capacity_child_and_timeout() -> None:
     from tests.acceptance.slice2.native_worker import fixture_profile
 

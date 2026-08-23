@@ -15,6 +15,8 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 
 from tests.acceptance.slice2.scenarios import SCENARIOS, scenario_operation_names
 
+import labpilot.db.model_registry  # noqa: F401
+
 if TYPE_CHECKING:
     from labpilot.common.commands import CommandContext
     from labpilot.execution.models import AttemptRow
