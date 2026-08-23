@@ -1107,6 +1107,33 @@ The production-image contract is narrowly amended:
 11. Task 5 remains **AUTHORIZED / IN PROGRESS** and G4 has not occurred; and
 12. `DOCUMENT-STATUS.md` remains unchanged.
 
+### 5.6.4 Task 5 Runner readiness follow-up
+
+Task 5 native deployment at `TESTED_SHA`
+`7f2d1221dc626654d6a9dabc08d8d41ba507824c` exposed a bounded startup race:
+`systemctl restart` returned before the restarted Runner accepted controller
+connections. A preserved socket pathname and its valid metadata do not prove
+that the new process is listening, so the installer's single immediate `INFO`
+request failed pre-send even though the service subsequently became ready.
+
+The deployment contract is narrowly amended:
+
+1. after restart and effective-service verification, the installer polls a
+   controller-identity `INFO` request for at most 50 attempts, sleeping 200 ms
+   between retryable attempts and using a 1.0 second Runner client timeout;
+2. only `RunnerPreSendError` is retryable startup unavailability and is mapped
+   by the embedded controller probe to the dedicated exit status `75`;
+3. exit status `75` is retried only while the service remains active and
+   attempts remain. Service inactivity or readiness exhaustion fails the
+   installation;
+4. protocol, authentication, response-integrity, control-unknown, and every
+   other probe failure remain immediate hard failures and are never retried;
+5. only after readiness succeeds does the installer perform its mandatory
+   service/runtime/socket metadata verification and final installed-tree
+   verification;
+6. Task 5 remains **AUTHORIZED / IN PROGRESS**, G4 has not occurred, and
+   `DOCUMENT-STATUS.md` remains unchanged.
+
 ## 5.7 First-dispatch authority
 
 `dispatch_attempt(attempt_id)`:
