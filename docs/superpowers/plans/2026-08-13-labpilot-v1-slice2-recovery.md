@@ -26,11 +26,13 @@
 
 **Candidate B v2 plan-delta baseline:** `b6eada82a02d1d684fcb3a6e40b83c154352d8a5`
 
-**Candidate B v2 plan-delta status:** **PROPOSED / PENDING EXTERNAL IMPLEMENTATION-PLAN REVIEW**
+**Candidate B v2 implementation-plan external acceptance baseline:** `8a62fb6df5a4cf67479b27776a3cb8b49baf575a`
+
+**Candidate B v2 plan-delta status:** **ACCEPTED / CURRENT IMPLEMENTATION PLAN DELTA**
 
 **Native S2.0 evidence:** `docs/superpowers/evidence/2026-08-13-labpilot-v1-slice2-runner-supervision-poc.md`
 
-**Status:** r4.1 is **APPROVED AT G0**. Task 1 remains **COMPLETE / SELECT_B**. Task 2 is **ACCEPTED AT G1**. Task 3 is **ACCEPTED AT G2**. Task 4 is **ACCEPTED AT G3**. The historical Task 5 authorization and findings remain recorded below. Candidate B v2 architecture is Accepted and this implementation-plan delta may be drafted, but the delta is not self-approved: Candidate B v2 implementation, its native campaign, and F18 remain **NOT AUTHORIZED** until the required later gates. G4 has not been reached. This governance state does not imply Task 5 or Slice 2 acceptance. `DOCUMENT-STATUS.md` remains unchanged and may be updated only after full Slice 2 acceptance.
+**Status:** r4.1 is **APPROVED AT G0**. Task 1 remains **COMPLETE / SELECT_B**. Task 2 is **ACCEPTED AT G1**. Task 3 is **ACCEPTED AT G2**. Task 4 is **ACCEPTED AT G3**. The historical Task 5 authorization and findings remain recorded below. Candidate B v2 architecture is Accepted and the Candidate B v2 implementation-plan delta is **ACCEPTED / CURRENT IMPLEMENTATION PLAN DELTA** at external acceptance baseline `8a62fb6df5a4cf67479b27776a3cb8b49baf575a`. Plan acceptance does not authorize Candidate B v2 implementation: Candidate B v2 implementation, its native campaign, and F18 remain **NOT AUTHORIZED** until the required later gates. G4 has not been reached. This governance state does not imply Task 5 or Slice 2 acceptance. `DOCUMENT-STATUS.md` remains unchanged and may be updated only after full Slice 2 acceptance.
 
 **Historical governance note:** Candidate B was admitted and implemented before a separate focused pre-implementation amendment was committed. This plan records the post-S2.0 production contract and does not backdate or rewrite that history.
 
@@ -1325,10 +1327,12 @@ from explicit systemctl stop.
 
 ### 5.9.3 Candidate B v2 / TerminalReceiptV1 accepted remediation
 
-**Delta status:** **PROPOSED / PENDING EXTERNAL IMPLEMENTATION-PLAN REVIEW**.
-The Candidate B v2 architecture is Accepted and plan drafting is authorized.
-Candidate B v2 implementation, native execution, and F18 remain **NOT
-AUTHORIZED**. G4 is not reached and `DOCUMENT-STATUS.md` remains unchanged.
+**Delta status:** **ACCEPTED / CURRENT IMPLEMENTATION PLAN DELTA**.
+External implementation-plan review is **ACCEPTED** at baseline
+`8a62fb6df5a4cf67479b27776a3cb8b49baf575a`. The Candidate B v2 architecture
+remains Accepted. Candidate B v2 implementation, native execution, and F18
+remain **NOT AUTHORIZED**. G4 is not reached and `DOCUMENT-STATUS.md` remains
+unchanged.
 
 Sections 5.9.1 and 5.9.2 remain sealed historical findings. The Accepted
 TerminalReceiptV1 amendment supersedes their interim parser-only
@@ -3295,13 +3299,16 @@ Each numbered item is a gate; later items do not authorize themselves.
 
 1. **Accepted architecture amendment already closed.** Confirm both Accepted supervision
    documents and the Candidate B v2 acceptance baseline; do not edit them.
-2. **External implementation-plan review.** Review may return ACCEPT or
-   REQUEST CHANGES. An external ACCEPT verdict is an architecture/governance
-   review fact only and does not authorize Internal Step 0 or any TDD.
-3. **Governance-only implementation-plan acceptance recorded.** After an
-   external ACCEPT verdict, a separate docs-only commit may change this delta
-   from Proposed to Accepted. That commit does not authorize Internal Step 0,
-   production edits, native execution, the formal campaign, or F18.
+2. **External implementation-plan review — SATISFIED.** External review
+   returned ACCEPT at exact baseline
+   `8a62fb6df5a4cf67479b27776a3cb8b49baf575a`. That ACCEPT is a
+   governance-review fact only and does not authorize Internal Step 0 or any
+   TDD.
+3. **Governance-only implementation-plan acceptance — SATISFIED.** This
+   docs-only governance closure records the Candidate B v2 plan delta as
+   **ACCEPTED / CURRENT IMPLEMENTATION PLAN DELTA**. Plan acceptance does not
+   authorize Internal Step 0, production edits, native execution, the formal
+   campaign, or F18.
 4. **Separate explicit Candidate B v2 IMPLEMENTATION AUTHORIZATION.** Only a
    later authorization that explicitly permits Candidate B v2 implementation
    may start Internal Step 0 and production TDD. Its scope must separately
@@ -3494,7 +3501,7 @@ restart, Coordinator restart, v1 compatibility, immutable drift, and protocol
 preservation. The §21 negative boundary is exercised by the negative tests in
 Steps 1–5 and V2-A2/A4/A11/A12/A17/A18/A20. The closure order in §25 is
 implemented by §7.5. Sections 23, 24, and 26 are enforced by the authority
-precedence, explicit out-of-scope stop conditions, and proposed governance
+precedence, explicit out-of-scope stop conditions, and accepted governance
 status in this delta.
 
 ### I1–I3 remediation self-review
@@ -3521,8 +3528,8 @@ status in this delta.
     use; the installer function consumed by A18 is defined in Internal Step 5.
 11. The placeholder scan covers the full plan delta and admits no unspecified
     helper or work item.
-12. The delta remains **PROPOSED / PENDING EXTERNAL IMPLEMENTATION-PLAN
-    REVIEW**.
+12. The delta is **ACCEPTED / CURRENT IMPLEMENTATION PLAN DELTA** after
+    external implementation-plan review.
 13. Candidate B v2 implementation, native execution, and F18 remain **NOT
     AUTHORIZED** by this plan remediation.
 
@@ -3542,8 +3549,8 @@ status in this delta.
 6. Section 7.5 retains plan acceptance, explicit implementation authorization,
    Steps 0–6, production review, H1/H2, verification, final SHA, H/I, N1–N7,
    V2-A1–V2-A20, and the F campaign in that order.
-7. The delta remains **PROPOSED / PENDING EXTERNAL IMPLEMENTATION-PLAN
-   REVIEW**.
+7. The delta is **ACCEPTED / CURRENT IMPLEMENTATION PLAN DELTA** after
+   external implementation-plan review.
 8. Candidate B v2 implementation, native execution, and F18 remain **NOT
    AUTHORIZED** by this plan remediation.
 
@@ -3564,6 +3571,7 @@ status in this delta.
   daemon, installer, and harness files retain their established roles;
   `candidate_b_v2_fixtures.py` owns only closed test-admin matrix mechanics and
   the A18 shell helper owns only its fixed private mount-namespace probe.
-- **Governance:** PASS. The delta remains **PROPOSED / PENDING EXTERNAL
-  IMPLEMENTATION-PLAN REVIEW**. Implementation, native execution, F18, G4,
-  and `DOCUMENT-STATUS.md` closure remain unauthorized.
+- **Governance:** PASS. The delta is **ACCEPTED / CURRENT IMPLEMENTATION PLAN
+  DELTA** after external implementation-plan review. Candidate B v2
+  implementation, native execution, F18, G4, and `DOCUMENT-STATUS.md` closure
+  remain unauthorized.
