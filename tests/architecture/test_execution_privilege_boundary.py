@@ -1,6 +1,10 @@
 import ast
 from pathlib import Path
 
+TERMINAL_RECEIPT_REPORTER = Path(
+    "deploy/libexec/labpilot-terminal-receipt-v1.py"
+)
+
 
 def test_privileged_runner_modules_import_no_db_or_domain_orchestration() -> None:
     root = Path("src/labpilot/execution")
@@ -58,3 +62,47 @@ def test_api_has_no_physical_execution_authority() -> None:
         }
         assert not any(name.startswith(forbidden_imports) for name in imports), path
         assert calls.isdisjoint(forbidden_calls), path
+
+
+def test_terminal_receipt_reporter_has_fixed_standalone_boundary() -> None:
+    tree = ast.parse(
+        TERMINAL_RECEIPT_REPORTER.read_text(),
+        filename=str(TERMINAL_RECEIPT_REPORTER),
+    )
+    imports = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    } | {node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
+    functions = {
+        node.name: tuple(argument.arg for argument in node.args.args)
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+    }
+    calls = [node.func for node in ast.walk(tree) if isinstance(node, ast.Call)]
+    called_names = {call.id for call in calls if isinstance(call, ast.Name)}
+    os_calls = {
+        call.attr
+        for call in calls
+        if isinstance(call, ast.Attribute)
+        and isinstance(call.value, ast.Name)
+        and call.value.id == "os"
+    }
+
+    assert imports == {"collections.abc", "json", "os", "re", "sys"}
+    assert functions == {
+        "_optional_token": ("environ", "name"),
+        "main": ("environ",),
+    }
+    assert called_names.isdisjoint(
+        {"__import__", "compile", "eval", "exec", "open", "popen"}
+    )
+    assert os_calls == {"write"}
+    assert sum(
+        isinstance(call, ast.Attribute)
+        and isinstance(call.value, ast.Name)
+        and call.value.id == "os"
+        and call.attr == "write"
+        for call in calls
+    ) == 1
