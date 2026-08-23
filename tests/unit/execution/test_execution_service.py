@@ -5,7 +5,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from labpilot.execution.ports import ExecutionInputError
-from labpilot.execution.types import FrozenExecutionSpec
+from labpilot.execution.types import FrozenExecutionSpec, frozen_launch_spec_hash
 
 
 def _execution_spec() -> FrozenExecutionSpec:
@@ -53,6 +53,52 @@ def test_launch_spec_substitutes_only_proven_output_indexes(tmp_path: Path) -> N
         "--output",
         str(workspace / "runtime" / "output"),
     )
+
+
+def test_changed_reporter_bytes_change_policy_identity_and_rebuilt_h(
+    tmp_path: Path,
+) -> None:
+    from labpilot.execution.execution_service import build_frozen_launch_spec
+    from labpilot.execution.runner_policy import (
+        candidate_b_v2_profile_manifest,
+        runner_policy_identity,
+    )
+
+    policy_value = {
+        "launch_profile_version": "candidate-b-v2",
+        "runtime_profiles": {},
+    }
+    first_identity = runner_policy_identity(
+        policy_value,
+        candidate_b_v2_profile_manifest("a" * 64),
+    )
+    changed_identity = runner_policy_identity(
+        policy_value,
+        candidate_b_v2_profile_manifest("b" * 64),
+    )
+    common = {
+        "workspace_path": tmp_path / "attempt",
+        "source_manifest_sha256": "e" * 64,
+        "runtime_path": "/opt/python/bin/python",
+        "environment": (),
+        "execution_user": "labpilot-train",
+        "execution_group": "labpilot-train",
+        "launch_profile_version": "candidate-b-v2",
+    }
+
+    first = build_frozen_launch_spec(
+        _execution_spec(),
+        **common,
+        launch_policy_identity=first_identity,
+    )
+    changed = build_frozen_launch_spec(
+        _execution_spec(),
+        **common,
+        launch_policy_identity=changed_identity,
+    )
+
+    assert first_identity != changed_identity
+    assert frozen_launch_spec_hash(first) != frozen_launch_spec_hash(changed)
 
 
 @pytest.mark.parametrize(

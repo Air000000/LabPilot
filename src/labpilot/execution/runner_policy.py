@@ -2,10 +2,26 @@ import grp
 import json
 import pwd
 import stat
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
+from labpilot.common.canonical_json import CanonicalValue
 from labpilot.common.hashing import namespaced_sha256
+
+CANDIDATE_B_V2 = "candidate-b-v2"
+TERMINAL_RECEIPT_SCHEMA = "labpilot-terminal-receipt-v1"
+TERMINAL_RECEIPT_REPORTER_PATH = Path(
+    "/opt/labpilot-runner/libexec/labpilot-terminal-receipt-v1.py"
+)
+TERMINAL_RECEIPT_BUNDLED_SOURCE_PATH = Path(
+    "/opt/labpilot-runner/app/deploy/libexec/labpilot-terminal-receipt-v1.py"
+)
+TRUSTED_REPORTER_INTERPRETER = Path("/usr/bin/python3")
+_TERMINAL_RECEIPT_REPORTER_SHA256 = (
+    "5966c05fd18d6d16c0086fbd4f6906ac36f252cbdc5dfbf7c6df3002d43ac499"
+)
 
 SAFE_ENVIRONMENT_KEYS = frozenset(
     {
@@ -39,6 +55,55 @@ class RuntimeProfile:
     name: str
     runtime_path: str
     environment: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateBV2ProfileManifest:
+    launch_profile_version: str
+    terminal_receipt_schema: str
+    reporter_path: str
+    reporter_sha256: str
+
+
+def candidate_b_v2_profile_manifest(
+    reporter_sha256: str,
+) -> CandidateBV2ProfileManifest:
+    if (
+        len(reporter_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in reporter_sha256)
+    ):
+        raise ValueError("reporter_sha256_invalid")
+    return CandidateBV2ProfileManifest(
+        launch_profile_version=CANDIDATE_B_V2,
+        terminal_receipt_schema=TERMINAL_RECEIPT_SCHEMA,
+        reporter_path=str(TERMINAL_RECEIPT_REPORTER_PATH),
+        reporter_sha256=reporter_sha256,
+    )
+
+
+def runner_policy_identity(
+    policy_value: Mapping[str, object],
+    profile_manifest: CandidateBV2ProfileManifest,
+) -> str:
+    manifest_value: dict[str, CanonicalValue] = {
+        "launch_profile_version": profile_manifest.launch_profile_version,
+        "terminal_receipt_schema": profile_manifest.terminal_receipt_schema,
+        "reporter_path": profile_manifest.reporter_path,
+        "reporter_sha256": profile_manifest.reporter_sha256,
+    }
+    identity_value: dict[str, CanonicalValue] = {
+        "policy": cast(dict[str, CanonicalValue], dict(policy_value)),
+        "profile_manifest": manifest_value,
+    }
+    return namespaced_sha256(
+        "labpilot-runner-policy:v2",
+        identity_value,
+    )
+
+
+_CANDIDATE_B_V2_PROFILE_MANIFEST = candidate_b_v2_profile_manifest(
+    _TERMINAL_RECEIPT_REPORTER_SHA256
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,10 +150,17 @@ def load_runner_policy(path: Path) -> RunnerPolicy:
         value,
         controller_uid=pwd.getpwnam(controller_user).pw_uid,
         controller_gid=grp.getgrnam(controller_group).gr_gid,
+        profile_manifest=_CANDIDATE_B_V2_PROFILE_MANIFEST,
     )
 
 
-def parse_runner_policy(value: object, *, controller_uid: int, controller_gid: int) -> RunnerPolicy:
+def parse_runner_policy(
+    value: object,
+    *,
+    controller_uid: int,
+    controller_gid: int,
+    profile_manifest: CandidateBV2ProfileManifest | None = None,
+) -> RunnerPolicy:
     if type(value) is not dict or set(value) != _POLICY_KEYS:
         raise ValueError("policy_schema_invalid")
     if (
@@ -103,6 +175,12 @@ def parse_runner_policy(value: object, *, controller_uid: int, controller_gid: i
         "labpilot-train",
     ):
         raise ValueError("policy_identity_mismatch")
+    launch_profile_version = _string(value, "launch_profile_version")
+    if (
+        profile_manifest is not None
+        and launch_profile_version != profile_manifest.launch_profile_version
+    ):
+        raise ValueError("launch_profile_version_unsupported")
     profiles_value = value["runtime_profiles"]
     if type(profiles_value) is not dict or not profiles_value:
         raise ValueError("policy_schema_invalid")
@@ -146,10 +224,15 @@ def parse_runner_policy(value: object, *, controller_uid: int, controller_gid: i
         workspace_root=_absolute_string(value, "workspace_root"),
         runtime_profiles=tuple(sorted(profiles, key=lambda profile: profile.name)),
         allowed_local_dataset_roots=tuple(sorted(set(roots))),
-        launch_profile_version=_string(value, "launch_profile_version"),
+        launch_profile_version=launch_profile_version,
         max_runtime_seconds=max_runtime,
         stop_timeout_seconds=stop_timeout,
-        policy_identity=namespaced_sha256("labpilot-runner-policy:v1", value),
+        # ponytail: no-manifest mode keeps legacy v1 unit fixtures; production load binds v2.
+        policy_identity=(
+            namespaced_sha256("labpilot-runner-policy:v1", value)
+            if profile_manifest is None
+            else runner_policy_identity(value, profile_manifest)
+        ),
     )
 
 

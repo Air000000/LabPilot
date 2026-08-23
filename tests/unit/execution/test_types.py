@@ -1,6 +1,6 @@
 import hashlib
 import importlib
-from dataclasses import replace
+from dataclasses import fields, replace
 from pathlib import Path
 from uuid import UUID
 
@@ -126,3 +126,27 @@ def test_frozen_execution_spec_identity_exact_golden_vector() -> None:
     for indexes in ((-1,), (7, 7), (7, 6), (8,)):
         with pytest.raises(ValueError):
             replace(spec, output_dir_arg_indexes=indexes)
+
+
+def test_frozen_launch_spec_schema_remains_unchanged() -> None:
+    execution = _types()
+
+    assert tuple(field.name for field in fields(execution.FrozenLaunchSpec)) == (
+        "schema_version",
+        "workspace_path",
+        "source_manifest_sha256",
+        "python_profile",
+        "runtime_path",
+        "train_entrypoint_relative_path",
+        "workdir_relative_path",
+        "argv",
+        "dataset_reference_type",
+        "dataset_argument",
+        "dataset_reference_hash",
+        "environment",
+        "timeout_seconds",
+        "execution_user",
+        "execution_group",
+        "launch_profile_version",
+        "launch_policy_identity",
+    )

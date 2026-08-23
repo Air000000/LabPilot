@@ -1,3 +1,4 @@
+import hashlib
 import json
 import stat
 from pathlib import Path
@@ -5,7 +6,17 @@ from types import SimpleNamespace
 
 import pytest
 
+from labpilot.execution import runner_policy
 from labpilot.execution.runner_policy import load_runner_policy, parse_runner_policy
+
+REPORTER = Path("deploy/libexec/labpilot-terminal-receipt-v1.py")
+REPORTER_SHA256 = "5966c05fd18d6d16c0086fbd4f6906ac36f252cbdc5dfbf7c6df3002d43ac499"
+
+
+def _manifest(
+    reporter_sha256: str = REPORTER_SHA256,
+) -> runner_policy.CandidateBV2ProfileManifest:
+    return runner_policy.candidate_b_v2_profile_manifest(reporter_sha256)
 
 
 def _value() -> dict[str, object]:
@@ -23,24 +34,72 @@ def _value() -> dict[str, object]:
             }
         },
         "allowed_local_dataset_roots": ["/datasets"],
-        "launch_profile_version": "candidate-b-v1",
+        "launch_profile_version": "candidate-b-v2",
         "max_runtime_seconds": 3600,
         "stop_timeout_seconds": 30,
     }
 
 
 def test_policy_identity_exact_golden_vector() -> None:
-    policy = parse_runner_policy(_value(), controller_uid=1000, controller_gid=1001)
+    policy = parse_runner_policy(
+        _value(),
+        controller_uid=1000,
+        controller_gid=1001,
+        profile_manifest=_manifest(),
+    )
     assert policy.policy_identity == (
-        "14e26a8bbd4ce36ef41f00ebfd8478227ba7c319433b842d438b2f682feb4229"
+        "b5ea004715593dac04f34466e60d97f260fd7ee91271714fabe80293a9ecd293"
     )
     assert policy.runtime_profiles[0].environment == (("PATH", "/opt/python/bin:/usr/bin"),)
+
+
+def test_candidate_b_v2_policy_identity_binds_reporter_digest() -> None:
+    manifest = _manifest()
+
+    assert hashlib.sha256(REPORTER.read_bytes()).hexdigest() == REPORTER_SHA256
+    assert manifest.launch_profile_version == "candidate-b-v2"
+    assert manifest.terminal_receipt_schema == "labpilot-terminal-receipt-v1"
+    assert manifest.reporter_path == (
+        "/opt/labpilot-runner/libexec/labpilot-terminal-receipt-v1.py"
+    )
+    assert manifest.reporter_sha256 == REPORTER_SHA256
+    assert runner_policy.runner_policy_identity(_value(), manifest) != (
+        runner_policy.runner_policy_identity(_value(), _manifest("a" * 64))
+    )
+
+
+def test_policy_rejects_unsupported_launch_profile_version() -> None:
+    value = {**_value(), "launch_profile_version": "candidate-b-v1"}
+
+    with pytest.raises(ValueError, match="launch_profile_version"):
+        parse_runner_policy(
+            value,
+            controller_uid=1,
+            controller_gid=2,
+            profile_manifest=_manifest(),
+        )
+
+
+@pytest.mark.parametrize("field", ["reporter_path", "reporter_sha256"])
+def test_reporter_fields_are_not_policy_schema(field: str) -> None:
+    with pytest.raises(ValueError, match="policy_schema"):
+        parse_runner_policy(
+            {**_value(), field: "caller-selected"},
+            controller_uid=1,
+            controller_gid=2,
+            profile_manifest=_manifest(),
+        )
 
 
 @pytest.mark.parametrize("extra", [{"unknown": True}, {"runtime_profiles": {}}])
 def test_policy_schema_is_strict(extra: dict[str, object]) -> None:
     with pytest.raises(ValueError, match="policy_schema"):
-        parse_runner_policy({**_value(), **extra}, controller_uid=1, controller_gid=2)
+        parse_runner_policy(
+            {**_value(), **extra},
+            controller_uid=1,
+            controller_gid=2,
+            profile_manifest=_manifest(),
+        )
 
 
 def test_policy_rejects_environment_outside_fixed_allowlist() -> None:
@@ -52,13 +111,23 @@ def test_policy_rejects_environment_outside_fixed_allowlist() -> None:
         }
     }
     with pytest.raises(ValueError, match="environment"):
-        parse_runner_policy(value, controller_uid=1, controller_gid=2)
+        parse_runner_policy(
+            value,
+            controller_uid=1,
+            controller_gid=2,
+            profile_manifest=_manifest(),
+        )
 
 
 def test_policy_cannot_select_root_execution_identity() -> None:
     value = {**_value(), "execution_user": "root", "execution_group": "root"}
     with pytest.raises(ValueError, match="policy_identity"):
-        parse_runner_policy(value, controller_uid=1, controller_gid=2)
+        parse_runner_policy(
+            value,
+            controller_uid=1,
+            controller_gid=2,
+            profile_manifest=_manifest(),
+        )
 
 
 @pytest.mark.parametrize(
