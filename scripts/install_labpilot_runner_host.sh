@@ -30,19 +30,48 @@ verify_effective_service() {
   [[ "$exec_start" == *"/opt/labpilot-runner/app/.venv/bin/python -E -s -B -m labpilot.execution.runner_daemon --policy /etc/labpilot/runner-policy.json"* ]] || fail "loaded ExecStart mismatch"
 }
 
+run_controller_info_probe() {
+  runuser --user labpilot-controller --group labpilot-control -- \
+    "$app_root/.venv/bin/python" -E -s -B -c '
+from labpilot.execution.runner_client import RunnerClient, RunnerPreSendError
+from labpilot.execution.runner_protocol import PROTOCOL_VERSION, RunnerInfoRequest, RunnerOperation
+
+try:
+    response = RunnerClient(
+        "/run/labpilot-runner/control.sock", timeout_seconds=1.0
+    ).request(RunnerInfoRequest(PROTOCOL_VERSION, RunnerOperation.INFO, None))
+except RunnerPreSendError:
+    raise SystemExit(75)
+assert response["outcome"] == "ok"
+'
+}
+
+wait_for_runner_readiness() {
+  local attempt status
+  for ((attempt = 1; attempt <= 50; attempt++)); do
+    if run_controller_info_probe; then
+      echo "Runner readiness established after $attempt attempt(s)"
+      return 0
+    else
+      status=$?
+    fi
+    [[ "$status" == 75 ]] || return "$status"
+    if (( attempt == 50 )); then
+      fail "Runner readiness exhausted after 50 attempts"
+      return 1
+    fi
+    if ! systemctl is-active --quiet "$service_name"; then
+      fail "Runner service became inactive before readiness"
+      return 1
+    fi
+    sleep 0.2
+  done
+}
+
 verify_runtime_boundary() {
   systemctl is-active --quiet "$service_name"
   [[ "$(stat -c '%U:%G %a' "$runtime_dir")" == "root:labpilot-control 750" ]] || fail "runtime directory metadata mismatch"
   [[ "$(stat -c '%U:%G %a' "$socket_path")" == "root:labpilot-control 660" ]] || fail "socket metadata mismatch"
-  runuser --user labpilot-controller --group labpilot-control -- \
-    "$app_root/.venv/bin/python" -E -s -B -c '
-from labpilot.execution.runner_client import RunnerClient
-from labpilot.execution.runner_protocol import PROTOCOL_VERSION, RunnerInfoRequest, RunnerOperation
-response = RunnerClient("/run/labpilot-runner/control.sock").request(
-    RunnerInfoRequest(PROTOCOL_VERSION, RunnerOperation.INFO, None)
-)
-assert response["outcome"] == "ok"
-'
 }
 
 verify_final_import() {
@@ -124,6 +153,7 @@ activate_and_verify() {
   systemctl enable "$service_name"
   systemctl restart "$service_name"
   verify_effective_service
+  wait_for_runner_readiness
   verify_runtime_boundary
   verify_install_tree
 }

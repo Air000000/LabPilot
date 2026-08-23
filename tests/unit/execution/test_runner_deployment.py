@@ -55,6 +55,49 @@ main '{sha}' '{policy}'
     return result, events.read_text().splitlines()
 
 
+def _run_readiness_activation(
+    tmp_path: Path,
+    *,
+    probe_statuses: tuple[int, ...],
+    service_active: bool = True,
+    runtime_status: int = 0,
+) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    events = tmp_path / "readiness.log"
+    statuses = " ".join(str(status) for status in probe_statuses)
+    command = f"""
+source '{INSTALLER}'
+probe_statuses=({statuses})
+probe_count=0
+run_controller_info_probe() {{
+  printf 'probe\n' >> '{events}'
+  local index=$probe_count
+  if (( index >= ${{#probe_statuses[@]}} )); then
+    index=$((${{#probe_statuses[@]}} - 1))
+  fi
+  probe_count=$((probe_count + 1))
+  return "${{probe_statuses[$index]}}"
+}}
+systemctl() {{
+  printf 'systemctl:%s\n' "$*" >> '{events}'
+  if [[ "$1 ${{2-}}" == 'is-active --quiet' ]]; then
+    {'return 0' if service_active else 'return 1'}
+  fi
+}}
+sleep() {{ printf 'sleep:%s\n' "$*" >> '{events}'; }}
+verify_effective_service() {{ printf 'effective\n' >> '{events}'; }}
+verify_runtime_boundary() {{
+  printf 'runtime\n' >> '{events}'
+  return {runtime_status}
+}}
+verify_install_tree() {{ printf 'tree\n' >> '{events}'; }}
+activate_and_verify
+"""
+    result = subprocess.run(
+        ["bash", "-c", command], check=False, capture_output=True, text=True
+    )
+    return result, events.read_text().splitlines()
+
+
 def test_service_freezes_candidate_b_hardening() -> None:
     parser = configparser.ConfigParser(interpolation=None, strict=True)
     parser.read(SERVICE)
@@ -144,35 +187,61 @@ def test_installer_script_has_valid_bash_syntax() -> None:
     subprocess.run(["bash", "-n", str(INSTALLER)], check=True)
 
 
-def test_info_readiness_runs_as_fixed_controller_uid_and_gid(tmp_path: Path) -> None:
+def test_info_probe_runs_as_fixed_controller_uid_and_gid_with_short_timeout(
+    tmp_path: Path,
+) -> None:
     app_root = tmp_path / "app"
+    venv.create(app_root / ".venv", with_pip=False)
+    site_packages = next((app_root / ".venv/lib").glob("python*/site-packages"))
+    execution = site_packages / "labpilot/execution"
+    execution.mkdir(parents=True)
+    (execution.parent / "__init__.py").write_text("")
+    (execution / "__init__.py").write_text("")
+    (execution / "runner_client.py").write_text(
+        "import os\n"
+        "class RunnerPreSendError(ConnectionError): pass\n"
+        "class RunnerClient:\n"
+        "    def __init__(self, socket_path, *, timeout_seconds):\n"
+        "        assert socket_path == '/run/labpilot-runner/control.sock'\n"
+        "        assert timeout_seconds == 1.0\n"
+        "    def request(self, request):\n"
+        "        outcome = os.environ['LABPILOT_TEST_PROBE_OUTCOME']\n"
+        "        if outcome == 'pre-send': raise RunnerPreSendError()\n"
+        "        if outcome == 'hard': raise RuntimeError('hard failure')\n"
+        "        return {'outcome': 'ok'}\n"
+    )
+    (execution / "runner_protocol.py").write_text(
+        "PROTOCOL_VERSION = 1\n"
+        "class RunnerInfoRequest:\n"
+        "    def __init__(self, *args): pass\n"
+        "class RunnerOperation: INFO = 'INFO'\n"
+    )
     python = app_root / ".venv/bin/python"
-    python.parent.mkdir(parents=True)
-    python.write_text("#!/bin/sh\nexit 0\n")
-    python.chmod(0o755)
     log = tmp_path / "runuser.argv"
-    log.write_text("")
     command = f"""
 source '{INSTALLER}'
 app_root='{app_root}'
-runtime_dir='{tmp_path}/run'
-socket_path='{tmp_path}/run/control.sock'
-systemctl() {{ return 0; }}
-stat() {{
-  case "$3" in
-    "$runtime_dir") echo 'root:labpilot-control 750' ;;
-    "$socket_path") echo 'root:labpilot-control 660' ;;
-  esac
+runuser() {{
+  printf '%s\n' "$@" > '{log}'
+  shift 5
+  "$@"
 }}
-runuser() {{ printf '%s\n' "$@" > '{log}'; }}
-verify_runtime_boundary
+run_controller_info_probe
 """
+    results = {
+        outcome: subprocess.run(
+            ["bash", "-c", command],
+            check=False,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "LABPILOT_TEST_PROBE_OUTCOME": outcome},
+        )
+        for outcome in ("success", "pre-send", "hard")
+    }
 
-    result = subprocess.run(
-        ["bash", "-c", command], check=False, capture_output=True, text=True
-    )
-
-    assert result.returncode == 0, result.stderr
+    assert results["success"].returncode == 0, results["success"].stderr
+    assert results["pre-send"].returncode == 75
+    assert results["hard"].returncode not in (0, 75)
     assert log.read_text().splitlines()[:10] == [
         "--user",
         "labpilot-controller",
@@ -332,29 +401,77 @@ verify_install_tree
         assert result.returncode == expected_status, f"{name}: {result.stderr}"
 
 
-def test_activation_restarts_before_effective_and_readiness_verification(
+def test_transient_readiness_retries_then_activation_reaches_tree(
     tmp_path: Path,
 ) -> None:
-    log = tmp_path / "activation.log"
-    command = f"""
-source '{INSTALLER}'
-systemctl() {{ printf 'systemctl:%s\n' "$*" >> '{log}'; }}
-verify_effective_service() {{ echo effective >> '{log}'; }}
-verify_runtime_boundary() {{ echo runtime >> '{log}'; }}
-verify_install_tree() {{ echo tree >> '{log}'; }}
-activate_and_verify
-"""
-
-    result = subprocess.run(
-        ["bash", "-c", command], check=False, capture_output=True, text=True
+    result, lines = _run_readiness_activation(
+        tmp_path, probe_statuses=(75, 75, 0)
     )
 
     assert result.returncode == 0, result.stderr
-    assert log.read_text().splitlines() == [
+    assert lines.count("probe") == 3
+    assert lines.count("sleep:0.2") == 2
+    assert lines[-2:] == ["runtime", "tree"]
+
+
+def test_readiness_exhaustion_stops_after_exact_bound(tmp_path: Path) -> None:
+    result, lines = _run_readiness_activation(tmp_path, probe_statuses=(75,))
+
+    assert result.returncode != 0
+    assert lines.count("probe") == 50
+    assert "runtime" not in lines
+    assert "tree" not in lines
+    assert "readiness exhausted" in result.stderr
+
+
+def test_hard_readiness_failure_is_not_retried(tmp_path: Path) -> None:
+    result, lines = _run_readiness_activation(tmp_path, probe_statuses=(19, 0))
+
+    assert result.returncode == 19
+    assert lines.count("probe") == 1
+    assert not any(line.startswith("sleep:") for line in lines)
+    assert "runtime" not in lines
+    assert "tree" not in lines
+
+
+def test_readiness_fails_when_service_becomes_inactive(tmp_path: Path) -> None:
+    result, lines = _run_readiness_activation(
+        tmp_path, probe_statuses=(75, 0), service_active=False
+    )
+
+    assert result.returncode != 0
+    assert lines.count("probe") == 1
+    assert lines.count("systemctl:is-active --quiet labpilot-runner.service") == 1
+    assert not any(line.startswith("sleep:") for line in lines)
+    assert "runtime" not in lines
+    assert "tree" not in lines
+
+
+def test_activation_orders_readiness_before_metadata_and_tree(
+    tmp_path: Path,
+) -> None:
+    result, lines = _run_readiness_activation(tmp_path, probe_statuses=(0,))
+
+    assert result.returncode == 0, result.stderr
+    assert lines == [
         "systemctl:daemon-reload",
         "systemctl:enable labpilot-runner.service",
         "systemctl:restart labpilot-runner.service",
         "effective",
+        "probe",
         "runtime",
         "tree",
     ]
+
+
+def test_successful_readiness_does_not_skip_final_metadata_failure(
+    tmp_path: Path,
+) -> None:
+    result, lines = _run_readiness_activation(
+        tmp_path, probe_statuses=(0,), runtime_status=23
+    )
+
+    assert result.returncode == 23
+    assert lines.count("probe") == 1
+    assert "runtime" in lines
+    assert "tree" not in lines
