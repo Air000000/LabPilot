@@ -46,11 +46,7 @@ def _run_fake_native_preflight(
             if command[2] == "postgres-container":
                 value = {
                     "NetworkSettings": {
-                        "Ports": {
-                            "5432/tcp": [
-                                {"HostIp": "127.0.0.1", "HostPort": "55432"}
-                            ]
-                        }
+                        "Ports": {"5432/tcp": [{"HostIp": "127.0.0.1", "HostPort": "55432"}]}
                     }
                 }
             else:
@@ -64,7 +60,23 @@ def _run_fake_native_preflight(
                 }
             stdout = json.dumps([value])
         elif command[:3] == ("docker", "exec", "coordinator-container"):
-            stdout = {"-u": "999", "-g": "983", "-G": "999 983 982"}[command[-1]]
+            if command[3:5] == ("python", "-c"):
+                stdout = json.dumps(
+                    {
+                        "version": "labpilot-runner:v1",
+                        "operation": "INFO",
+                        "outcome": "ok",
+                        "result": {
+                            "runner_version": "v1",
+                            "policy_identity": "b" * 64,
+                            "workspace_root": "/srv/labpilot/attempts",
+                            "boot_id": "11111111-1111-1111-1111-111111111111",
+                            "readiness_reason": "ready",
+                        },
+                    }
+                )
+            else:
+                stdout = {"-u": "999", "-g": "983", "-G": "999 983 982"}[command[-1]]
         elif command[:5] == (
             "runuser",
             "--user",
@@ -73,8 +85,7 @@ def _run_fake_native_preflight(
             "labpilot-control",
         ):
             stdout = (
-                "/opt/labpilot-runner/app/.venv/lib/python3.12/site-packages/"
-                "labpilot/__init__.py"
+                "/opt/labpilot-runner/app/.venv/lib/python3.12/site-packages/labpilot/__init__.py"
             )
         else:
             raise AssertionError(f"unexpected native command: {command}")
@@ -114,6 +125,17 @@ def _run_fake_native_preflight(
         }
     )
     return result, calls, metadata_paths
+
+
+def test_preflight_runs_real_runner_info_from_coordinator_container(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result, calls, _paths = _run_fake_native_preflight(monkeypatch, app_mode=0o711)
+
+    assert result["runner_info"]["outcome"] == "ok"
+    assert any(
+        command[:4] == ("docker", "exec", "coordinator-container", "python") for command in calls
+    )
 
 
 def test_preflight_cli_requires_and_binds_exact_tested_sha(tmp_path: Path) -> None:
@@ -157,13 +179,86 @@ def test_native_command_output_is_bounded() -> None:
     from tests.acceptance.slice2.native_preflight import NativePreflightError, run_command
 
     for stream in ("stdout", "stderr"):
-        code = (
-            "import sys; "
-            f"sys.{stream}.buffer.write(b'x' * 65); "
-            f"sys.{stream}.flush()"
-        )
+        code = f"import sys; sys.{stream}.buffer.write(b'x' * 65); sys.{stream}.flush()"
         with pytest.raises(NativePreflightError, match=stream):
             run_command((sys.executable, "-c", code), max_output_bytes=64)
+
+
+def test_compose_admin_command_selects_only_exact_project_service_and_action() -> None:
+    from tests.acceptance.slice2.native_preflight import compose_admin_command
+
+    assert compose_admin_command("labpilot-task5", "coordinator", "restart") == (
+        "docker",
+        "compose",
+        "--project-name",
+        "labpilot-task5",
+        "restart",
+        "coordinator",
+    )
+    for project, service, action in (
+        ("bad;project", "coordinator", "restart"),
+        ("labpilot-task5", "other", "restart"),
+        ("labpilot-task5", "coordinator", "exec sh"),
+    ):
+        with pytest.raises(ValueError):
+            compose_admin_command(project, service, action)
+
+
+def test_exact_systemd_unit_is_derived_only_from_x() -> None:
+    from tests.acceptance.slice2.native_preflight import exact_systemd_unit
+
+    execution_identity = f"labpilot-v1-{'a' * 64}-{'b' * 32}"
+    assert exact_systemd_unit(execution_identity) == f"{execution_identity}.service"
+    for invalid in ("other", f"{execution_identity}.service", f"{execution_identity};reboot"):
+        with pytest.raises(ValueError):
+            exact_systemd_unit(invalid)
+
+
+def test_native_worker_command_is_fixed_argv_not_arbitrary_shell() -> None:
+    from tests.acceptance.slice2.native_preflight import native_worker_command
+
+    assert native_worker_command(
+        "a1b2c3d4e5f6",
+        scenario="F06",
+        operation="delegate_real_launch",
+        tested_sha="a" * 40,
+        python_profile="python-3.12",
+    ) == (
+        "docker",
+        "exec",
+        "a1b2c3d4e5f6",
+        "python",
+        "-m",
+        "tests.acceptance.slice2.native_worker",
+        "--scenario",
+        "F06",
+        "--operation",
+        "delegate_real_launch",
+        "--tested-sha",
+        "a" * 40,
+        "--python-profile",
+        "python-3.12",
+    )
+    assert native_worker_command(
+        "a1b2c3d4e5f6",
+        scenario="F06",
+        operation="initialize",
+        tested_sha="a" * 40,
+        python_profile="python-3.12",
+    )[6:10] == ("--scenario", "F06", "--operation", "initialize")
+    for container, scenario, operation in (
+        ("bad;id", "F06", "delegate_real_launch"),
+        ("a1b2c3d4e5f6", "F23", "delegate_real_launch"),
+        ("a1b2c3d4e5f6", "F06", "sh -c reboot"),
+    ):
+        with pytest.raises(ValueError):
+            native_worker_command(
+                container,
+                scenario=scenario,
+                operation=operation,
+                tested_sha="a" * 40,
+                python_profile="python-3.12",
+            )
 
 
 def test_native_request_binds_preflight_without_exposing_scenario_actions(
@@ -292,9 +387,7 @@ def test_runner_runtime_metadata_is_exact(
 def test_native_preflight_records_exact_app_root_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    result, _calls, metadata_paths = _run_fake_native_preflight(
-        monkeypatch, app_mode=0o711
-    )
+    result, _calls, metadata_paths = _run_fake_native_preflight(monkeypatch, app_mode=0o711)
 
     assert Path("/opt/labpilot-runner/app") in metadata_paths
     assert result["application_root"] == {
@@ -318,9 +411,7 @@ def test_native_preflight_rejects_non_exact_app_root_mode(
 def test_native_preflight_controller_import_command_is_fixed_and_bounded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    result, calls, _metadata_paths = _run_fake_native_preflight(
-        monkeypatch, app_mode=0o711
-    )
+    result, calls, _metadata_paths = _run_fake_native_preflight(monkeypatch, app_mode=0o711)
     controller_calls = [command for command in calls if command[0] == "runuser"]
 
     assert len(controller_calls) == 1
@@ -344,8 +435,7 @@ def test_native_preflight_controller_import_command_is_fixed_and_bounded(
     assert "labpilot.execution.runner_protocol" in proof
     assert result["controller_final_import"] == {
         "labpilot_path": (
-            "/opt/labpilot-runner/app/.venv/lib/python3.12/site-packages/"
-            "labpilot/__init__.py"
+            "/opt/labpilot-runner/app/.venv/lib/python3.12/site-packages/labpilot/__init__.py"
         )
     }
 
@@ -357,18 +447,14 @@ def test_compose_network_and_api_mount_authority_are_narrow() -> None:
         require_postgres_bind,
     )
 
-    require_postgres_bind(
-        {"5432/tcp": [{"HostIp": "127.0.0.1", "HostPort": "55432"}]}
-    )
+    require_postgres_bind({"5432/tcp": [{"HostIp": "127.0.0.1", "HostPort": "55432"}]})
     require_api_mounts(
         [{"Destination": "/app/content", "Source": "/srv/labpilot/content"}],
         workspace_root="/srv/labpilot/attempts",
     )
 
     with pytest.raises(NativePreflightError, match="loopback"):
-        require_postgres_bind(
-            {"5432/tcp": [{"HostIp": "0.0.0.0", "HostPort": "55432"}]}
-        )
+        require_postgres_bind({"5432/tcp": [{"HostIp": "0.0.0.0", "HostPort": "55432"}]})
     with pytest.raises(NativePreflightError, match="Runner runtime"):
         require_api_mounts(
             [{"Destination": "/run/labpilot-runner", "Source": "/run/labpilot-runner"}],

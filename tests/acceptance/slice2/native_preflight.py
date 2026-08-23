@@ -16,6 +16,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
+_COMPOSE_PROJECT = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$", re.ASCII)
+_EXECUTION_IDENTITY = re.compile(r"^labpilot-v1-[0-9a-f]{64}-[0-9a-f]{32}$", re.ASCII)
+_COMPOSE_SERVICES = {"postgres", "migrate", "api", "coordinator"}
+_COMPOSE_ACTIONS = {"start", "stop", "restart", "kill"}
+_CONTAINER_ID = re.compile(r"^[0-9a-f]{12,64}$", re.ASCII)
+_PYTHON_PROFILE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", re.ASCII)
 _SECRET_KEYS = (
     "secret",
     "password",
@@ -77,6 +83,30 @@ if any(part.startswith(".stage.") for part in resolved_module.parts):
 assert RunnerClient and PROTOCOL_VERSION and RunnerInfoRequest and RunnerOperation
 print(resolved_module)
 """.strip()
+_COORDINATOR_INFO_PROOF = """
+import json
+
+from labpilot.execution.runner_client import RunnerClient
+from labpilot.execution.runner_protocol import PROTOCOL_VERSION, RunnerInfoRequest, RunnerOperation
+
+response = RunnerClient("/run/labpilot-runner/control.sock", timeout_seconds=10).request(
+    RunnerInfoRequest(PROTOCOL_VERSION, RunnerOperation.INFO, None)
+)
+result = response["result"]
+selected = {
+    "runner_version": result["runner_version"],
+    "policy_identity": result["policy_identity"],
+    "workspace_root": result["workspace_root"],
+    "boot_id": result["boot_id"],
+    "readiness_reason": result["readiness_reason"],
+}
+print(json.dumps({
+    "version": response["version"],
+    "operation": response["operation"],
+    "outcome": response["outcome"],
+    "result": selected,
+}, separators=(",", ":"), sort_keys=True))
+""".strip()
 _EXPECTED_WORKSPACE = {
     "workspace": {"kind": "directory", "gid": 982, "mode": 0o750},
     "source_directory": {"kind": "directory", "gid": 982, "mode": 0o550},
@@ -96,6 +126,57 @@ class CommandResult:
     argv: tuple[str, ...]
     stdout: bytes
     stderr: bytes
+
+
+def compose_admin_command(project: str, service: str, action: str) -> tuple[str, ...]:
+    if (
+        _COMPOSE_PROJECT.fullmatch(project) is None
+        or service not in _COMPOSE_SERVICES
+        or action not in _COMPOSE_ACTIONS
+    ):
+        raise ValueError("compose admin selection is not authorized")
+    return ("docker", "compose", "--project-name", project, action, service)
+
+
+def exact_systemd_unit(execution_identity: str) -> str:
+    if _EXECUTION_IDENTITY.fullmatch(execution_identity) is None:
+        raise ValueError("invalid supervisor execution identity")
+    return f"{execution_identity}.service"
+
+
+def native_worker_command(
+    container_id: str,
+    *,
+    scenario: str,
+    operation: str,
+    tested_sha: str,
+    python_profile: str,
+) -> tuple[str, ...]:
+    from tests.acceptance.slice2.scenarios import scenario_operation_names
+
+    if (
+        _CONTAINER_ID.fullmatch(container_id) is None
+        or _SHA.fullmatch(tested_sha) is None
+        or _PYTHON_PROFILE.fullmatch(python_profile) is None
+        or operation not in ("initialize", "snapshot", *scenario_operation_names(scenario))
+    ):
+        raise ValueError("native worker command is not authorized")
+    return (
+        "docker",
+        "exec",
+        container_id,
+        "python",
+        "-m",
+        "tests.acceptance.slice2.native_worker",
+        "--scenario",
+        scenario,
+        "--operation",
+        operation,
+        "--tested-sha",
+        tested_sha,
+        "--python-profile",
+        python_profile,
+    )
 
 
 def run_preflight_request(request: Mapping[str, object]) -> dict[str, object]:
@@ -142,9 +223,7 @@ def run_preflight_request(request: Mapping[str, object]) -> dict[str, object]:
     require_effective_service(service)
     runtime = _metadata(Path("/run/labpilot-runner"))
     socket = _metadata(Path("/run/labpilot-runner/control.sock"))
-    require_metadata(
-        "runtime directory", runtime, kind="directory", uid=0, gid=983, mode=0o750
-    )
+    require_metadata("runtime directory", runtime, kind="directory", uid=0, gid=983, mode=0o750)
     require_metadata("socket", socket, kind="socket", uid=0, gid=983, mode=0o660)
 
     container_ids = {
@@ -161,9 +240,7 @@ def run_preflight_request(request: Mapping[str, object]) -> dict[str, object]:
     coordinator_id = container_ids["coordinator"]
     coordinator_uid = int(_docker_exec(coordinator_id, "id", "-u"))
     coordinator_gid = int(_docker_exec(coordinator_id, "id", "-g"))
-    coordinator_groups = [
-        int(value) for value in _docker_exec(coordinator_id, "id", "-G").split()
-    ]
+    coordinator_groups = [int(value) for value in _docker_exec(coordinator_id, "id", "-G").split()]
     coordinator_identity = {
         "uid": coordinator_uid,
         "gid": coordinator_gid,
@@ -171,6 +248,22 @@ def run_preflight_request(request: Mapping[str, object]) -> dict[str, object]:
     }
     if coordinator_uid != 999 or coordinator_gid != 983 or 982 not in coordinator_groups:
         raise NativePreflightError("Coordinator numeric identity mismatch")
+    try:
+        runner_info = json.loads(
+            _docker_exec(coordinator_id, "python", "-c", _COORDINATOR_INFO_PROOF)
+        )
+    except json.JSONDecodeError as error:
+        raise NativePreflightError("Coordinator Runner INFO is invalid JSON") from error
+    if (
+        type(runner_info) is not dict
+        or set(runner_info) != {"version", "operation", "outcome", "result"}
+        or runner_info.get("version") != "labpilot-runner:v1"
+        or runner_info.get("operation") != "INFO"
+        or runner_info.get("outcome") != "ok"
+        or type(runner_info.get("result")) is not dict
+        or runner_info["result"].get("readiness_reason") != "ready"
+    ):
+        raise NativePreflightError("Coordinator Runner INFO contract mismatch")
 
     return {
         "tested_sha": tested_sha,
@@ -182,6 +275,7 @@ def run_preflight_request(request: Mapping[str, object]) -> dict[str, object]:
         "socket": socket,
         "containers": container_ids,
         "coordinator_identity": coordinator_identity,
+        "runner_info": runner_info,
     }
 
 
@@ -339,9 +433,7 @@ def require_workspace_permissions(nodes: Mapping[str, Mapping[str, object]]) -> 
 def redact_evidence(value: object) -> object:
     if isinstance(value, Mapping):
         return {
-            str(key): redact_evidence(item)
-            for key, item in value.items()
-            if not _secret_key(key)
+            str(key): redact_evidence(item) for key, item in value.items() if not _secret_key(key)
         }
     if isinstance(value, list | tuple):
         return [redact_evidence(item) for item in value]

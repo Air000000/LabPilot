@@ -4,9 +4,13 @@ import hashlib
 import importlib.util
 import inspect
 import json
+import stat
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -46,6 +50,292 @@ def test_scenario_registry_is_exact_and_unknown_names_fail_closed() -> None:
     ]
     with pytest.raises(ScenarioSelectionError, match="unknown scenario"):
         select_scenarios("F01,F23")
+
+
+def test_all_scenarios_have_concrete_distinct_driver_bindings() -> None:
+    from tests.acceptance.slice2.scenarios import SCENARIO_DRIVERS
+
+    assert set(SCENARIO_DRIVERS) == EXPECTED_SCENARIOS
+    assert {driver.__name__ for driver in SCENARIO_DRIVERS.values()} == {
+        f"run_f{number:02d}" for number in range(1, 23)
+    }
+
+
+def test_scenario_dispatch_executes_the_bound_procedure() -> None:
+    from tests.acceptance.slice2.scenarios import dispatch_native_scenario
+
+    observed: list[object] = []
+
+    class Runtime:
+        def execute(self, procedure: object) -> None:
+            observed.append(procedure)
+
+    for number in range(1, 23):
+        dispatch_native_scenario(
+            f"F{number:02d}", Runtime(), phase="prepare" if number == 18 else "run"
+        )
+
+    assert [procedure.scenario for procedure in observed] == [
+        f"F{number:02d}" for number in range(1, 23)
+    ]
+    assert all(procedure.operations for procedure in observed)
+    assert all(procedure.obligations for procedure in observed)
+    assert all(type(procedure.operations) is tuple for procedure in observed)
+    assert all(type(procedure.obligations) is tuple for procedure in observed)
+    assert all(procedure.phase in {"run", "prepare", "verify"} for procedure in observed)
+
+
+def test_f18_driver_binds_prepare_and_verify_but_rejects_run() -> None:
+    from tests.acceptance.slice2.scenarios import dispatch_native_scenario
+
+    phases: list[str] = []
+
+    class Runtime:
+        def execute(self, procedure: object) -> None:
+            phases.append(procedure.phase)
+
+    dispatch_native_scenario("F18", Runtime(), phase="prepare")
+    dispatch_native_scenario("F18", Runtime(), phase="verify")
+    assert phases == ["prepare", "verify"]
+    with pytest.raises(ValueError, match="F18"):
+        dispatch_native_scenario("F18", Runtime(), phase="run")
+
+
+def test_native_scenario_placeholder_is_removed() -> None:
+    from tests.acceptance.slice2 import scenarios
+
+    assert "native scenario drivers are not bound" not in inspect.getsource(scenarios)
+
+
+def test_native_worker_registry_is_exact_and_unknown_operation_fails_closed() -> None:
+    from tests.acceptance.slice2.native_worker import (
+        WORKER_OPERATIONS,
+        NativeWorkerSelectionError,
+        select_worker_operation,
+    )
+    from tests.acceptance.slice2.scenarios import scenario_operation_names
+
+    expected = {
+        (scenario, operation)
+        for scenario in EXPECTED_SCENARIOS
+        for operation in ("initialize", "snapshot", *scenario_operation_names(scenario))
+    }
+    assert set(WORKER_OPERATIONS) == expected
+    calls: list[object] = []
+    with pytest.raises(NativeWorkerSelectionError):
+        select_worker_operation("F01", "shell", before_select=calls.append)
+    assert calls == []
+
+
+def test_native_worker_fixture_profiles_cover_capacity_child_and_timeout() -> None:
+    from tests.acceptance.slice2.native_worker import fixture_profile
+
+    assert fixture_profile("F03").trial_count == 6
+    assert fixture_profile("F11").spawn_child is True
+    timeout = fixture_profile("F21")
+    assert timeout.timeout_seconds == 1
+    assert timeout.duration_seconds > timeout.timeout_seconds
+
+
+def test_native_worker_state_root_is_exact_and_cannot_escape() -> None:
+    from tests.acceptance.slice2.native_worker import worker_state_root
+
+    root = Path("/srv/labpilot/attempts")
+    assert worker_state_root(root, "a" * 40, "F01") == (
+        root / ".task5-acceptance" / ("a" * 40) / "F01"
+    )
+    with pytest.raises(ValueError):
+        worker_state_root(Path("relative"), "a" * 40, "F01")
+    with pytest.raises(ValueError):
+        worker_state_root(root, "A" * 40, "F01")
+
+
+def test_native_campaign_f01_uses_real_snapshot_fields_and_seals_verdict(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.acceptance.slice2 import native_campaign
+    from tests.acceptance.slice2.native_campaign import NativeCampaign
+    from tests.acceptance.slice2.native_preflight import CommandResult
+    from tests.acceptance.slice2.scenarios import ScenarioProcedure
+
+    calls: list[str] = []
+    execution_identity = f"labpilot-v1-{'e' * 64}-{'f' * 32}"
+    unit = f"{execution_identity}.service"
+
+    def command(argv: object, **_kwargs: object) -> CommandResult:
+        command = tuple(cast(tuple[str, ...], argv))
+        if command[:2] == ("systemctl", "list-units"):
+            output = f"{unit} loaded inactive dead LabPilot attempt\n".encode()
+        elif command[:2] == ("systemctl", "show"):
+            output = b"LoadState=loaded\nActiveState=inactive\nSubState=dead\nResult=success\n"
+        elif command[:2] == ("journalctl", "--unit"):
+            output = json.dumps({"_SYSTEMD_UNIT": unit, "MESSAGE": "exited"}).encode() + b"\n"
+        else:
+            raise AssertionError(command)
+        return CommandResult(command, output, b"")
+
+    monkeypatch.setattr(native_campaign, "run_command", command)
+
+    def worker(_container: str, scenario: str, operation: str, _sha: str, _profile: str):
+        calls.append(operation)
+        terminal = operation in {"observe_terminal", "snapshot"}
+        return {
+            "scenario": scenario,
+            "operation": operation,
+            "tested_sha": "a" * 40,
+            "batch": {"batch_id": "batch", "started": operation != "initialize"},
+            "trials": [{"trial_id": "trial", "ordinal": 1}],
+            "attempts": [
+                {
+                    "attempt_id": "attempt",
+                    "status": "terminal" if terminal else "running",
+                    "execution_identity": execution_identity,
+                    "execution_spec_hash": "b" * 64,
+                    "source_manifest_sha256": "c" * 64,
+                    "prepared_train_sha256": "d" * 64,
+                    "observed_environment": {"python_profile": "python-3.12"},
+                    "terminal_kind": "process_exited" if terminal else None,
+                    "terminal_at": "2026-01-01T00:00:00+00:00" if terminal else None,
+                    "exit_code": 0 if terminal else None,
+                    "termination_signal": None,
+                }
+            ],
+            "runtime_events": [],
+            "workload_oracle": {"start_count": 1, "source_sha256": "d" * 64},
+        }
+
+    request = {
+        "config": {
+            "evidence_root": str(tmp_path.resolve()),
+            "workspace_root": str((tmp_path / "workspace").resolve()),
+            "python_profile": "python-3.12",
+            "compose_project": "labpilot-task5",
+        },
+        "tested_sha": "a" * 40,
+        "phase": "run",
+        "database_url": "postgresql+asyncpg://user:pass@127.0.0.1:5432/labpilot",
+    }
+    runtime = NativeCampaign(
+        request,
+        preflight={
+            "containers": {
+                "coordinator": "a1b2c3d4e5f6",
+                "postgres": "b1c2d3e4f5a6",
+            }
+        },
+        worker=worker,
+        admin=lambda _argv: None,
+        campaign_nonce="01234567",
+    )
+    runtime.execute(
+        ScenarioProcedure(
+            "F01",
+            ("create_real_batch", "start", "dispatch", "observe_terminal"),
+            ("exact_source", "observed_environment", "exit_zero", "succeeded"),
+        )
+    )
+
+    assert calls == [
+        "initialize",
+        "create_real_batch",
+        "start",
+        "dispatch",
+        "observe_terminal",
+        "snapshot",
+    ]
+    verdicts = list(tmp_path.rglob("verdict.json"))
+    assert len(verdicts) == 1
+    assert json.loads(verdicts[0].read_text())["verdict"] == "PASS"
+    evidence_root = verdicts[0].parent
+    assert json.loads((evidence_root / "systemd-exact-unit.json").read_text())["units"] == [
+        {
+            "execution_identity": execution_identity,
+            "listed": True,
+            "properties": {
+                "ActiveState": "inactive",
+                "LoadState": "loaded",
+                "Result": "success",
+                "SubState": "dead",
+            },
+            "unit": unit,
+        }
+    ]
+    assert (
+        json.loads((evidence_root / "journal-exact-unit.jsonl").read_text())["_SYSTEMD_UNIT"]
+        == unit
+    )
+
+
+def test_coordinator_down_commands_run_while_container_remains_exec_capable(
+    tmp_path: Path,
+) -> None:
+    from tests.acceptance.slice2.native_campaign import NativeCampaign
+    from tests.acceptance.slice2.scenarios import ScenarioProcedure
+
+    events: list[object] = []
+
+    def worker(_container: str, scenario: str, operation: str, sha: str, _profile: str):
+        events.append(("worker", operation))
+        attempts = []
+        if operation in {"scan", "snapshot"}:
+            attempts = [
+                {
+                    "attempt_id": "attempt",
+                    "status": "terminal",
+                    "execution_identity": "X",
+                    "terminal_kind": "process_exited",
+                    "terminal_at": "2026-01-01T00:00:00+00:00",
+                }
+            ]
+        return {
+            "scenario": scenario,
+            "operation": operation,
+            "tested_sha": sha,
+            "attempts": attempts,
+            "runtime_events": [],
+            "workload_oracles": [],
+        }
+
+    campaign = NativeCampaign(
+        {
+            "config": {
+                "evidence_root": str(tmp_path.resolve()),
+                "workspace_root": str((tmp_path / "workspace").resolve()),
+                "python_profile": "python-3.12",
+                "compose_project": "labpilot-task5",
+            },
+            "tested_sha": "a" * 40,
+            "database_url": "postgresql+asyncpg://user:pass@db.example/labpilot",
+        },
+        preflight={"containers": {"coordinator": "a1b2c3d4e5f6", "postgres": "b1c2d3e4f5a6"}},
+        worker=worker,
+        admin=events.append,
+    )
+    campaign.execute(
+        ScenarioProcedure(
+            "F04",
+            ("stop_coordinator", "persist_start", "start_coordinator", "scan"),
+            ("zero_attempt_while_down", "single_normal_dispatch"),
+        )
+    )
+
+    persist = events.index(("worker", "persist_start"))
+    stopped = max(
+        index
+        for index, event in enumerate(events[:persist])
+        if isinstance(event, tuple) and any("SIGSTOP" in part for part in event)
+    )
+    restarted = next(
+        index
+        for index, event in enumerate(events[persist + 1 :], persist + 1)
+        if isinstance(event, tuple) and event[-2:] == ("restart", "coordinator")
+    )
+    assert stopped < persist < restarted < events.index(("worker", "scan"))
+    assert not any(
+        isinstance(event, tuple) and event[-2:] == ("stop", "coordinator")
+        for event in events[stopped + 1 : persist]
+    )
 
 
 def test_faults_cannot_manufacture_physical_observations() -> None:
@@ -93,6 +383,146 @@ def test_crash_after_observe_requires_a_real_delegated_result() -> None:
     assert events == ["observed"]
     assert raised.value.delegate_completed is True
     assert raised.value.result == {"kind": "unknown"}
+
+
+def test_pre_send_fault_never_calls_runner() -> None:
+    from tests.acceptance.slice2.faults import ConnectionPrevented, prevent_connection
+
+    calls: list[str] = []
+
+    def runner() -> None:
+        calls.append("runner")
+
+    with pytest.raises(ConnectionPrevented) as raised:
+        prevent_connection()
+        runner()
+
+    assert raised.value.request_bytes_sent == 0
+    assert calls == []
+
+
+def test_native_worker_fault_runner_preserves_real_delegation_boundaries() -> None:
+    from tests.acceptance.slice2.native_worker import _CrashBoundary, _FaultRunner
+
+    from labpilot.execution.runner_protocol import RunnerOperation
+
+    calls: list[object] = []
+
+    class Delegate:
+        def request(self, request: object) -> dict[str, object]:
+            calls.append(request)
+            return {"outcome": "ok"}
+
+    class Request:
+        def __init__(self, operation: object) -> None:
+            self.operation = operation
+
+    launch = Request(RunnerOperation.LAUNCH)
+    with pytest.raises(_CrashBoundary):
+        _FaultRunner(Delegate(), "crash_before_launch").request(launch)
+    assert calls == []
+
+    with pytest.raises(ConnectionError, match="dropped real LAUNCH"):
+        _FaultRunner(Delegate(), "drop_launch").request(launch)
+    assert calls == [launch]
+
+
+def test_native_worker_crash_boundary_has_distinct_process_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.acceptance.slice2 import native_worker
+
+    def crash(_request: object) -> dict[str, object]:
+        raise native_worker._CrashBoundary("deliberate crash boundary")
+
+    monkeypatch.setitem(native_worker.WORKER_OPERATIONS, ("F05", "crash_before_runner"), crash)
+
+    assert (
+        native_worker.main(
+            [
+                "--scenario",
+                "F05",
+                "--operation",
+                "crash_before_runner",
+                "--tested-sha",
+                "a" * 40,
+                "--python-profile",
+                "python-3.12",
+            ]
+        )
+        == 86
+    )
+
+
+def test_native_campaign_accepts_only_declared_crash_process_exit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from tests.acceptance.slice2 import native_campaign
+    from tests.acceptance.slice2.native_campaign import NativeCampaign
+    from tests.acceptance.slice2.native_preflight import NativePreflightError
+
+    def failed(_argv: object, **_kwargs: object) -> object:
+        raise NativePreflightError("native command failed with status 86")
+
+    monkeypatch.setattr(native_campaign, "run_command", failed)
+    campaign = NativeCampaign(
+        {
+            "config": {
+                "evidence_root": str(tmp_path.resolve()),
+                "workspace_root": str((tmp_path / "workspace").resolve()),
+                "python_profile": "python-3.12",
+                "compose_project": "labpilot-task5",
+            },
+            "tested_sha": "a" * 40,
+            "database_url": "postgresql+asyncpg://user:pass@db.example:5432/labpilot",
+        },
+        preflight={"containers": {"coordinator": "a1b2c3d4e5f6", "postgres": "b1c2d3e4f5a6"}},
+    )
+
+    assert (
+        campaign._run_worker("a1b2c3d4e5f6", "F05", "crash_before_runner", "a" * 40, "python-3.12")[
+            "process_exit_boundary"
+        ]
+        == 86
+    )
+    with pytest.raises(NativePreflightError):
+        campaign._run_worker("a1b2c3d4e5f6", "F05", "snapshot", "a" * 40, "python-3.12")
+
+
+def test_f20_barrier_delegates_only_after_host_confirms_runner_stopped(
+    tmp_path: Path,
+) -> None:
+    from tests.acceptance.slice2.native_worker import _FaultRunner
+
+    from labpilot.execution.runner_protocol import RunnerOperation
+
+    events: list[str] = []
+
+    class Delegate:
+        def request(self, _request: object) -> dict[str, object]:
+            events.append("delegate")
+            return {"outcome": "ok"}
+
+    class Request:
+        operation = RunnerOperation.LAUNCH
+
+    def host() -> None:
+        ready = tmp_path / ".f20-launch-boundary"
+        deadline = time.monotonic() + 2
+        while not ready.is_file():
+            if time.monotonic() >= deadline:
+                raise AssertionError("worker did not reach launch boundary")
+            time.sleep(0.01)
+        events.append("runner_stopped")
+        (tmp_path / ".f20-runner-stopped").write_text("runner_stopped\n")
+
+    watcher = threading.Thread(target=host)
+    watcher.start()
+    _FaultRunner(Delegate(), "barrier_prevent_launch", tmp_path).request(Request())
+    watcher.join()
+
+    assert events == ["runner_stopped", "delegate"]
 
 
 def test_bounded_polling_stops_on_success_and_records_last_fact() -> None:
@@ -207,26 +637,387 @@ def test_installation_identity_is_stable_across_saved_scenario_phases(
     assert resumed.tested_commit == "a" * 40
 
 
-def test_unknown_verdict_is_sealed_before_administrative_cleanup(tmp_path: Path) -> None:
+def _verdict(**changes: object) -> object:
+    from tests.acceptance.slice2.oracles import ScenarioVerdict
+
+    value: dict[str, object] = {
+        "schema_version": 1,
+        "scenario": "F01",
+        "tested_sha": "a" * 40,
+        "verdict": "PASS",
+        "reason_code": "obligations_satisfied",
+    }
+    value.update(changes)
+    return ScenarioVerdict(**value)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    (
+        {"verdict": "pass"},
+        {"verdict": "UNKNOWN"},
+        {"verdict": "IDENTITY_CONFLICT"},
+        {"scenario": "F00"},
+        {"scenario": "F23"},
+        {"schema_version": True},
+        {"schema_version": "1"},
+        {"tested_sha": "A" * 40},
+        {"tested_sha": "a" * 39},
+        {"reason_code": ""},
+        {"reason_code": "UPPER_CASE"},
+        {"reason_code": "punctuation-not-allowed"},
+        {"reason_code": "a" * 81},
+    ),
+)
+def test_scenario_verdict_rejects_invalid_contract_values(
+    changes: dict[str, object],
+) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        _verdict(**changes)
+
+
+def test_scenario_verdict_requires_the_authoritative_verdict_field() -> None:
+    from tests.acceptance.slice2.oracles import ScenarioVerdict
+
+    with pytest.raises(TypeError):
+        ScenarioVerdict(
+            schema_version=1,
+            scenario="F01",
+            tested_sha="a" * 40,
+            reason_code="obligations_satisfied",
+        )
+
+
+@pytest.mark.parametrize("alias", ("outcome", "passing_verdict", "status", "success", "passed"))
+def test_scenario_verdict_rejects_top_level_verdict_aliases(alias: str) -> None:
+    from tests.acceptance.slice2.oracles import ScenarioVerdict
+
+    value = {
+        "schema_version": 1,
+        "scenario": "F01",
+        "tested_sha": "a" * 40,
+        "verdict": "PASS",
+        "reason_code": "obligations_satisfied",
+        alias: True,
+    }
+    with pytest.raises(TypeError):
+        ScenarioVerdict(**value)
+
+
+@pytest.mark.parametrize("verdict", ("PASS", "FAIL", "STOPPED"))
+def test_seal_verdict_writes_exact_schema_and_canonical_bytes(tmp_path: Path, verdict: str) -> None:
+    from tests.acceptance.slice2.oracles import EvidenceWriter
+
+    writer = EvidenceWriter(tmp_path)
+    digest = writer.seal_verdict(_verdict(verdict=verdict))
+    path = tmp_path / "verdict.json"
+    expected = (
+        b'{"administrative_cleanup_is_domain_evidence":false,'
+        b'"reason_code":"obligations_satisfied","scenario":"F01",'
+        b'"schema_version":1,"sealed":true,'
+        + b'"tested_sha":"'
+        + b"a" * 40
+        + b'","verdict":"'
+        + verdict.encode("ascii")
+        + b'"}'
+    )
+
+    assert path.read_bytes() == expected
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert digest == hashlib.sha256(expected).hexdigest()
+    assert set(json.loads(expected)) == {
+        "schema_version",
+        "scenario",
+        "tested_sha",
+        "verdict",
+        "reason_code",
+        "sealed",
+        "administrative_cleanup_is_domain_evidence",
+    }
+
+
+def test_seal_verdict_accepts_only_the_closed_value_object(tmp_path: Path) -> None:
+    from tests.acceptance.slice2.oracles import EvidenceWriter
+
+    with pytest.raises(TypeError):
+        EvidenceWriter(tmp_path).seal_verdict(  # type: ignore[arg-type]
+            {
+                "schema_version": 1,
+                "scenario": "F01",
+                "tested_sha": "a" * 40,
+                "verdict": "PASS",
+                "reason_code": "obligations_satisfied",
+            }
+        )
+
+
+def test_same_writer_cannot_reseal_verdict(tmp_path: Path) -> None:
+    from tests.acceptance.slice2.oracles import EvidenceWriter
+
+    writer = EvidenceWriter(tmp_path)
+    writer.seal_verdict(_verdict())
+
+    with pytest.raises((FileExistsError, RuntimeError)):
+        writer.seal_verdict(_verdict(verdict="FAIL", reason_code="invariant_violated"))
+
+
+def test_new_writer_cannot_replace_or_reseal_verdict(tmp_path: Path) -> None:
+    from tests.acceptance.slice2.oracles import EvidenceWriter
+
+    EvidenceWriter(tmp_path).seal_verdict(_verdict())
+    original = (tmp_path / "verdict.json").read_bytes()
+
+    with pytest.raises((FileExistsError, RuntimeError)):
+        EvidenceWriter(tmp_path).seal_verdict(
+            _verdict(verdict="FAIL", reason_code="invariant_violated")
+        )
+
+    assert (tmp_path / "verdict.json").read_bytes() == original
+
+
+def test_generic_json_write_cannot_create_or_replace_verdict(tmp_path: Path) -> None:
+    from tests.acceptance.slice2.oracles import EvidenceWriter
+
+    writer = EvidenceWriter(tmp_path)
+    with pytest.raises(ValueError, match="seal_verdict"):
+        writer.write_json("verdict.json", {"verdict": "PASS"})
+
+    writer.seal_verdict(_verdict())
+    with pytest.raises(ValueError, match="seal_verdict"):
+        EvidenceWriter(tmp_path).write_json("verdict.json", {"verdict": "FAIL"})
+
+
+def test_existing_verdict_symlink_is_not_followed_or_replaced(tmp_path: Path) -> None:
+    from tests.acceptance.slice2.oracles import EvidenceWriter
+
+    outside = tmp_path.parent / f"{tmp_path.name}-outside.json"
+    outside.write_bytes(b"outside")
+    (tmp_path / "verdict.json").symlink_to(outside)
+
+    with pytest.raises((FileExistsError, RuntimeError)):
+        EvidenceWriter(tmp_path).seal_verdict(_verdict())
+
+    assert outside.read_bytes() == b"outside"
+    assert (tmp_path / "verdict.json").is_symlink()
+
+
+def test_unknown_domain_state_has_pass_verdict_and_survives_cleanup(tmp_path: Path) -> None:
     from tests.acceptance.slice2.oracles import EvidenceWriter
     from tests.acceptance.slice2.scenarios import administrative_cleanup_record
 
     writer = EvidenceWriter(tmp_path)
+    writer.write_jsonl(
+        "physical-observations.jsonl",
+        ({"domain_state": "UNKNOWN", "terminal_at": None},),
+    )
     digest = writer.seal_verdict(
-        {
-            "scenario": "F14",
-            "outcome": "pass",
-            "domain_status": "unknown",
-        }
+        _verdict(scenario="F14", verdict="PASS", reason_code="unknown_invariants_satisfied")
     )
     verdict_bytes = (tmp_path / "verdict.json").read_bytes()
     cleanup = administrative_cleanup_record("stop exact test unit")
 
+    assert json.loads(verdict_bytes)["verdict"] == "PASS"
+    assert "UNKNOWN" not in verdict_bytes.decode("ascii")
     assert digest == hashlib.sha256(verdict_bytes).hexdigest()
     assert cleanup["domain_terminal_evidence"] is False
     assert (tmp_path / "verdict.json").read_bytes() == verdict_bytes
-    with pytest.raises(RuntimeError, match="sealed"):
-        writer.write_json("verdict.json", {"outcome": "rewritten"})
+
+
+def test_scenario_isolation_names_are_exact_and_disjoint(tmp_path: Path) -> None:
+    from tests.acceptance.slice2.scenarios import ScenarioIsolation
+
+    first = ScenarioIsolation.create(
+        root=tmp_path,
+        scenario="F01",
+        tested_sha="a" * 40,
+        campaign_nonce="01234567",
+    )
+    second = ScenarioIsolation.create(
+        root=tmp_path,
+        scenario="F02",
+        tested_sha="a" * 40,
+        campaign_nonce="01234567",
+    )
+
+    assert first.database_name == "labpilot_task5_f01_aaaaaaa_01234567"
+    assert first.workspace == tmp_path / "F01-aaaaaaa-01234567" / "workspace"
+    assert first.evidence == tmp_path / "F01-aaaaaaa-01234567" / "evidence"
+    assert len({first.workspace, first.evidence, second.workspace, second.evidence}) == 4
+
+
+def test_capacity_and_fifo_oracles_enforce_four_and_no_bypass() -> None:
+    from tests.acceptance.slice2.oracles import (
+        OracleViolation,
+        require_capacity_at_most_four,
+        require_fifo_dispatch,
+    )
+
+    require_capacity_at_most_four(("running", "unknown", "identity_conflict", "launch_pending"))
+    require_fifo_dispatch(("A", "B", "C"), ("A", "B"))
+
+    with pytest.raises(OracleViolation, match="capacity"):
+        require_capacity_at_most_four(("running",) * 5)
+    with pytest.raises(OracleViolation, match="FIFO"):
+        require_fifo_dispatch(("A", "B", "C"), ("A", "C"))
+
+
+def test_workload_start_count_oracle_requires_exactly_one() -> None:
+    from tests.acceptance.slice2.oracles import OracleViolation, require_single_start
+
+    require_single_start({"start_count": 1})
+    for count in (0, 2):
+        with pytest.raises(OracleViolation, match="start_count"):
+            require_single_start({"start_count": count})
+
+
+def test_unknown_and_identity_conflict_oracles_remain_distinct_and_consume_slots() -> None:
+    from tests.acceptance.slice2.oracles import (
+        OracleViolation,
+        require_identity_conflict,
+        require_unknown_slot,
+    )
+
+    require_unknown_slot(
+        {"status": "unknown", "terminal_at": None, "retry_count": 0, "launch_count": 1}
+    )
+    require_identity_conflict(
+        {
+            "status": "identity_conflict",
+            "terminal_at": None,
+            "stop_count": 0,
+            "retry_count": 0,
+            "launch_count": 1,
+        }
+    )
+
+    with pytest.raises(OracleViolation, match="UNKNOWN"):
+        require_unknown_slot(
+            {"status": "unknown", "terminal_at": "now", "retry_count": 0, "launch_count": 1}
+        )
+    with pytest.raises(OracleViolation, match="IDENTITY_CONFLICT"):
+        require_identity_conflict(
+            {
+                "status": "unknown",
+                "terminal_at": None,
+                "stop_count": 0,
+                "retry_count": 0,
+                "launch_count": 1,
+            }
+        )
+
+
+def test_cancel_natural_race_preserves_physical_terminal_truth() -> None:
+    from tests.acceptance.slice2.oracles import OracleViolation, require_natural_terminal_preserved
+
+    truth = {"terminal_kind": "process_exited", "exit_code": 0, "termination_signal": None}
+    require_natural_terminal_preserved(truth, dict(truth))
+    with pytest.raises(OracleViolation, match="natural terminal"):
+        require_natural_terminal_preserved(
+            truth,
+            {"terminal_kind": "process_signaled", "exit_code": None, "termination_signal": 15},
+        )
+
+
+def test_startup_barrier_oracle_rejects_dispatch_before_all_reconciliation() -> None:
+    from tests.acceptance.slice2.oracles import OracleViolation, require_startup_barrier_order
+
+    require_startup_barrier_order(
+        ("reconcile:A", "audit:A", "reconcile:B", "audit:B", "barrier_complete", "dispatch:C"),
+        expected_attempts=("A", "B"),
+    )
+    with pytest.raises(OracleViolation, match="startup barrier"):
+        require_startup_barrier_order(
+            ("reconcile:A", "audit:A", "dispatch:C", "reconcile:B", "audit:B", "barrier_complete"),
+            expected_attempts=("A", "B"),
+        )
+
+
+def test_f18_metadata_requires_journal_locator_and_different_boot_id(tmp_path: Path) -> None:
+    from tests.acceptance.slice2.scenarios import F18Metadata, require_f18_boot_change
+
+    metadata = F18Metadata(
+        scenario="F18",
+        tested_commit="b" * 40,
+        installation_identity="labpilot-acceptance:stable",
+        database_identity="task5-f18-db",
+        database_location="candidate-b-host",
+        attempt_id="4e5ec2ce-d7a4-4ed2-916c-c26362210b5b",
+        execution_identity=f"labpilot-v1-{'c' * 64}-{'d' * 32}",
+        execution_spec_hash="e" * 64,
+        pre_reboot_status="running",
+        boot_id="11111111-1111-1111-1111-111111111111",
+        runner_policy_identity="f" * 64,
+        journal_evidence_locator="unit=labpilot-v1-c.service;cursor=s=bounded",
+    )
+    path = tmp_path / "f18.json"
+    metadata.save(path)
+    assert F18Metadata.load(path) == metadata
+    require_f18_boot_change(metadata, "22222222-2222-2222-2222-222222222222")
+    with pytest.raises(ValueError, match="boot ID"):
+        require_f18_boot_change(metadata, metadata.boot_id)
+
+
+@pytest.mark.parametrize(
+    "change",
+    (
+        {"tested_commit": "A" * 40},
+        {"pre_reboot_status": "terminal"},
+        {"boot_id": "not-a-boot-id"},
+        {"runner_policy_identity": "short"},
+        {"journal_evidence_locator": ""},
+    ),
+)
+def test_f18_metadata_rejects_invalid_persisted_state(
+    tmp_path: Path, change: dict[str, object]
+) -> None:
+    value: dict[str, object] = {
+        "scenario": "F18",
+        "tested_commit": "b" * 40,
+        "installation_identity": "labpilot-acceptance:stable",
+        "database_identity": "task5-f18-db",
+        "database_location": "candidate-b-host",
+        "attempt_id": "4e5ec2ce-d7a4-4ed2-916c-c26362210b5b",
+        "execution_identity": f"labpilot-v1-{'c' * 64}-{'d' * 32}",
+        "execution_spec_hash": "e" * 64,
+        "pre_reboot_status": "running",
+        "boot_id": "11111111-1111-1111-1111-111111111111",
+        "runner_policy_identity": "f" * 64,
+        "journal_evidence_locator": "unit=labpilot-v1-c.service;cursor=s=bounded",
+    }
+    value.update(change)
+    path = tmp_path / "f18-invalid.json"
+    path.write_text(json.dumps(value))
+
+    from tests.acceptance.slice2.scenarios import F18Metadata
+
+    with pytest.raises(ValueError):
+        F18Metadata.load(path)
+
+    value.update({"tested_commit": "b" * 40, "unexpected": "field"})
+    path.write_text(json.dumps(value))
+    with pytest.raises(ValueError, match="schema"):
+        F18Metadata.load(path)
+
+
+def test_runtime_max_and_observe_before_uow_oracles_require_physical_ordering() -> None:
+    from tests.acceptance.slice2.oracles import (
+        OracleViolation,
+        require_observe_before_uow_crash_order,
+        require_runtime_max_termination,
+    )
+
+    require_runtime_max_termination(
+        {"Result": "timeout", "RuntimeMaxUSec": "2000000", "ExecMainCode": "2"}
+    )
+    require_observe_before_uow_crash_order(
+        ("observe_returned", "crash_before_uow_commit", "restart", "observe_returned", "uow_commit")
+    )
+    with pytest.raises(OracleViolation, match="RuntimeMaxSec"):
+        require_runtime_max_termination({"Result": "success", "RuntimeMaxUSec": "infinity"})
+    with pytest.raises(OracleViolation, match="observe-before-UoW"):
+        require_observe_before_uow_crash_order(
+            ("observe_returned", "uow_commit", "crash_before_uow_commit", "restart")
+        )
 
 
 def test_f18_metadata_round_trip_preserves_exact_reboot_identity(tmp_path: Path) -> None:
@@ -244,11 +1035,191 @@ def test_f18_metadata_round_trip_preserves_exact_reboot_identity(tmp_path: Path)
         pre_reboot_status="running",
         boot_id="11111111-1111-1111-1111-111111111111",
         runner_policy_identity="f" * 64,
+        journal_evidence_locator="unit=labpilot-v1-c.service;cursor=s=bounded",
     )
     path = tmp_path / "scenario.json"
     metadata.save(path)
 
     assert F18Metadata.load(path) == metadata
+
+
+def test_f18_campaign_prepare_persists_identity_without_verdict_or_verify(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.acceptance.slice2 import native_campaign
+    from tests.acceptance.slice2.native_campaign import NativeCampaign
+    from tests.acceptance.slice2.native_preflight import CommandResult
+    from tests.acceptance.slice2.scenarios import ScenarioProcedure
+
+    calls: list[str] = []
+    command_calls: list[tuple[str, ...]] = []
+    post_reboot = False
+    execution_identity = f"labpilot-v1-{'b' * 64}-{'c' * 32}"
+
+    def worker(_container: str, scenario: str, operation: str, sha: str, _profile: str):
+        calls.append(operation)
+        return {
+            "scenario": scenario,
+            "operation": operation,
+            "tested_sha": sha,
+            "installation_identity": "slice2-task5:stable",
+            "batch": {"batch_id": "batch", "started": operation != "initialize"},
+            "trials": [{"trial_id": "trial", "ordinal": 1}],
+            "attempts": [
+                {
+                    "attempt_id": "4e5ec2ce-d7a4-4ed2-916c-c26362210b5b",
+                    "status": "unknown" if post_reboot else "running",
+                    "execution_identity": execution_identity,
+                    "execution_spec_hash": "d" * 64,
+                    "observed_environment": {"python_profile": "python-3.12"},
+                    "terminal_at": None,
+                }
+            ],
+            "runtime_events": [
+                {
+                    "event_type": "attempt.physical_started_observed",
+                    "aggregate_id": "4e5ec2ce-d7a4-4ed2-916c-c26362210b5b",
+                }
+            ],
+            "workload_oracles": [{"start_count": 1}],
+        }
+
+    def command(argv: object, **_kwargs: object) -> CommandResult:
+        command = tuple(cast(tuple[str, ...], argv))
+        command_calls.append(command)
+        output = b"-- cursor: s=bounded\n" if "--show-cursor" in command else b""
+        return CommandResult(command, output, b"")
+
+    monkeypatch.setattr(native_campaign, "run_command", command)
+    request = {
+        "config": {
+            "evidence_root": str((tmp_path / "evidence").resolve()),
+            "workspace_root": str((tmp_path / "workspace").resolve()),
+            "python_profile": "python-3.12",
+            "compose_project": "labpilot-task5",
+        },
+        "tested_sha": "a" * 40,
+        "database_url": "postgresql+asyncpg://user:pass@db.example:5432/labpilot",
+    }
+    preflight = {
+        "containers": {"coordinator": "a1b2c3d4e5f6", "postgres": "b1c2d3e4f5a6"},
+        "runner_info": {
+            "result": {
+                "boot_id": "11111111-1111-1111-1111-111111111111",
+                "policy_identity": "e" * 64,
+            }
+        },
+    }
+    campaign = NativeCampaign(
+        request,
+        preflight=preflight,
+        worker=worker,
+        admin=lambda _argv: None,
+    )
+    campaign.execute(
+        ScenarioProcedure(
+            "F18",
+            ("persist_pre_reboot_identity", "verify_new_boot", "observe_old_x"),
+            ("different_boot_id", "no_same_x_resurrection", "allowed_post_reboot_truth"),
+            phase="prepare",
+        )
+    )
+
+    assert calls == ["initialize", "persist_pre_reboot_identity", "snapshot"]
+    scenario_files = list((tmp_path / "evidence").rglob("scenario.json"))
+    assert len(scenario_files) == 1
+    assert json.loads(scenario_files[0].read_text())["execution_identity"] == execution_identity
+    assert not list((tmp_path / "evidence").rglob("verdict.json"))
+
+    post_reboot = True
+    preflight["runner_info"]["result"]["boot_id"] = "22222222-2222-2222-2222-222222222222"
+    campaign.execute(
+        ScenarioProcedure(
+            "F18",
+            ("persist_pre_reboot_identity", "verify_new_boot", "observe_old_x"),
+            ("different_boot_id", "no_same_x_resurrection", "allowed_post_reboot_truth"),
+            phase="verify",
+        )
+    )
+
+    assert calls[-3:] == ["verify_new_boot", "observe_old_x", "snapshot"]
+    verdict = json.loads(next((tmp_path / "evidence").rglob("verdict.json")).read_text())
+    assert verdict["verdict"] == "PASS"
+    assert (
+        sum(
+            command[:2] == ("journalctl", "--unit") and "--output=json" in command
+            for command in command_calls
+        )
+        == 2
+    )
+
+
+def test_f18_verify_without_reboot_seals_stopped_verdict(tmp_path: Path) -> None:
+    from dataclasses import asdict
+
+    from tests.acceptance.slice2.native_campaign import NativeCampaign
+    from tests.acceptance.slice2.oracles import EvidenceWriter
+    from tests.acceptance.slice2.scenarios import F18Metadata, ScenarioIsolation, ScenarioProcedure
+
+    sha = "a" * 40
+    boot_id = "11111111-1111-1111-1111-111111111111"
+    isolation = ScenarioIsolation.create(
+        root=tmp_path,
+        scenario="F18",
+        tested_sha=sha,
+        campaign_nonce=sha[:8],
+    )
+    EvidenceWriter(isolation.evidence).write_json(
+        "scenario.json",
+        asdict(
+            F18Metadata(
+                scenario="F18",
+                tested_commit=sha,
+                installation_identity="installation",
+                database_identity="b" * 64,
+                database_location="db.example/labpilot",
+                attempt_id="4e5ec2ce-d7a4-4ed2-916c-c26362210b5b",
+                execution_identity=f"labpilot-v1-{'e' * 64}-{'f' * 32}",
+                execution_spec_hash="c" * 64,
+                pre_reboot_status="running",
+                boot_id=boot_id,
+                runner_policy_identity="d" * 64,
+                journal_evidence_locator="unit=exact.service;cursor=s=bounded",
+            )
+        ),
+    )
+    campaign = NativeCampaign(
+        {
+            "config": {
+                "evidence_root": str(tmp_path.resolve()),
+                "workspace_root": str((tmp_path / "workspace").resolve()),
+                "python_profile": "python-3.12",
+                "compose_project": "labpilot-task5",
+            },
+            "tested_sha": sha,
+            "database_url": "postgresql+asyncpg://user:pass@db.example/labpilot",
+        },
+        preflight={
+            "containers": {"coordinator": "a1b2c3d4e5f6", "postgres": "b1c2d3e4f5a6"},
+            "runner_info": {"result": {"boot_id": boot_id}},
+        },
+        worker=lambda *_args: {},
+        admin=lambda _argv: None,
+    )
+
+    with pytest.raises(ValueError, match="different boot ID"):
+        campaign.execute(
+            ScenarioProcedure(
+                "F18",
+                ("persist_pre_reboot_identity", "verify_new_boot", "observe_old_x"),
+                ("different_boot_id", "no_same_x_resurrection", "allowed_post_reboot_truth"),
+                phase="verify",
+            )
+        )
+
+    verdict = json.loads((isolation.evidence / "verdict.json").read_text())
+    assert verdict["verdict"] == "STOPPED"
+    assert verdict["reason_code"] == "verify_stopped"
 
 
 def test_training_fixture_writes_only_bounded_runtime_output(tmp_path: Path) -> None:
@@ -284,9 +1255,7 @@ def test_training_fixture_writes_only_bounded_runtime_output(tmp_path: Path) -> 
 
 
 def test_native_entrypoint_is_import_safe_and_requires_explicit_opt_in() -> None:
-    script_path = (
-        Path(__file__).parents[3] / "scripts" / "run_slice2_native_acceptance.py"
-    )
+    script_path = Path(__file__).parents[3] / "scripts" / "run_slice2_native_acceptance.py"
     spec = importlib.util.spec_from_file_location("slice2_native_acceptance", script_path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -299,9 +1268,7 @@ def test_native_entrypoint_is_import_safe_and_requires_explicit_opt_in() -> None
 
 
 def test_native_entrypoint_cli_fails_closed_before_import_or_host_action() -> None:
-    script_path = (
-        Path(__file__).parents[3] / "scripts" / "run_slice2_native_acceptance.py"
-    )
+    script_path = Path(__file__).parents[3] / "scripts" / "run_slice2_native_acceptance.py"
     result = subprocess.run(
         [sys.executable, str(script_path), "--scenario", "F01"],
         capture_output=True,
@@ -318,9 +1285,7 @@ def test_native_entrypoint_cli_fails_closed_before_import_or_host_action() -> No
 def test_native_configuration_accepts_only_the_exact_authorized_schema(
     tmp_path: Path,
 ) -> None:
-    script_path = (
-        Path(__file__).parents[3] / "scripts" / "run_slice2_native_acceptance.py"
-    )
+    script_path = Path(__file__).parents[3] / "scripts" / "run_slice2_native_acceptance.py"
     spec = importlib.util.spec_from_file_location("slice2_native_config", script_path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -350,9 +1315,7 @@ def test_native_configuration_accepts_only_the_exact_authorized_schema(
 def test_native_configuration_rejects_invalid_authority_values(
     tmp_path: Path, change: dict[str, object], message: str
 ) -> None:
-    script_path = (
-        Path(__file__).parents[3] / "scripts" / "run_slice2_native_acceptance.py"
-    )
+    script_path = Path(__file__).parents[3] / "scripts" / "run_slice2_native_acceptance.py"
     spec = importlib.util.spec_from_file_location("slice2_native_values", script_path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -367,9 +1330,7 @@ def test_native_configuration_rejects_invalid_authority_values(
 def test_native_configuration_requires_absolute_regular_non_symlink_file(
     tmp_path: Path,
 ) -> None:
-    script_path = (
-        Path(__file__).parents[3] / "scripts" / "run_slice2_native_acceptance.py"
-    )
+    script_path = Path(__file__).parents[3] / "scripts" / "run_slice2_native_acceptance.py"
     spec = importlib.util.spec_from_file_location("slice2_native_path", script_path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -399,9 +1360,7 @@ def test_native_authority_rejects_wrong_host_and_wsl_before_execution(
     is_wsl: bool,
     message: str,
 ) -> None:
-    script_path = (
-        Path(__file__).parents[3] / "scripts" / "run_slice2_native_acceptance.py"
-    )
+    script_path = Path(__file__).parents[3] / "scripts" / "run_slice2_native_acceptance.py"
     spec = importlib.util.spec_from_file_location("slice2_native_host", script_path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
