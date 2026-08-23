@@ -1289,6 +1289,28 @@ match, preserve wrong-H as IDENTITY_CONFLICT, and consume structured terminal
 fields only when present. It introduces no Runner authority, ledger, worker,
 retry system, or execution state.
 
+### 5.9.2 Task 5 bounded-manager and signal-retention findings
+
+Follow-up diagnostics on the dedicated systemd 259 host showed that the
+bounded journal query must select the trusted manager stream before applying
+its tail limit. A `Type=exec` throwaway unit that emitted 600 journal lines
+left 99 workload records and only the H-less terminal manager record in the
+last 100 records selected by `--unit=UNIT`; its exact-H `Started` witness was
+outside that mixed tail. The bounded query `journalctl UNIT=UNIT _PID=1
+_SYSTEMD_UNIT=init.scope SYSLOG_IDENTIFIER=systemd --output=json --no-pager
+-n 100` instead returned only the three trusted PID-1 lifecycle records,
+including the exact-H `Started` witness and terminal success. It intentionally
+has no current-boot filter so historical `_BOOT_ID` evidence remains eligible.
+
+The same host also proved that signal semantics must come from structured
+records rather than the signal name alone: SIGTERM was treated as a clean
+termination for this service type, while direct SIGKILL produced a trusted
+same-invocation/same-boot process-exit record with `EXIT_CODE=killed` and
+`EXIT_STATUS=9`, followed by `Failed with result 'signal'`. The GC fallback
+therefore admits only that observed `signal` failure grammar and preserves the
+structured termination signal; it does not infer a signal from result text or
+from explicit systemctl stop.
+
 ## 5.10 Task 3 TDD execution steps
 
 - [ ] **Step 1: Add physical persistence, closed state types, and audit bridge.**
