@@ -1134,6 +1134,25 @@ The deployment contract is narrowly amended:
 6. Task 5 remains **AUTHORIZED / IN PROGRESS**, G4 has not occurred, and
    `DOCUMENT-STATUS.md` remains unchanged.
 
+### 5.6.5 Task 5 native-worker metadata follow-up
+
+Task 5 fresh N7 at `TESTED_SHA`
+`5e5eaf8991f73e2da4235d38d117a855ce222ecf` stopped before workspace
+permission proof because every native-worker operation runs in a fresh Python
+interpreter, while the test harness did not explicitly load the complete
+production SQLAlchemy model registry at that process boundary.
+
+The test-harness contract is narrowly clarified:
+
+1. every fresh native-worker interpreter explicitly registers the existing
+   complete production SQLAlchemy metadata before product database operations;
+2. the previous N7 `STOPPED` result remains historical evidence and is not
+   promoted to `PASS`;
+3. the harness remediation creates a new exact `SCENARIO_TESTED_SHA`;
+4. after that SHA is frozen, exact-SHA native installation, production images,
+   and N1-N7 preflight are rerun before F01; and
+5. no N1-N6 result from the previous SHA is promoted into the final campaign.
+
 ## 5.7 First-dispatch authority
 
 `dispatch_attempt(attempt_id)`:
