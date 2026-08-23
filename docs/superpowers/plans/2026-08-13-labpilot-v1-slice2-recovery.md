@@ -2095,17 +2095,24 @@ bash -n scripts/install_labpilot_runner_host.sh
 git diff --check
 ```
 
-Then rerun the dedicated Step 0 mechanism proof using the production artifact
-and execute V2-A1 through V2-A20 as the Candidate B v2 native profile proof.
+Then rerun the bounded dedicated systemd-259 Step 0 mechanism proof using the
+exact production reporter bytes and Accepted M1 semantics under its isolated
+proof boundary. Do not execute any V2-A row in Internal Step 6: this step only
+implements and statically/non-natively verifies the complete matrix harness;
+authoritative native matrix evidence remains pending.
 - [ ] **Focused regression:**
   `uv run pytest tests/acceptance/slice2 -v -m 'not native'`.
 - [ ] **Fixture script syntax:**
   `bash -n tests/acceptance/slice2/fixtures/a18_installer_drift_probe.sh`.
-- [ ] **Commit:** `test: verify candidate b v2 production profile`.
+- [ ] **Commit:** `test: add candidate b v2 profile matrix harness`.
 
-After these commands and the native profile proof pass, **STOP FOR EXTERNAL
-PRODUCTION CODE REVIEW**. H1, H2, final SHA freeze, F01+, and F18 do not begin
-inside the production semantic review unit.
+After the non-native harness/production verification and the isolated Step 0
+mechanism re-proof pass, **STOP FOR EXTERNAL PRODUCTION CODE REVIEW**. The
+complete V2-A1–V2-A20 harness exists at this gate, but no V2 profile acceptance
+is claimed. Its sole authoritative native execution remains §7.5 item 14,
+after final SHA freeze, exact Phase H, fresh Phase I, and fresh N1–N7. H1, H2,
+final SHA freeze, F01+, and F18 do not begin inside the production semantic
+review unit.
 
 #### Internal Step 7 — deferred harness remediation H1
 
@@ -2991,10 +2998,13 @@ A repository unit file that is correct while systemd has a stale/different loade
 ### 7.1.1 Candidate B v2 pre-formal-campaign profile matrix
 
 V2-A1 through V2-A20 are Task 5 profile preflight obligations, not new formal
-Slice 2 tasks and not replacements for F01-F22. Run them at the frozen
-production implementation HEAD before the formal campaign. Every row records
-the exact tested SHA, unit/invocation/boot where applicable, bounded manager
-and receipt evidence, and a determinate pass/fail result.
+Slice 2 tasks and not replacements for F01-F22. Execute them exactly once at
+§7.5 item 14, against the frozen production implementation HEAD and only after
+exact Phase H, fresh Phase I, and fresh N1–N7. That is the sole authoritative
+native matrix evidence lineage; Internal Step 6 only implements and
+non-natively verifies this harness. Every row records the exact tested SHA,
+unit/invocation/boot where applicable, bounded manager and receipt evidence,
+and a determinate pass/fail result.
 
 | ID | Class | Exact proof and pass condition |
 |---|---|---|
@@ -3471,13 +3481,21 @@ Before G0 implementation authorization, verify:
 | TR-D12 retained proven cause | Internal Step 3 loaded/GC equivalence; V2-A5–V2-A16; F08/F18/F22 |
 
 Accepted amendment §§1–2 are bound by the measured-gap record and Step 0;
-§§3–19 are covered by Internal Steps 0–5. T1–T6 are
-covered respectively by Step 1; Step 3; Steps 0/2/4; Steps 2/5; Step 5; and
-Steps 0/6 plus V2-A1–V2-A20. The §21 negative boundary is exercised by the
-negative tests in Steps 1–5 and V2-A2/A4/A11/A12/A17/A18/A20. The closure
-order in §25 is implemented by §7.5. Sections 23, 24, and 26 are enforced by
-the authority precedence, explicit out-of-scope stop conditions, and proposed
-governance status in this delta.
+§§3–19 are covered by Internal Steps 0–5. T1–T5 are covered respectively by
+Step 1; Step 3; Steps 0/2/4; Steps 2/5; and Step 5. T6 is deliberately split:
+before external production code review, the isolated Step 0 mechanism re-proof
+establishes privilege override, failure neutrality, loader isolation, main
+NNP/capability preservation, and terminal-variable injection using the exact
+production reporter bytes and Accepted M1 semantics. Only after final SHA
+freeze, exact Phase H, fresh Phase I, and fresh N1–N7 does the sole §7.5
+V2-A1–V2-A20 execution establish complete native Candidate B v2 profile
+acceptance: deployment, GC recovery, receipt provenance/cardinality, Runner
+restart, Coordinator restart, v1 compatibility, immutable drift, and protocol
+preservation. The §21 negative boundary is exercised by the negative tests in
+Steps 1–5 and V2-A2/A4/A11/A12/A17/A18/A20. The closure order in §25 is
+implemented by §7.5. Sections 23, 24, and 26 are enforced by the authority
+precedence, explicit out-of-scope stop conditions, and proposed governance
+status in this delta.
 
 ### I1–I3 remediation self-review
 
@@ -3508,6 +3526,27 @@ governance status in this delta.
 13. Candidate B v2 implementation, native execution, and F18 remain **NOT
     AUTHORIZED** by this plan remediation.
 
+### I4 native-order remediation self-review
+
+1. Internal Step 6 implements and non-natively tests all matrix harness
+   mechanics but executes no native V2-A row.
+2. No V2 profile acceptance is claimed before final Phase H, Phase I, and
+   N1–N7.
+3. V2-A15 consumes only the sealed evidence produced by the actual §7.5 Phase
+   H transition.
+4. Section 7.5 item 14 is the sole authoritative V2-A1–V2-A20 native evidence
+   lineage.
+5. External production code review is preceded by the bounded isolated Step 0
+   mechanism re-proof using exact production reporter bytes and Accepted M1
+   semantics.
+6. Section 7.5 retains plan acceptance, explicit implementation authorization,
+   Steps 0–6, production review, H1/H2, verification, final SHA, H/I, N1–N7,
+   V2-A1–V2-A20, and the F campaign in that order.
+7. The delta remains **PROPOSED / PENDING EXTERNAL IMPLEMENTATION-PLAN
+   REVIEW**.
+8. Candidate B v2 implementation, native execution, and F18 remain **NOT
+   AUTHORIZED** by this plan remediation.
+
 ### Consistency results
 
 - **Spec coverage:** PASS. Every TR-D1–TR-D12 criterion maps to at least one
@@ -3517,8 +3556,9 @@ governance status in this delta.
 - **Type/interface consistency:** PASS. Producer bytes precede manifest
   identity; manifest identity precedes policy/H tests; parser interfaces
   precede supervisor use; the installer validator precedes A18; closed matrix
-  fixture interfaces precede matrix execution; production review precedes
-  H1/H2; H1 evidence types precede their campaign use.
+  fixture interfaces precede the sole authoritative matrix execution after
+  final SHA/Phase H/Phase I/N1–N7; production review precedes H1/H2; H1
+  evidence types precede their campaign use.
 - **File responsibility:** PASS. The standalone asset only produces a receipt;
   `terminal_receipt.py` only parses/maps it; existing policy, supervisor,
   daemon, installer, and harness files retain their established roles;
