@@ -8,6 +8,8 @@
 
 **Tech Stack:** Python 3.12, FastAPI, SQLAlchemy 2.x async, PostgreSQL 16, Alembic, pytest, Ruff, mypy, AF_UNIX + `SO_PEERCRED`, native Linux systemd/systemctl/systemd-run/journalctl, Docker Compose for API/Coordinator composition.
 
+**Spec:** `docs/superpowers/specs/2026-08-13-labpilot-v1-slice2-runner-supervision-adr.md` plus `docs/superpowers/specs/2026-08-24-labpilot-v1-slice2-terminal-receipt-adr-amendment.md`
+
 **Planning baseline — R0 authority root:** `032dd87d3366dc6edd66fb75451d44047e49f7dd`
 
 **Accepted Slice 1 baseline:** `ff7909503c3b755bffb564423de3a56ce5bb9b4a`
@@ -20,9 +22,15 @@
 
 **Selected supervision ADR:** `docs/superpowers/specs/2026-08-13-labpilot-v1-slice2-runner-supervision-adr.md`
 
+**Accepted supervision amendment:** `docs/superpowers/specs/2026-08-24-labpilot-v1-slice2-terminal-receipt-adr-amendment.md`
+
+**Candidate B v2 plan-delta baseline:** `b6eada82a02d1d684fcb3a6e40b83c154352d8a5`
+
+**Candidate B v2 plan-delta status:** **PROPOSED / PENDING EXTERNAL IMPLEMENTATION-PLAN REVIEW**
+
 **Native S2.0 evidence:** `docs/superpowers/evidence/2026-08-13-labpilot-v1-slice2-runner-supervision-poc.md`
 
-**Status:** r4.1 is **APPROVED AT G0**. Task 1 remains **COMPLETE / SELECT_B**. Task 2 is **ACCEPTED AT G1**. Task 3 is **ACCEPTED AT G2**. Task 4 is **ACCEPTED AT G3**. Task 5 is **AUTHORIZED** only to begin implementation and native acceptance in a new Task 5 window from the Task 4 governance closure commit. This governance state does not imply Task 5 or Slice 2 acceptance. `DOCUMENT-STATUS.md` remains unchanged and may be updated only after full Slice 2 acceptance.
+**Status:** r4.1 is **APPROVED AT G0**. Task 1 remains **COMPLETE / SELECT_B**. Task 2 is **ACCEPTED AT G1**. Task 3 is **ACCEPTED AT G2**. Task 4 is **ACCEPTED AT G3**. The historical Task 5 authorization and findings remain recorded below. Candidate B v2 architecture is Accepted and this implementation-plan delta may be drafted, but the delta is not self-approved: Candidate B v2 implementation, its native campaign, and F18 remain **NOT AUTHORIZED** until the required later gates. G4 has not been reached. This governance state does not imply Task 5 or Slice 2 acceptance. `DOCUMENT-STATUS.md` remains unchanged and may be updated only after full Slice 2 acceptance.
 
 **Historical governance note:** Candidate B was admitted and implemented before a separate focused pre-implementation amendment was committed. This plan records the post-S2.0 production contract and does not backdate or rewrite that history.
 
@@ -32,7 +40,7 @@
 
 ## Global Constraints
 
-- Normative precedence is `V1 Scope v0.3 > Architecture 10 v0.3 > Master Roadmap v0.3 > accepted S2.0 ADR > this approved plan`.
+- Normative precedence is `V1 Scope v0.3 > Architecture 10 v0.3 > Master Roadmap v0.3 > original Accepted Candidate B Runner Supervision ADR + Accepted Candidate B v2 / TerminalReceiptV1 Amendment > the currently approved/reviewed portions of this implementation plan`. The Accepted amendment supersedes only the affected original-ADR clauses it names; Candidate B itself is not replaced.
 - Preserve the five formal Slice 2 tasks. Internal TDD steps are not additional governance tasks.
 - Task 1 is evidence infrastructure only. Production code must not import `tests/poc/s2_runner/**`.
 - PostgreSQL is the only durable business/execution ledger. Runner owns no DB, receipt ledger, retry policy, Trial state, Attempt state, or workflow engine.
@@ -116,6 +124,10 @@ Task 3 — S2.2 Durable Launch / Observe / Stop                     ACCEPTED AT 
 Task 4 — S2.3 Coordinator Reconciliation + S2.4 API Composition  ACCEPTED AT G3
 Task 5 — S2.5 Real Recovery / Fault-Injection Acceptance         AUTHORIZED
 ```
+
+The Task 5 row preserves the existing outer governance record. It does not
+authorize the proposed Candidate B v2 delta: implementation requires external
+plan acceptance and a separate explicit implementation authorization.
 
 Task 1's accepted evidence stack is the ADR plus S2.0 evidence document above. Do not rerun P0–P13 unless a later approved production change materially changes a physical invariant that those scenarios established.
 
@@ -1311,6 +1323,771 @@ therefore admits only that observed `signal` failure grammar and preserves the
 structured termination signal; it does not infer a signal from result text or
 from explicit systemctl stop.
 
+### 5.9.3 Candidate B v2 / TerminalReceiptV1 accepted remediation
+
+**Delta status:** **PROPOSED / PENDING EXTERNAL IMPLEMENTATION-PLAN REVIEW**.
+The Candidate B v2 architecture is Accepted and plan drafting is authorized.
+Candidate B v2 implementation, native execution, and F18 remain **NOT
+AUTHORIZED**. G4 is not reached and `DOCUMENT-STATUS.md` remains unchanged.
+
+Sections 5.9.1 and 5.9.2 remain sealed historical findings. The Accepted
+TerminalReceiptV1 amendment supersedes their interim parser-only
+terminal-cause strategy where the two conflict. In particular:
+
+```text
+Deactivated successfully
++ no retained signal/stop record
+!= exit_code 0
+```
+
+ManagerEvidence remains terminality and H authority. TerminalReceiptV1 adds
+retained terminal-cause evidence. A successful receipt query with no matching
+receipt and manager-proven terminality yields `TERMINAL_MATCH` with no exit
+code or termination signal; it never guesses zero.
+
+#### Current code gap at plan baseline
+
+This delta is bound to
+`b6eada82a02d1d684fcb3a6e40b83c154352d8a5`:
+
+- `src/labpilot/execution/systemd_supervisor.py` still infers zero from a
+  retained `Deactivated successfully` record when no signal/stop record was
+  retained; its loaded-unit path can also expose killed `TERM` directly when
+  `Result=timeout`; `_launch_argv()` has no TerminalReceiptV1 `ExecStopPost`.
+- `src/labpilot/execution/runner_policy.py` treats
+  `launch_profile_version` as policy JSON data, hashes only policy JSON into
+  `policy_identity`, and admits workload `LD_LIBRARY_PATH`.
+- `src/labpilot/execution/runner_daemon.py` reports
+  `RUNNER_VERSION = "candidate-b-v1"` and returns
+  `readiness_reason=ready` without validating the immutable reporter,
+  interpreter, manifest, or trusted path chain.
+- `scripts/install_labpilot_runner_host.sh` replaces
+  `/opt/labpilot-runner/app` during upgrade and has no sibling immutable
+  `/opt/labpilot-runner/libexec` reporter installation.
+- The four focused execution test modules and the existing Task 5 harness do
+  not yet freeze the Candidate B v2 producer, identity, observation,
+  deployment, readiness, or pre-campaign profile matrix.
+
+No DB migration, Runner protocol operation, Coordinator behavior, retry
+policy, wrapper daemon, persistent receipt file, ledger, or generic hook
+framework is required by the inspected code.
+
+#### Candidate B v2 file-responsibility map
+
+Create:
+
+```text
+deploy/libexec/labpilot-terminal-receipt-v1.py
+    standalone stdlib-only four-field producer; no LabPilot import
+src/labpilot/execution/terminal_receipt.py
+    bounded TerminalReceiptV1 parsing and cause mapping only
+tests/unit/execution/test_terminal_receipt_reporter.py
+    standalone producer byte/schema/isolation tests
+tests/unit/execution/test_terminal_receipt.py
+    parser and admitted/unsupported cause-mapping tests
+tests/poc/s2_runner/terminal_receipt_v2_probe.py
+    bounded systemd-259 mechanism probe for the exact candidate command form
+tests/unit/s2_runner_poc/test_terminal_receipt_v2_probe.py
+    deterministic probe argv/result/evidence tests
+docs/superpowers/evidence/2026-08-24-labpilot-v1-slice2-terminal-receipt-mechanism.md
+    exact native mechanism result, host version, commands, and bounded evidence
+```
+
+Modify for production:
+
+```text
+src/labpilot/execution/systemd_supervisor.py
+    ManagerEvidence/ReceiptEvidence correlation, cardinality, loaded/GC
+    equivalence, and fixed Candidate B v2 launch construction
+src/labpilot/execution/runner_policy.py
+    fixed v2 manifest, artifact-bound policy identity, v2 admission, trusted
+    deployment/interpreter validation
+src/labpilot/execution/runner_daemon.py
+    candidate-b-v2 version and ready-only-after-validation behavior
+scripts/install_labpilot_runner_host.sh
+    immutable libexec install/reuse/fail-closed verification
+```
+
+Modify for focused production verification:
+
+```text
+tests/unit/execution/test_systemd_supervisor.py
+tests/unit/execution/test_runner_policy.py
+tests/unit/execution/test_runner_daemon.py
+tests/unit/execution/test_runner_deployment.py
+tests/architecture/test_execution_privilege_boundary.py
+tests/acceptance/slice2/native_preflight.py
+tests/acceptance/slice2/native_campaign.py
+tests/acceptance/slice2/scenarios.py
+tests/acceptance/slice2/test_native_preflight.py
+tests/acceptance/slice2/test_native_slice2.py
+scripts/run_slice2_native_acceptance.py
+```
+
+Modify only after external production code review for the two deferred harness
+repairs:
+
+```text
+tests/acceptance/slice2/native_preflight.py
+tests/acceptance/slice2/native_campaign.py
+tests/acceptance/slice2/native_worker.py
+tests/acceptance/slice2/oracles.py
+tests/acceptance/slice2/test_native_preflight.py
+tests/acceptance/slice2/test_native_slice2.py
+```
+
+The repository source for the immutable reporter is exactly
+`deploy/libexec/labpilot-terminal-receipt-v1.py`. Its installed ABI path is
+exactly
+`/opt/labpilot-runner/libexec/labpilot-terminal-receipt-v1.py`. It is kept out
+of the replaceable application package and installed from the exact Git
+archive by the root installer. The new `terminal_receipt.py` module is
+justified because parsing/cause mapping is independently testable and would
+otherwise make the already multi-responsibility `systemd_supervisor.py`
+larger; it owns no journal query, systemd command, policy, or deployment
+mutation.
+
+#### Internal Step 0 — native systemd-259 mechanism proof gate
+
+**Files:**
+
+```text
+Create: tests/poc/s2_runner/terminal_receipt_v2_probe.py
+Create: tests/unit/s2_runner_poc/test_terminal_receipt_v2_probe.py
+Create: docs/superpowers/evidence/2026-08-24-labpilot-v1-slice2-terminal-receipt-mechanism.md
+```
+
+**Interfaces:**
+
+```text
+@dataclass(frozen=True, slots=True)
+class MechanismProbeResult:
+    main_uid: int
+    main_gid: int
+    main_no_new_privs: int
+    main_cap_prm: str
+    main_cap_eff: str
+    main_cap_amb: str
+    main_environment: tuple[tuple[str, str], ...]
+    reporter_uid: int
+    reporter_gid: int
+    service_result: str | None
+    exit_code: str | None
+    exit_status: str | None
+    reporter_failure_neutral: bool
+    loader_canary_seen: bool
+
+candidate_b_v2_probe_argv(unit: str) -> tuple[str, ...]
+run_candidate_b_v2_probe(evidence_dir: Path) -> MechanismProbeResult
+```
+
+The only candidate admitted to this gate is `M1`:
+
+```text
+main command:
+/usr/bin/env -i <sorted KEY=VALUE workload pairs>
+  <absolute admitted runtime> <absolute prepared entrypoint> <fixed argv>
+
+unit properties:
+User=labpilot-train
+Group=labpilot-train
+NoNewPrivileges=yes
+AmbientCapabilities=
+CapabilityBoundingSet=
+UnsetEnvironment=LD_AUDIT LD_DEBUG LD_LIBRARY_PATH LD_PRELOAD PYTHONHOME PYTHONPATH
+
+proof post-stop command:
+ExecStopPost=-+/usr/bin/python3 -I -B
+  /opt/labpilot-runner-mechanism-proof/libexec/terminal-receipt-probe.py
+
+production form admitted only after PASS:
+ExecStopPost=-+/usr/bin/python3 -I -B
+  /opt/labpilot-runner/libexec/labpilot-terminal-receipt-v1.py
+```
+
+The probe path is a fixed root-owned, non-group/world-writable test-admin path;
+it never creates or occupies the immutable production v1 ABI path. The only
+production substitution after PASS is the fixed final reporter path shown
+above. The angle-bracket values in the mechanism notation are inputs already
+frozen by `FrozenLaunchSpec`, not implementation placeholders. There is no
+shell and no fallback command. Workload environment is introduced inside the non-root
+main command by fixed `/usr/bin/env -i`, rather than as unit-wide `--setenv`
+properties inherited by the privileged post-stop process. The absolute root
+reporter command therefore does not receive workload `LD_LIBRARY_PATH`,
+`PYTHONPATH`, or other runtime-profile values. `-I` remains defense in depth
+for Python imports; it is not treated as dynamic-loader isolation.
+
+- [ ] **RED:** freeze the exact M1 argv/property sequence and reject missing,
+  reordered, caller-selected, shell-based, or unit-wide workload environment
+  injection. Run
+  `uv run pytest tests/unit/s2_runner_poc/test_terminal_receipt_v2_probe.py -v`.
+  Expected RED: `terminal_receipt_v2_probe` and its exact M1 constructor do not
+  exist.
+- [ ] **Minimal probe:** create one bounded probe that installs only a
+  root-owned test artifact beneath the trusted proof root, launches a
+  throwaway `Type=exec` unit, and records `/proc/self/status` facts from the
+  main process plus trusted journal facts from the root post-stop process.
+  Use an admitted workload `LD_LIBRARY_PATH`/`PYTHONPATH` canary and make the
+  post-stop probe deliberately return `71` after emitting its one record.
+- [ ] **GREEN:** rerun the unit command, then on the dedicated systemd 259 host
+  run
+  `sudo -- uv run python tests/poc/s2_runner/terminal_receipt_v2_probe.py --evidence-dir /var/lib/labpilot-s2-evidence/terminal-receipt-m1`.
+  Pass requires main UID/GID `labpilot-train`, main `NoNewPrivs: 1`, empty main
+  effective/permitted/ambient capability sets, root receipt `_UID=0` and
+  `_GID=0`, correct systemd injection of `SERVICE_RESULT`, `EXIT_CODE`, and
+  `EXIT_STATUS`, no loader/import canary, and identical main `Result` with a
+  post-stop exit of `0` and `71`.
+- [ ] **Focused regression:**
+  `uv run pytest tests/unit/s2_runner_poc -v`.
+- [ ] **Commit:** `test: prove terminal receipt systemd mechanism`.
+
+**Stop condition:** any failure of privilege override, failure neutrality,
+workload environment preservation, loader isolation, main NNP/capability
+preservation, trusted provenance, or systemd variable injection stops Task 5
+with `ARCHITECTURE REVIEW REQUIRED`. No production edit follows a failed or
+inconclusive mechanism gate.
+
+#### Internal Step 1 — standalone TerminalReceiptV1 producer
+
+**Files:**
+
+```text
+Create: deploy/libexec/labpilot-terminal-receipt-v1.py
+Create: tests/unit/execution/test_terminal_receipt_reporter.py
+Modify: tests/architecture/test_execution_privilege_boundary.py
+```
+
+**Interfaces:** the standalone file defines only
+`main(environ: Mapping[str, str] | None = None) -> int` and a private
+`_optional_token(environ, name) -> str | None`. It imports only `json`, `os`,
+`re`, `sys`, and `collections.abc.Mapping` from the standard library.
+
+```python
+_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:+-]{0,63}")
+_SOURCE_NAMES = ("SERVICE_RESULT", "EXIT_CODE", "EXIT_STATUS")
+
+payload = {
+    "schema_version": "labpilot-terminal-receipt-v1",
+    "service_result": _optional_token(source, "SERVICE_RESULT"),
+    "exit_code": _optional_token(source, "EXIT_CODE"),
+    "exit_status": _optional_token(source, "EXIT_STATUS"),
+}
+encoded = json.dumps(
+    payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True
+).encode("ascii") + b"\n"
+os.write(1, encoded)
+```
+
+Input is validated completely before the single `os.write`. Missing variables
+become `null`; present values must be ASCII, match `_TOKEN`, and occupy at most
+64 bytes. Invalid input returns nonzero without emitting a partial valid
+record. The producer does not interpret combinations and performs no LabPilot
+import, workspace access, subprocess, shell, network, DB, or Runner-socket
+operation.
+
+- [ ] **RED:** add exact-field, canonical-byte, missing-to-null,
+  malformed/oversized fail-closed, deterministic-repeat, import isolation,
+  forbidden-import/operation AST, and nonzero-invalid-input tests. Run
+  `uv run pytest tests/unit/execution/test_terminal_receipt_reporter.py tests/architecture/test_execution_privilege_boundary.py -v`.
+  Expected RED: the fixed reporter asset is absent.
+- [ ] **Minimal implementation:** add the exact standalone serializer above;
+  do not add a package entry point or dependency.
+- [ ] **GREEN:** rerun the RED command and require all producer invocations to
+  emit either one canonical newline-terminated JSON record or zero bytes with
+  nonzero status.
+- [ ] **Focused regression:**
+  `uv run ruff check deploy/libexec/labpilot-terminal-receipt-v1.py tests/unit/execution/test_terminal_receipt_reporter.py tests/architecture/test_execution_privilege_boundary.py`.
+- [ ] **Commit:** `feat: add immutable terminal receipt producer`.
+
+**Review/stop condition:** any need for a LabPilot import, third-party module,
+subprocess, caller-selected argument, additional payload field, or more than
+one output record stops for architecture review.
+
+#### Internal Step 2 — Candidate B v2 profile identity
+
+**Files:**
+
+```text
+Modify: src/labpilot/execution/runner_policy.py
+Modify: tests/unit/execution/test_runner_policy.py
+Modify: tests/unit/execution/test_types.py
+Modify: tests/unit/execution/test_execution_service.py
+```
+
+**Interfaces:**
+
+```text
+CANDIDATE_B_V2 = "candidate-b-v2"
+TERMINAL_RECEIPT_SCHEMA = "labpilot-terminal-receipt-v1"
+TERMINAL_RECEIPT_REPORTER_PATH = Path(
+    "/opt/labpilot-runner/libexec/labpilot-terminal-receipt-v1.py"
+)
+TERMINAL_RECEIPT_BUNDLED_SOURCE_PATH = Path(
+    "/opt/labpilot-runner/app/deploy/libexec/labpilot-terminal-receipt-v1.py"
+)
+TRUSTED_REPORTER_INTERPRETER = Path("/usr/bin/python3")
+
+@dataclass(frozen=True, slots=True)
+class CandidateBV2ProfileManifest:
+    launch_profile_version: str
+    terminal_receipt_schema: str
+    reporter_path: str
+    reporter_sha256: str
+
+def candidate_b_v2_profile_manifest(
+    reporter_sha256: str,
+) -> CandidateBV2ProfileManifest
+
+def runner_policy_identity(
+    policy_value: Mapping[str, object],
+    profile_manifest: CandidateBV2ProfileManifest,
+) -> str
+```
+
+`candidate_b_v2_profile_manifest()` accepts only a lowercase 64-hex SHA-256
+and freezes the other three fields to the constants above.
+`runner_policy_identity()` hashes the exact policy JSON value plus the
+canonical manifest value under namespace `labpilot-runner-policy:v2`.
+`parse_runner_policy()` accepts only
+`launch_profile_version=candidate-b-v2` and receives the already validated
+fixed manifest from `load_runner_policy()`; reporter path and digest never
+become policy JSON keys. `FrozenLaunchSpec`,
+`frozen_launch_spec_value()`, and `frozen_launch_spec_hash()` remain unchanged.
+
+- [ ] **RED:** add tests named
+  `test_candidate_b_v2_policy_identity_binds_reporter_digest`,
+  `test_changed_reporter_bytes_change_policy_identity_and_rebuilt_h`,
+  `test_policy_rejects_unsupported_launch_profile_version`, and
+  `test_reporter_fields_are_not_policy_schema`. Run
+  `uv run pytest tests/unit/execution/test_runner_policy.py tests/unit/execution/test_types.py tests/unit/execution/test_execution_service.py -v`.
+  Expected RED: policy identity is still the v1 hash of policy JSON alone and
+  unsupported profile strings are admitted.
+- [ ] **Minimal implementation:** add the immutable manifest value and v2
+  identity derivation; preserve the FrozenLaunchSpec schema and existing H
+  algorithm. The expected digest is the lowercase SHA-256 of the Step 1
+  asset's UTF-8/LF bytes at the fixed bundled-source path from the exact Git
+  archive. A test freezes equality between those bundled bytes, the immutable
+  installed bytes, and the manifest digest.
+- [ ] **GREEN:** rerun the RED command; require byte-identical policy JSON with
+  different reporter bytes to produce different
+  `launch_policy_identity` values and different rebuilt H values.
+- [ ] **Focused regression:**
+  `uv run pytest tests/unit/execution/test_runner_protocol.py tests/unit/execution/test_physical_types.py -v`.
+- [ ] **Commit:** `feat: bind candidate b v2 profile identity`.
+
+**Review/stop condition:** a proposal to change FrozenLaunchSpec fields, the H
+algorithm, policy JSON schema with reporter configuration, Runner protocol, or
+Coordinator profile awareness stops as an Accepted-ADR contradiction.
+
+#### Internal Step 3 — receipt parsing and systemd observation
+
+**Files:**
+
+```text
+Create: src/labpilot/execution/terminal_receipt.py
+Create: tests/unit/execution/test_terminal_receipt.py
+Modify: src/labpilot/execution/systemd_supervisor.py
+Modify: tests/unit/execution/test_systemd_supervisor.py
+```
+
+**Interfaces:**
+
+```text
+@dataclass(frozen=True, slots=True)
+class TerminalReceiptV1:
+    service_result: str | None
+    exit_code: str | None
+    exit_status: str | None
+
+@dataclass(frozen=True, slots=True)
+class TerminalCause:
+    result: str | None
+    exit_code: int | None
+    termination_signal: int | None
+
+parse_terminal_receipt_v1(message: object) -> TerminalReceiptV1
+map_terminal_receipt_v1(receipt: TerminalReceiptV1) -> TerminalCause
+```
+
+The parser requires canonical JSON with exactly the four Accepted fields,
+schema `labpilot-terminal-receipt-v1`, and the same bounded-token/null rules as
+the producer. Known mappings are exactly natural zero, exit N > 0, clean TERM,
+KILL, and timeout precedence. A valid unsupported combination returns the
+bounded supervisor result with no exit code or signal.
+
+`SystemdSupervisor` adds
+`_observe_receipts(unit, invocation_id, boot_id) -> tuple[TerminalReceiptV1, ...] | None`.
+`None` means query failure/timeout; an empty tuple means a successful query
+with no match. The exact query is:
+
+```text
+journalctl
+_SYSTEMD_UNIT=<exact X.service>
+_UID=0
+_GID=0
+_SYSTEMD_INVOCATION_ID=<exact manager invocation>
+_BOOT_ID=<exact historical boot>
+--output=json
+--no-pager
+-n 10
+```
+
+The angle-bracket values are the already verified correlation key. The
+unit/root/invocation/boot provenance filters precede the tail bound. H is
+accepted only from the exact trusted PID1 Started witness. Receipt bytes never
+establish X, H, invocation, boot, or terminality. Both a loaded terminal unit
+and a GC-retained manager terminal record call the same receipt parser and
+cause mapper after ManagerEvidence proves terminality.
+
+Cardinality and errors are exact:
+
+```text
+query failure/timeout                         -> UNKNOWN
+zero + manager terminality                    -> TERMINAL_MATCH / unclassified
+one valid                                     -> admitted or bounded-unsupported mapping
+one malformed trusted matching record         -> UNKNOWN
+more than one trusted matching record          -> UNKNOWN
+wrong invocation/boot                         -> cannot complete current lifecycle
+same X/wrong H                                 -> sticky IDENTITY_CONFLICT before cause use
+```
+
+- [ ] **RED:** add parser tests and loaded/post-GC paired parameterized tests
+  for natural 0, exit 7, clean SIGTERM, SIGKILL, RuntimeMaxSec, explicit stop,
+  missing, malformed, duplicate, query failure/timeout, unsupported bounded,
+  wrong invocation/boot, byte-identical workload spoof, and wrong H. Run
+  `uv run pytest tests/unit/execution/test_terminal_receipt.py tests/unit/execution/test_systemd_supervisor.py -v`.
+  Expected RED: retained success guesses zero, loaded timeout exposes TERM, and
+  no ReceiptEvidence query/parser exists.
+- [ ] **Minimal implementation:** remove the inferred-zero fallback; parse
+  ManagerEvidence and ReceiptEvidence separately; use one shared cause mapper
+  for loaded and GC observations. Do not change `PhysicalObservation`, domain
+  terminal kinds, or Coordinator code.
+- [ ] **GREEN:** rerun the RED command. Each paired loaded/GC case must produce
+  identical `PhysicalObservation` fields; timeout must be
+  `result="timeout"`, `exit_code=None`, `termination_signal=None` on both
+  paths.
+- [ ] **Focused regression:**
+  `uv run pytest tests/unit/execution/test_execution_service.py tests/unit/execution/test_runner_daemon.py -v`.
+- [ ] **Commit:** `fix: recover terminal cause from trusted receipt`.
+
+**Review/stop condition:** if exact unit + H witness + invocation + boot cannot
+be established independently of receipt MESSAGE bytes, or journal selection
+cannot filter trusted provenance before `-n`, stop for architecture review.
+
+#### Internal Step 4 — fixed Candidate B v2 launch profile
+
+**Files:**
+
+```text
+Modify: src/labpilot/execution/systemd_supervisor.py
+Modify: tests/unit/execution/test_systemd_supervisor.py
+```
+
+**Interfaces:** keep `_launch_argv(x, h, spec) -> tuple[str, ...]`; add no
+caller-facing hook interface. Its fixed construction preserves all v1
+properties and makes only these mechanical changes proven by Step 0:
+
+```text
+remove: --setenv=<workload key>=<workload value> unit properties
+add:    --property=UnsetEnvironment=LD_AUDIT LD_DEBUG LD_LIBRARY_PATH LD_PRELOAD PYTHONHOME PYTHONPATH
+add:    --property=ExecStopPost=-+/usr/bin/python3 -I -B /opt/labpilot-runner/libexec/labpilot-terminal-receipt-v1.py
+main:   -- /usr/bin/env -i <sorted KEY=VALUE pairs> <runtime> <entrypoint> <argv>
+```
+
+Those bracketed values are FrozenLaunchSpec data, not caller-selected hook
+data. The unchanged properties remain `Type=exec`, `User=labpilot-train`,
+`Group=labpilot-train`, `Restart=no`, `KillMode=control-group`,
+`NoNewPrivileges=yes`, empty main capability sets, journal stdout/stderr,
+RuntimeMaxSec, TimeoutStopSec, fixed X-derived unit, and
+`Description=labpilot:<H>`. Workload profile values remain visible to the
+non-root main process. They are never placed in the unit-wide environment and
+cannot influence privileged interpreter, dynamic-library, or reporter-code
+resolution. The exact `-+` form is usable only after Step 0 passes.
+
+- [ ] **RED:** replace the fixed-launch golden test with an exact Candidate B
+  v2 argv assertion and add tests proving a caller cannot select hook/path/argv,
+  `LD_LIBRARY_PATH` occurs only after `/usr/bin/env -i`, and main UID/GID,
+  NNP, capabilities, timeout, stop timeout, X, and H properties remain frozen.
+  Run
+  `uv run pytest tests/unit/execution/test_systemd_supervisor.py -v -k 'launch or profile or environment'`.
+  Expected RED: `_launch_argv()` uses unit-wide `--setenv` and has no fixed
+  `ExecStopPost`.
+- [ ] **Minimal implementation:** change only `_launch_argv()` and fixed
+  constants needed by it; do not add a generic command builder or hook model.
+- [ ] **GREEN:** rerun the RED command and compare the full tuple, not a
+  substring.
+- [ ] **Focused regression:**
+  `uv run pytest tests/unit/execution/test_systemd_supervisor.py tests/unit/execution/test_runner_daemon.py -v`.
+- [ ] **Commit:** `feat: launch candidate b v2 receipt profile`.
+
+**Review/stop condition:** any need for shell evaluation, caller-selected root
+argv, unit-wide workload loader environment, broader root execution, or loss
+of the main workload security profile stops for architecture review.
+
+#### Internal Step 5 — Runner readiness and immutable deployment
+
+**Files:**
+
+```text
+Modify: src/labpilot/execution/runner_policy.py
+Modify: src/labpilot/execution/runner_daemon.py
+Modify: scripts/install_labpilot_runner_host.sh
+Modify: tests/unit/execution/test_runner_policy.py
+Modify: tests/unit/execution/test_runner_daemon.py
+Modify: tests/unit/execution/test_runner_deployment.py
+```
+
+**Interfaces:**
+
+```text
+def validate_candidate_b_v2_deployment(
+    reporter_path: Path = TERMINAL_RECEIPT_REPORTER_PATH,
+    interpreter_path: Path = TRUSTED_REPORTER_INTERPRETER,
+) -> CandidateBV2ProfileManifest
+
+RUNNER_VERSION = "candidate-b-v2"
+```
+
+The validator walks `/opt`, `/opt/labpilot-runner`, and
+`/opt/labpilot-runner/libexec` without following untrusted symlinks; each
+directory must be root-owned and not group/world writable. It opens the final
+reporter with `O_NOFOLLOW`, requires a regular root-owned non-group/world-
+writable file, hashes bytes through that descriptor, and compares the digest
+with the exact bundled source asset at
+`/opt/labpilot-runner/app/deploy/libexec/labpilot-terminal-receipt-v1.py` from
+the installed Git archive. That digest constructs the fixed manifest used by
+policy identity. `/usr/bin/python3` must resolve entirely through a
+root-owned non-group/world-writable path to a root-owned regular interpreter.
+An isolated sanity execution uses the absolute interpreter with `-I -B`, an
+empty environment, a short timeout, and the expected canonical all-null
+receipt. `load_runner_policy()` validates these facts before constructing the
+Runner policy identity; a failed check prevents daemon readiness entirely.
+
+Installer behavior is exact:
+
+```text
+v1 reporter absent
+-> create trusted libexec directory
+-> install exact archive asset root:root, non-group/world-writable
+-> verify bytes/path/interpreter/sanity
+
+v1 reporter present + exact bytes and required metadata
+-> reuse without replacement
+
+v1 reporter present + different bytes or unsafe metadata
+-> fail before app activation; never overwrite in place
+```
+
+`/opt/labpilot-runner/app` remains replaceable, while sibling `libexec` is not
+removed by upgrades. Tests assert ownership/write/symlink/digest invariants,
+not an arbitrary single numeric mode beyond the existing root-owned
+non-group/world-writable deployment contract.
+
+- [ ] **RED:** add fail-closed tests for unsafe directory ownership/write
+  bits, symlink/path redirection, non-regular final file, reporter ownership,
+  reporter write bits, digest mismatch, manifest mismatch, missing/untrusted
+  interpreter, isolated sanity failure, immutable install/reuse/drift, and app
+  upgrade preservation. Update INFO tests to require
+  `runner_version=candidate-b-v2`, `launch_profile_version=candidate-b-v2`, and
+  `readiness_reason=ready` only after validator success. Run
+  `uv run pytest tests/unit/execution/test_runner_policy.py tests/unit/execution/test_runner_daemon.py tests/unit/execution/test_runner_deployment.py -v`.
+  Expected RED: Runner v1 reports ready without validation and the installer
+  has no immutable libexec contract.
+- [ ] **Minimal implementation:** add the descriptor-based validator, update
+  version/admission, and add installer install-or-reuse checks before service
+  activation. Preserve INFO/LAUNCH/OBSERVE/STOP wire operations.
+- [ ] **GREEN:** rerun the RED command; every unsafe case must fail before
+  `readiness_reason=ready` or app activation.
+- [ ] **Focused regression:**
+  `bash -n scripts/install_labpilot_runner_host.sh && uv run pytest tests/unit/execution -v`.
+- [ ] **Commit:** `feat: enforce candidate b v2 immutable deployment`.
+
+**Review/stop condition:** in-place replacement of a different v1 artifact,
+an untrusted writable path component, a policy-configurable reporter, or a
+need to alter the Runner protocol stops for architecture review.
+
+#### Internal Step 6 — production verification and review gate
+
+No H1/H2 harness robustness edit is included in this gate.
+
+**Files:**
+
+```text
+Modify: tests/acceptance/slice2/native_preflight.py
+Modify: tests/acceptance/slice2/native_campaign.py
+Modify: tests/acceptance/slice2/scenarios.py
+Modify: tests/acceptance/slice2/test_native_preflight.py
+Modify: tests/acceptance/slice2/test_native_slice2.py
+Modify: scripts/run_slice2_native_acceptance.py
+```
+
+**Interfaces:** add test-admin-only
+`run_profile_matrix(selection: str, config: NativeAcceptanceConfig) -> None`
+and CLI option `--profile-matrix V2-A1-V2-A20`. The closed formal scenario
+registry and Runner wire operations remain unchanged.
+
+- [ ] **RED:** add registry/CLI/evidence tests requiring exactly V2-A1 through
+  V2-A20, rejecting unknown/partial/duplicate IDs, binding the frozen tested
+  SHA, and preventing any F scenario dispatch. Run
+  `uv run pytest tests/acceptance/slice2/test_native_preflight.py tests/acceptance/slice2/test_native_slice2.py -v -m 'not native' -k 'profile_matrix or v2'`.
+  Expected RED: no profile-matrix selector or executor exists.
+- [ ] **Minimal implementation:** wire the exact 20-row test-admin matrix to
+  the production artifact/observation checks planned in V2-A1–V2-A20. Reuse
+  existing bounded command/evidence primitives; add no production API.
+- [ ] **GREEN:** rerun the RED command, then run at one exact production
+  implementation HEAD:
+
+```bash
+uv run pytest tests/unit/execution/test_terminal_receipt_reporter.py -v
+uv run pytest tests/unit/execution/test_terminal_receipt.py -v
+uv run pytest tests/unit/execution/test_systemd_supervisor.py -v
+uv run pytest tests/unit/execution/test_runner_policy.py -v
+uv run pytest tests/unit/execution/test_runner_daemon.py -v
+uv run pytest tests/unit/execution/test_runner_deployment.py -v
+uv run pytest tests/architecture -v -m architecture
+uv run pytest tests/unit/execution -v
+uv run pytest tests/integration -v -m integration
+uv run ruff check src tests scripts deploy/libexec/labpilot-terminal-receipt-v1.py
+uv run mypy src scripts
+bash -n scripts/install_labpilot_runner_host.sh
+./scripts/check_ci.sh
+git diff --check
+```
+
+Then rerun the dedicated Step 0 mechanism proof using the production artifact
+and execute V2-A1 through V2-A20 as the Candidate B v2 native profile proof.
+- [ ] **Focused regression:**
+  `uv run pytest tests/acceptance/slice2 -v -m 'not native'`.
+- [ ] **Commit:** `test: verify candidate b v2 production profile`.
+
+After these commands and the native profile proof pass, **STOP FOR EXTERNAL
+PRODUCTION CODE REVIEW**. H1, H2, final SHA freeze, F01+, and F18 do not begin
+inside the production semantic review unit.
+
+#### Internal Step 7 — deferred harness remediation H1
+
+This step begins only after external production code review.
+
+**Files:**
+
+```text
+Modify: tests/acceptance/slice2/native_preflight.py
+Modify: tests/acceptance/slice2/native_campaign.py
+Modify: tests/acceptance/slice2/oracles.py
+Modify: tests/acceptance/slice2/test_native_preflight.py
+Modify: tests/acceptance/slice2/test_native_slice2.py
+```
+
+**Interfaces:**
+
+```text
+class NativeCommandFailure(NativePreflightError):
+    operation: str
+    argv_sha256: str
+    return_code: int
+    stdout: bytes
+    stderr: bytes
+
+NativeCommandFailure(
+    operation: str,
+    argv_sha256: str,
+    return_code: int,
+    stdout: bytes,
+    stderr: bytes,
+)
+
+bounded_failure_stream(value: bytes, *, limit: int = 8192) -> dict[str, object]
+```
+
+`run_command()` continues bounding each captured stream at its existing 64 KiB
+execution limit. On nonzero status it raises `NativeCommandFailure` carrying
+only a fixed operation basename, SHA-256 of canonical argv bytes, return code,
+and bounded stdout/stderr bytes; raw argv is not evidence. Human-readable
+failure evidence is at most 8192 bytes per stream. Invalid UTF-8, control
+characters other than line/tab, configured secret values, private-key/token/
+credential markers, or redaction uncertainty cause the whole excerpt to be
+`"[REDACTED]"`; byte count, truncation flag, and SHA-256 remain available.
+
+H1 explicitly adds one test-only evidence filename:
+
+```text
+worker-failure.json
+```
+
+Its exact fields are:
+
+```text
+schema_version               integer 1
+scenario                     exact F01 through F22
+operation                    bounded safe executable basename
+argv_sha256                  64 lowercase hex
+return_code                  integer
+stdout                       byte_count, sha256, truncated, excerpt
+stderr                       byte_count, sha256, truncated, excerpt
+unexpected_worker_failure    true
+```
+
+This file is diagnostic evidence only. `verdict.json` remains the sole verdict
+authority. The deliberate worker status `86` in F05/F22 remains an expected
+fault boundary and never creates `worker-failure.json`.
+
+- [ ] **RED:** add deterministic tests that a nonzero command retains both
+  bounded streams, output above the execution bound still terminates the
+  process group, unsafe excerpts redact completely, safe excerpts truncate at
+  exactly 8192 bytes, worker-failure schema is exact, and status 86 remains
+  expected. Run
+  `uv run pytest tests/acceptance/slice2/test_native_preflight.py tests/acceptance/slice2/test_native_slice2.py -v -m 'not native' -k 'command or worker_failure or status_86'`.
+  Expected RED: current `run_command()` raises only a status string and drops
+  both buffers.
+- [ ] **Minimal implementation:** add the focused exception, conservative
+  serializer, authorized evidence name, and unexpected-failure catch; do not
+  change scenario verdict calculation.
+- [ ] **GREEN:** rerun the RED command.
+- [ ] **Focused regression:**
+  `uv run pytest tests/acceptance/slice2 -v -m 'not native'`.
+- [ ] **Commit:** `test: retain bounded native command failure evidence`.
+
+**Review/stop condition:** any raw secret, unbounded stream, raw argv, second
+verdict field, or status-86 misclassification stops before H2.
+
+#### Internal Step 8 — deferred harness remediation H2
+
+This step follows H1 as a separate test-only commit.
+
+**Files:**
+
+```text
+Modify: tests/acceptance/slice2/native_worker.py
+Modify: tests/acceptance/slice2/test_native_slice2.py
+```
+
+**Interface:** keep
+`NativeWorkerRuntime._workload_oracle(workspace: Path) -> dict[str, object] | None`.
+Open the oracle once in binary read mode, acquire `fcntl.LOCK_SH` on that same
+file descriptor, read at most `16 * 1024 + 1` bytes, validate the bound and
+JSON object, then unlock and close in `finally`.
+
+- [ ] **RED:** a writer process opens the oracle, acquires `LOCK_EX`, truncates,
+  signals a test barrier, and waits. A reader thread calls
+  `_workload_oracle`; an instrumented real `fcntl.flock` signals when the
+  reader requests `LOCK_SH`. Before the implementation, the reader observes
+  the truncated document and raises `NativeWorkerExecutionError`; the test
+  fails because `LOCK_SH` was never requested. Run
+  `uv run pytest tests/acceptance/slice2/test_native_slice2.py -v -k workload_oracle_flock_symmetry`.
+- [ ] **Minimal implementation:** import `fcntl` in `native_worker.py` and
+  perform lock/read/validate on one descriptor. After the reader's `LOCK_SH`
+  attempt is observed, the test writer writes one canonical complete document
+  and releases `LOCK_EX`; GREEN requires the reader to return only that full
+  object.
+- [ ] **GREEN:** rerun the RED command with no timing-based acceptance oracle.
+- [ ] **Focused regression:**
+  `uv run pytest tests/acceptance/slice2 -v -m 'not native'`.
+- [ ] **Commit:** `test: lock native workload oracle reads`.
+
+**Review/stop condition:** do not attribute historical F01 at
+`d3d3513022b1526ab6763ec2e91dca1e86c6ce5d` to this race. Its exception
+remains UNKNOWN and its evidence remains sealed.
+
 ## 5.10 Task 3 TDD execution steps
 
 - [ ] **Step 1: Add physical persistence, closed state types, and audit bridge.**
@@ -1896,7 +2673,12 @@ Stop for G3 review before native Task 5. The gate fails if API can reach Runner 
 
 # 7. Task 5 — S2.5 Real Recovery / Fault-Injection Acceptance
 
-**Authorization:** AUTHORIZED. This permits only implementation and native acceptance work in a **new Task 5 window** beginning from the Task 4 governance closure commit. It does not mark Task 5 COMPLETE or ACCEPTED.
+**Authorization:** Task 5 remains historically `AUTHORIZED / IN PROGRESS`, but
+the current Candidate B v2 implementation-plan delta is **PROPOSED / PENDING
+EXTERNAL IMPLEMENTATION-PLAN REVIEW**. The Accepted architecture authorizes
+this plan draft only. Candidate B v2 implementation, native acceptance, and
+F18 are **NOT AUTHORIZED** by this draft. Task 5 and Slice 2 are not COMPLETE
+or ACCEPTED; G4 has not occurred.
 
 Task 4 G3 acceptance does not prove any of the following; each remains a Task 5 evidence obligation:
 
@@ -1959,8 +2741,10 @@ Every filesystem path is an explicit absolute native-host path.
 the config and evidence never contain database credentials. SSH credentials,
 passwords, and private keys are not repository config or evidence. The actual
 hostname must equal `expected_hostname`, and WSL is rejected even if systemd is
-available. Task 5 remains AUTHORIZED / IN PROGRESS; G4 has not occurred and
-`DOCUMENT-STATUS.md` remains unchanged.
+available. Task 5 remains AUTHORIZED / IN PROGRESS as the historical outer
+status; that status does not authorize Candidate B v2 implementation before
+this delta is externally accepted and implementation is separately
+authorized. G4 has not occurred and `DOCUMENT-STATUS.md` remains unchanged.
 
 ### 7.0.2 Task 5 scenario verdict evidence contract
 
@@ -2021,8 +2805,10 @@ API, and generic `write_json("verdict.json", ...)` cannot bypass sealing. The
 returned digest is SHA-256 of the exact published bytes. Publication must fail
 closed when the target already exists and must not follow or replace a symlink.
 
-The authorized evidence filename set is unchanged. Historical evidence is
-immutable and is not migrated to this schema.
+The authorized evidence filename set remains unchanged until the separately
+reviewed H1 step. H1 explicitly adds only `worker-failure.json` with the exact
+diagnostic-only schema in §5.9.3; it does not add verdict authority.
+Historical evidence is immutable and is not migrated to that schema.
 
 ## 7.1 Test-only files
 
@@ -2059,31 +2845,72 @@ INFO ready with expected policy identity
 
 A repository unit file that is correct while systemd has a stale/different loaded unit is an acceptance failure.
 
+### 7.1.1 Candidate B v2 pre-formal-campaign profile matrix
+
+V2-A1 through V2-A20 are Task 5 profile preflight obligations, not new formal
+Slice 2 tasks and not replacements for F01-F22. Run them at the frozen
+production implementation HEAD before the formal campaign. Every row records
+the exact tested SHA, unit/invocation/boot where applicable, bounded manager
+and receipt evidence, and a determinate pass/fail result.
+
+| ID | Exact proof and pass condition |
+|---|---|
+| V2-A1 | Install or exactly reuse the immutable root-owned reporter; verify trusted `/opt/labpilot-runner` and `libexec` path chain, regular non-symlink artifact, write safety, and manifest digest. |
+| V2-A2 | Run a workload with adversarial `LD_LIBRARY_PATH`/`PYTHONPATH`; main UID/GID remain `labpilot-train`, main NNP is 1, capability sets remain empty, root receipt provenance is `_UID=0`/`_GID=0`, and no loader/import canary appears. |
+| V2-A3 | Make the fixed reporter exit nonzero after its bounded record; the main service `Result`, `SERVICE_RESULT`, `EXIT_CODE`, and `EXIT_STATUS` remain identical to the reporter-zero control. |
+| V2-A4 | Emit a byte-identical receipt from the workload; root provenance filtering rejects it and only the root producer record is eligible. |
+| V2-A5 | Natural exit 0, allow unit GC, then OBSERVE returns `TERMINAL_MATCH`, `exit_code=0`, and no signal from one valid correlated receipt. |
+| V2-A6 | Exit 7, allow unit GC, then OBSERVE returns exact `exit_code=7`. |
+| V2-A7 | Clean SIGTERM, allow unit GC, then OBSERVE returns exact `termination_signal=15`. |
+| V2-A8 | SIGKILL, allow unit GC, then OBSERVE returns exact `termination_signal=9`. |
+| V2-A9 | RuntimeMax termination returns `result=timeout`, no exit code, and no signal both loaded and post-GC. |
+| V2-A10 | Explicit STOP retains the strongest proven physical signal while receipt alone makes no Batch-cancel causality claim. |
+| V2-A11 | Suppress the reporter while manager terminality remains provable; successful receipt query yields terminal-unclassified and never exit zero. |
+| V2-A12 | Inject one malformed and then duplicate trusted matching receipt records in isolated fixtures; each yields `UNKNOWN`, attention, no retry, and no relaunch. |
+| V2-A13 | Restart Runner during active v2 execution; systemd still emits the receipt and later OBSERVE recovers it. |
+| V2-A14 | Stop Coordinator after physical terminal but before DB commit; startup reconciliation consumes the same retained cause and converges the original Attempt. |
+| V2-A15 | Keep a v1 Attempt running during v2 Runner deployment; v2 OBSERVE/STOP compatibility preserves the running execution without relaunch. |
+| V2-A16 | Observe a GC'd v1 terminal lifecycle with manager terminality and no retained cause; result is terminal-unclassified, never fabricated zero. |
+| V2-A17 | Present the same X with wrong H; result remains sticky `IDENTITY_CONFLICT` with no stop, replacement, retry, or relaunch. |
+| V2-A18 | Change one reporter-v1 byte at the installed ABI path; installer fails closed before activation and does not overwrite it. |
+| V2-A19 | Emit high workload journal volume; trusted manager filters are applied before their tail bound and retain the exact H/lifecycle witness. |
+| V2-A20 | Exercise protocol decoding and INFO; operation set remains exactly INFO/LAUNCH/OBSERVE/STOP and no hook/reporter operation exists. |
+
+The dedicated profile command is:
+
+```bash
+uv run python scripts/run_slice2_native_acceptance.py --profile-matrix V2-A1-V2-A20
+```
+
+The CLI addition is test-admin selection only; it does not change the Runner
+protocol or formal F01-F22 scenario registry. Any matrix FAIL or STOPPED seals
+available evidence and prevents F01.
+
 ## 7.2 Required native scenarios
 
 ```text
-F01 happy vertical approved Version -> real terminal training; observed environment persisted
+F01 happy vertical approved Version -> real terminal training; observed environment persisted; after unit GC, receipt-backed natural exit 0 is required and guessed-zero logic is forbidden
 F02 exact approved source; dirty worktree ignored; prelaunch source tamper blocks launch
 F03 physical concurrency <= 4 and durable FIFO
 F04 Coordinator down: Start persists, zero Attempt/process until restart
 F05 crash after LAUNCH_PENDING commit before Runner call: observe-only, no same-Attempt launch
 F06 systemd accepted but LAUNCH acknowledgement lost: observe-only recovery, start count = 1
 F07 SIGKILL Coordinator while RUNNING: workload survives; restart reattaches; start count = 1
-F08 workload exits while Coordinator down: restart obtains deterministic terminal evidence
+F08 workload exits while Coordinator down: restart obtains retained trusted manager + receipt terminal cause and converges without relaunch
 F09 PostgreSQL outage while workload runs: no physical restart; reconcile after DB recovery
-F10 durable Batch cancel while Coordinator down: restart observes exact match then stops
+F10 durable Batch cancel while Coordinator down: restart observes exact match then stops; physical cause is retained without receipt-only workflow causality
 F11 cancellation kills whole systemd control group; no orphan child
 F12 cancel vs natural-exit race preserves proven natural terminal truth
-F13 STOP acknowledgement lost: no direct terminalization; observe to terminal
+F13 STOP acknowledgement lost: no direct terminalization; observe to terminal and preserve physical cause without receipt-only workflow causality
 F14 observation unavailable beyond grace: UNKNOWN, attention, slot retained, no retry
 F15 real same-X/different-H systemd fixture: durable IDENTITY_CONFLICT, never UNKNOWN, no destructive action
 F16 one UNKNOWN plus queued work: UNKNOWN consumes one of four physical slots
 F17 mixed restart barrier: existing RUNNING/LAUNCH_PENDING/UNKNOWN/IDENTITY_CONFLICT reconciled/audited before new dispatch
-F18 real host reboot: no same-X resurrection; old X/H ends terminal or ADR-bounded UNKNOWN
+F18 separately authorized real host reboot: no same-X resurrection; historical boot-bound ManagerEvidence + ReceiptEvidence may recover cause; otherwise old X/H ends at the Accepted-ADR bounded terminal-unclassified or UNKNOWN result
 F19 kill API while real training runs; training remains; restart API; same Attempt remains queryable; zero physical relaunch
 F20 stop root Runner before first socket connect after LAUNCH_PENDING commit: definite pre-send non-acceptance -> LAUNCH_NOT_ACCEPTED; no physical unit created
-F21 real RuntimeMaxSec timeout: long fixture exceeds approved timeout; systemd terminal evidence records timeout; no duplicate launch
-F22 crash Coordinator after real OBSERVE result is obtained but before reconciliation UoW commit; restart Coordinator; repeat observation and converge original Attempt; restart audit remains coherent
+F21 real RuntimeMaxSec timeout: loaded and post-GC observations are identical `timeout` / terminal-unclassified with no fabricated exit/signal cause; no duplicate launch
+F22 crash Coordinator after real OBSERVE result is obtained but before reconciliation UoW commit; restart Coordinator; repeat observation from the same physical manager/receipt evidence and converge original Attempt without duplicate launch; restart audit remains coherent
 ```
 
 Roadmap acceptance mapping is explicit:
@@ -2100,6 +2927,17 @@ physical process count = 1 recovery      F06 + F07 + F19 + F22
 ```
 
 Every scenario uses a disposable DB/schema/workspace/evidence root and a stable installation identity for the entire scenario. Assertions poll bounded DB/physical predicates; arbitrary `sleep(N)` is not an acceptance oracle.
+
+The formal campaign remains stop-on-first-failure. Any `FAIL`, `STOPPED`,
+evidence corruption, identity drift, or unexpected production state stops the
+campaign, seals available evidence, and returns to external review. A scenario
+is never rerun merely to obtain more favorable timing.
+
+Historical F01 at
+`d3d3513022b1526ab6763ec2e91dca1e86c6ce5d` remains sealed defect evidence and
+is neither repaired nor reused. Fresh Candidate B v2 F01 uses a new DB, Batch,
+Trial, Attempt, X, H bound to `candidate-b-v2`, workspace, receipt, and evidence
+directory.
 
 ## 7.3 Critical failure classes
 
@@ -2141,88 +2979,101 @@ runtime-events.jsonl
 systemd-exact-unit.json
 journal-exact-unit.jsonl
 workload-test-oracle.json
+worker-failure.json (only after H1 and only for an unexpected worker failure)
 verdict.json
 ```
 
 Evidence includes R0/S1/S2.0/implementation commit identities, installation-identity digest, Runner policy identity/version/protocol, effective service hardening facts, boot ID(s), X, H, workspace path, SourceManifest hash, and selected bounded RuntimeEvents. It excludes secrets, full process environment, unbounded journal, and full DB dumps.
 
+`worker-failure.json` is optional diagnostic evidence under the exact H1
+contract in §5.9.3. Its absence is required for expected F05/F22 status 86,
+and it never competes with `verdict.json`.
+
 For scenarios intentionally ending UNKNOWN or IDENTITY_CONFLICT, seal/hash the verdict before external administrator teardown. Teardown must not write fake `terminal_at`, clear attention state, rewrite conflict as UNKNOWN, or mark domain success.
 
 ## 7.5 Task 5 execution steps
 
-- [ ] **Step 1: Build fixture, fault decorators, bounded oracles with deterministic tests.**
+The obsolete direct-to-campaign ordering is replaced by this exact sequence.
+Each numbered item is a gate; later items do not authorize themselves.
 
-Run:
+1. **Accepted ADR already closed.** Confirm both Accepted supervision
+   documents and the Candidate B v2 acceptance baseline; do not edit them.
+2. **Implementation plan externally reviewed/accepted.** This proposed delta
+   must receive explicit external acceptance before Internal Step 0 or TDD.
+3. **Candidate B v2 production TDD implementation.** Execute Internal Steps
+   0–6 in order, including the native M1 mechanism gate before production
+   semantics depend on it.
+4. **External production code review.** Stop at the exact production HEAD;
+   H1/H2 are excluded from this semantic review.
+5. **H1 harness remediation.** Execute Internal Step 7 as its own RED/GREEN
+   test-only commit.
+6. **H2 harness remediation.** Execute Internal Step 8 as its own deterministic
+   RED/GREEN test-only commit.
+7. **Exact-head full repository verification.** In supported Python 3.12 with
+   PostgreSQL drivers, run:
 
-```bash
-uv run pytest tests/acceptance/slice2 -v -m "not native"
-uv run ruff check tests/acceptance/slice2 scripts/run_slice2_native_acceptance.py
-uv run mypy scripts/run_slice2_native_acceptance.py
-```
+   ```bash
+   ./scripts/check_ci.sh
+   uv run pytest tests/acceptance/slice2 -v -m "not native"
+   uv run python -m compileall -q src tests scripts deploy/libexec
+   bash -n scripts/install_labpilot_runner_host.sh
+   git diff --check
+   ```
 
-Commit message:
+   Create a fresh PostgreSQL database, migrate from zero through
+   `0010_attempt_physical_execution.py`, and rerun the integration suite.
+8. **Freeze one final Task 5 scenario SHA.** Record one 40-hex `TESTED_SHA`
+   after every production, test, and documentation commit required for the
+   campaign is present.
+9. **Exact Runner install / Phase H.** Install that SHA and exact policy;
+   verify immutable reporter/profile identity, effective service, INFO
+   readiness, runtime directory, socket, and installed application tree.
+10. **Fresh production stack / Phase I.** Build and start the API,
+    Coordinator, and PostgreSQL stack from the same frozen SHA and record
+    exact image/container identities.
+11. **Fresh N1–N7.** Run the existing native preflight set once against the
+    exact installed and composed stack; any failure stops the lineage.
+12. **Candidate B v2 profile acceptance matrix.** Run V2-A1–V2-A20 and seal
+    bounded per-row evidence before F01.
+13. **Fresh F01–F17.** Run in numeric order with first-failure-stop and fresh
+    state per scenario:
 
-```text
-test: add slice two production acceptance harness
-```
+    ```bash
+    uv run python scripts/run_slice2_native_acceptance.py --scenarios F01-F17
+    ```
 
-- [ ] **Step 2: Run non-reboot native scenarios.**
+14. **F18 NOT RUN.** Do not prepare, reboot, or verify F18 in the non-reboot
+    campaign.
+15. **Fresh F19–F22.** Continue only if F01–F17 all produced determinate PASS:
 
-On the dedicated Candidate B VM, install/verify the exact committed Runner and effective service hardening in §5.6, then run:
+    ```bash
+    uv run python scripts/run_slice2_native_acceptance.py --scenarios F19-F22
+    ```
 
-```bash
-uv run python scripts/run_slice2_native_acceptance.py --scenarios F01-F17,F19-F22
-```
+16. **External evidence review.** Review N1–N7, V2-A1–V2-A20, F01–F17, and
+    F19–F22 plus hashes, critical-class scan, and stop-on-first-failure
+    compliance.
+17. **Explicit separate F18 authorization.** No previous gate implies reboot
+    authority.
+18. **F18 prepare/reboot/verify only if authorized.** After explicit approval:
 
-Expected: every scenario verdict passes according to its explicit terminal/UNKNOWN/conflict oracle; no critical failure class appears.
+    ```bash
+    uv run python scripts/run_slice2_native_acceptance.py --scenario F18 --phase prepare
+    uv run python scripts/run_slice2_native_acceptance.py --scenario F18 --phase verify
+    ```
 
-- [ ] **Step 3: Human/admin reboot gate for F18.**
+    The authorized human/admin reboot occurs between commands. Verify uses the
+    frozen historical boot/X/H/receipt locator and never LAUNCHes the old
+    Attempt.
+19. **Final G4 external review.** Review the complete evidence set and final
+    repository gate; green automation alone does not accept G4.
+20. **Governance-only Slice 2 closure after G4.** Only a separate explicit
+    governance authorization may mark Task 5/Slice 2 accepted and update
+    `DOCUMENT-STATUS.md` exactly once.
 
-Prepare:
-
-```bash
-uv run python scripts/run_slice2_native_acceptance.py --scenario F18 --phase prepare
-```
-
-After the script reports exact evidence path and X/H, an authorized human/admin reboots the dedicated VM outside LabPilot.
-
-Verify after reboot:
-
-```bash
-uv run python scripts/run_slice2_native_acceptance.py --scenario F18 --phase verify
-```
-
-The verifier must re-check the effective Runner service hardening after reboot and must never call LAUNCH for the old Attempt.
-
-- [ ] **Step 4: Seal production acceptance evidence.**
-
-The evidence document records exact host/runtime versions, tested commit SHA, Runner installed commit/policy identity, effective loaded service hardening, F01–F22 verdicts, Roadmap mapping, critical-failure scan, archive checksum, and any ADR-bounded UNKNOWN. Do not claim full Slice 2 acceptance if any scenario lacks required evidence.
-
-Commit message:
-
-```text
-docs: record slice two production acceptance
-```
-
-- [ ] **Step 5: Final repository release gate.**
-
-Run in a supported Python 3.12 environment with PostgreSQL drivers installed:
-
-```bash
-./scripts/check_ci.sh
-uv run pytest tests/acceptance/slice2 -v -m "not native"
-uv run python -m compileall -q src tests scripts
-bash -n scripts/install_labpilot_runner_host.sh
-git diff --check
-```
-
-Create a fresh PostgreSQL database and verify migrations from zero through `0010_attempt_physical_execution.py`, then rerun integration tests against that fresh DB.
-
-Perform one independent deep review focused on authority boundaries, replay/ack-loss safety, distinct IDENTITY_CONFLICT semantics, observed environment, audit history, Runner deployment/service hardening, UNKNOWN semantics, and API privilege isolation.
-
-After this gate passes, stop for external G4 review. Do not update
-`DOCUMENT-STATUS.md` in the Task 5 implementation window; the separate
-governance-only closure described in §7.0 owns that update after G4 approval.
+Any repository commit after item 8 invalidates the campaign lineage. Reinstall
+the exact new HEAD, rebuild the production stack, rerun N1–N7 and V2-A1–V2-A20,
+and start a fresh formal campaign; never mix evidence across SHAs.
 
 ---
 
@@ -2235,7 +3086,7 @@ G0 r4.1 targeted remediation approved by final R4-D1-only finding-specific revie
 G1 Task 2 accepted: preparation contract/exact source/identities proven, zero physical launch
 G2 Task 3 accepted: Candidate B production deployment + launch/observe/stop + environment/audit/ack-loss proven
 G3 Task 4 accepted: Coordinator/API composition, startup barrier, capacity, cancellation, privilege split proven
-G4 Task 5 native F01–F22 + final repository gate accepted
+G4 Task 5 N1–N7 + V2-A1–V2-A20 + fresh F01–F22 + final repository gate accepted
 ```
 
 Stop immediately before editing beyond-plan scope if any arise:
@@ -2295,3 +3146,48 @@ Before G0 implementation authorization, verify:
 - Task 5 native preflight/evidence includes effective Runner service hardening, including after reboot.
 - Task 5 uses real physical facts and bounded evidence, not fabricated observations.
 - `DOCUMENT-STATUS.md` changes only at full Slice 2 acceptance.
+
+## 9.1 Candidate B v2 plan-delta self-review
+
+### Accepted-amendment coverage
+
+| Accepted criterion | Planned implementation/test/native obligation |
+|---|---|
+| TR-D1 timely cause capture | Internal Steps 0, 1, 3; V2-A5–V2-A10 |
+| TR-D2 fixed producer | Internal Steps 1 and 4; V2-A2–V2-A4 |
+| TR-D3 unforgeable authority | Internal Step 3 root/unit/invocation/boot filters; V2-A4 |
+| TR-D4 trusted physical identity | Internal Step 3 ManagerEvidence join; V2-A5–V2-A17 |
+| TR-D5 cause-only receipt | Internal Steps 1 and 3 exact four-field schema; V2-A4 |
+| TR-D6 mechanical distinction | Internal Step 3 paired natural-zero/SIGTERM tests; V2-A5 and V2-A7 |
+| TR-D7 no guessed zero | Internal Step 3 missing-receipt test; V2-A11; fresh F01 |
+| TR-D8 failure neutrality | Internal Step 0 native proof; V2-A3 |
+| TR-D9 artifact-bound H | Internal Step 2 digest/identity/H RED test; V2-A1 and V2-A18 |
+| TR-D10 v1 compatibility / v2 admission | Internal Steps 2 and 5; V2-A15 and V2-A16 |
+| TR-D11 no domain expansion | File map and every stop condition; V2-A20 |
+| TR-D12 retained proven cause | Internal Step 3 loaded/GC equivalence; V2-A5–V2-A16; F08/F18/F22 |
+
+Accepted amendment §§1–2 are bound by the measured-gap record and Step 0;
+§§3–19 are covered by Internal Steps 0–5. T1–T6 are
+covered respectively by Step 1; Step 3; Steps 0/2/4; Steps 2/5; Step 5; and
+Steps 0/6 plus V2-A1–V2-A20. The §21 negative boundary is exercised by the
+negative tests in Steps 1–5 and V2-A2/A4/A11/A12/A17/A18/A20. The closure
+order in §25 is implemented by §7.5. Sections 23, 24, and 26 are enforced by
+the authority precedence, explicit out-of-scope stop conditions, and proposed
+governance status in this delta.
+
+### Consistency results
+
+- **Spec coverage:** PASS. Every TR-D1–TR-D12 criterion maps to at least one
+  named implementation step and one focused or native verification obligation.
+- **Placeholder scan:** PASS. This delta contains no unspecified work item or
+  deferred helper/function name.
+- **Type/interface consistency:** PASS. Producer bytes precede manifest
+  identity; manifest identity precedes policy/H tests; parser interfaces
+  precede supervisor use; production review precedes H1/H2; H1 evidence types
+  precede their campaign use.
+- **File responsibility:** PASS. The standalone asset only produces a receipt;
+  `terminal_receipt.py` only parses/maps it; existing policy, supervisor,
+  daemon, installer, and harness files retain their established roles.
+- **Governance:** PASS. The delta remains **PROPOSED / PENDING EXTERNAL
+  IMPLEMENTATION-PLAN REVIEW**. Implementation, native execution, F18, G4,
+  and `DOCUMENT-STATUS.md` closure remain unauthorized.
