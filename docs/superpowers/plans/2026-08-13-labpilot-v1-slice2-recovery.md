@@ -2827,12 +2827,18 @@ Stop for G3 review before native Task 5. The gate fails if API can reach Runner 
 
 # 7. Task 5 — S2.5 Real Recovery / Fault-Injection Acceptance
 
-**Authorization:** Task 5 remains historically `AUTHORIZED / IN PROGRESS`, but
-the current Candidate B v2 implementation-plan delta is **PROPOSED / PENDING
-EXTERNAL IMPLEMENTATION-PLAN REVIEW**. The Accepted architecture authorizes
-this plan draft only. Candidate B v2 implementation, native acceptance, and
-F18 are **NOT AUTHORIZED** by this draft. Task 5 and Slice 2 are not COMPLETE
-or ACCEPTED; G4 has not occurred.
+**Authorization:** Task 5 remains historically `AUTHORIZED / IN PROGRESS`.
+The current Candidate B v2 implementation-plan delta is **ACCEPTED / CURRENT
+IMPLEMENTATION PLAN DELTA** at external acceptance baseline
+`8a62fb6df5a4cf67479b27776a3cb8b49baf575a`. Internal Step 0 has been
+externally reviewed and accepted at implementation baseline
+`5acc0e8a321c5ec68eef07b61bad3d9fd64d8b01`, with its bounded mechanism
+evidence recorded in
+`docs/superpowers/evidence/2026-08-24-labpilot-v1-slice2-terminal-receipt-mechanism.md`.
+Later Internal Steps still require the separate explicit implementation
+authorization gate in §7.5; this document does not self-authorize them, the
+formal native campaign, or F18. Task 5 and Slice 2 are not COMPLETE or
+ACCEPTED; G4 has not occurred and `DOCUMENT-STATUS.md` remains unchanged.
 
 Task 4 G3 acceptance does not prove any of the following; each remains a Task 5 evidence obligation:
 
