@@ -12,6 +12,13 @@ _EXECUTION_IDENTITY = re.compile(r"^labpilot-v1-[0-9a-f]{64}-[0-9a-f]{32}$")
 _BOOT_ID = re.compile(
     r"^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$"
 )
+_INVOCATION_ID = re.compile(r"^[0-9a-f]{32}$")
+_SYSTEMD_STARTED = "39f53479d3a045ac8e11786248231fbf"
+_SYSTEMD_SUCCESS = "7ad2d189f7e94e70a38c781354912448"
+_SYSTEMD_PROCESS_EXIT = "98e322203f7a4ed290d09fe03c09fe15"
+_SYSTEMD_FAILURE = "d9b373ed55a64feb8242e02dbe79a49c"
+_SYSTEMD_STOPPING = "de5b426a63be47a7b6ac3eaac82e2f6f"
+_SYSTEMD_STOPPED = "9d1aaa27d60140bd96365438aad20286"
 
 
 class PhysicalObservationKind(StrEnum):
@@ -142,7 +149,14 @@ class SystemdSupervisor:
             return PhysicalObservation(PhysicalObservationKind.UNKNOWN)
         if result.returncode != 0:
             return PhysicalObservation(PhysicalObservationKind.UNKNOWN)
-        for line in reversed(result.stdout.splitlines()):
+        retained_hash: str | None = None
+        retained_invocation: str | None = None
+        retained_boot: str | None = None
+        lifecycle: tuple[str, str] | None = None
+        stop_seen = False
+        exit_code: int | None = None
+        termination_signal: int | None = None
+        for line in result.stdout.splitlines():
             try:
                 record = json.loads(line)
             except json.JSONDecodeError:
@@ -159,31 +173,95 @@ class SystemdSupervisor:
             if type(message) is not str:
                 continue
             boot_id = _journal_boot_id(record.get("_BOOT_ID"))
-            marker = " - labpilot:"
-            if marker not in message or not message.endswith("."):
-                continue
-            observed_hash = message.rsplit(marker, 1)[1][:-1]
-            if len(observed_hash) != 64 or any(
-                character not in "0123456789abcdef" for character in observed_hash
-            ):
-                continue
-            if observed_hash != execution_spec_hash:
+            invocation_id = _journal_invocation_id(record.get("INVOCATION_ID"))
+            observed_hash = _journal_message_hash(message)
+            if observed_hash is not None and observed_hash != execution_spec_hash:
                 return PhysicalObservation(
                     PhysicalObservationKind.IDENTITY_CONFLICT,
                     observed_spec_hash=observed_hash,
                     boot_id=boot_id,
                 )
-            if message.startswith(("Stopped ", "Finished ", "Failed ")):
+            message_id = record.get("MESSAGE_ID")
+            if (
+                observed_hash == execution_spec_hash
+                and message_id == _SYSTEMD_STARTED
+                and record.get("JOB_TYPE") == "start"
+                and record.get("JOB_RESULT") == "done"
+                and message == f"Started {unit} - labpilot:{execution_spec_hash}."
+            ):
+                retained_hash = observed_hash
+                retained_invocation = invocation_id
+                retained_boot = boot_id
+                lifecycle = (
+                    (invocation_id, boot_id)
+                    if invocation_id is not None and boot_id is not None
+                    else None
+                )
+                stop_seen = False
+                exit_code = None
+                termination_signal = None
+                continue
+            if (
+                observed_hash == execution_spec_hash
+                and message_id is None
+                and message.startswith(("Stopped ", "Finished ", "Failed "))
+            ):
                 return PhysicalObservation(
                     PhysicalObservationKind.TERMINAL_MATCH,
                     observed_spec_hash=observed_hash,
                     boot_id=boot_id,
                     result="systemd_manager_terminal",
                 )
+            if lifecycle != (invocation_id, boot_id):
+                continue
+            if (
+                message_id in {_SYSTEMD_STOPPING, _SYSTEMD_STOPPED}
+                and record.get("JOB_TYPE") == "stop"
+            ):
+                stop_seen = True
+            if message_id == _SYSTEMD_PROCESS_EXIT:
+                status = _integer(record.get("EXIT_STATUS"))
+                if record.get("EXIT_CODE") == "exited" and status is not None:
+                    exit_code = status
+                elif record.get("EXIT_CODE") in {"killed", "dumped"} and status is not None:
+                    termination_signal = status
+            if (
+                message_id == _SYSTEMD_SUCCESS
+                and message == f"{unit}: Deactivated successfully."
+            ):
+                return PhysicalObservation(
+                    PhysicalObservationKind.TERMINAL_MATCH,
+                    observed_spec_hash=retained_hash,
+                    invocation_id=retained_invocation,
+                    boot_id=retained_boot,
+                    result="success",
+                    exit_code=(
+                        exit_code
+                        if exit_code is not None
+                        else 0
+                        if termination_signal is None and not stop_seen
+                        else None
+                    ),
+                    termination_signal=termination_signal,
+                )
+            if message_id == _SYSTEMD_FAILURE:
+                for failure_result in ("exit-code", "timeout"):
+                    if message == f"{unit}: Failed with result '{failure_result}'.":
+                        return PhysicalObservation(
+                            PhysicalObservationKind.TERMINAL_MATCH,
+                            observed_spec_hash=retained_hash,
+                            invocation_id=retained_invocation,
+                            boot_id=retained_boot,
+                            result=failure_result,
+                            exit_code=exit_code,
+                            termination_signal=termination_signal,
+                        )
+        if retained_hash is not None:
             return PhysicalObservation(
                 PhysicalObservationKind.UNKNOWN,
-                observed_spec_hash=observed_hash,
-                boot_id=boot_id,
+                observed_spec_hash=retained_hash,
+                invocation_id=retained_invocation,
+                boot_id=retained_boot,
                 result="systemd_manager_start_retained",
             )
         return PhysicalObservation(PhysicalObservationKind.NOT_FOUND)
@@ -279,6 +357,20 @@ def _unit_name(execution_identity: str) -> str:
 
 def _journal_boot_id(value: object) -> str | None:
     return value if type(value) is str and _BOOT_ID.fullmatch(value) is not None else None
+
+
+def _journal_invocation_id(value: object) -> str | None:
+    return value if type(value) is str and _INVOCATION_ID.fullmatch(value) is not None else None
+
+
+def _journal_message_hash(message: str) -> str | None:
+    marker = " - labpilot:"
+    if marker not in message or not message.endswith("."):
+        return None
+    value = message.rsplit(marker, 1)[1][:-1]
+    if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+        return None
+    return value
 
 
 def _properties(stdout: str) -> dict[str, str]:

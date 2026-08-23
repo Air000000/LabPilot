@@ -14,6 +14,15 @@ X = f"labpilot-v1-{'a' * 64}-{'b' * 32}"
 UNIT = f"{X}.service"
 BOOT_A = "a" * 32
 BOOT_B = "b" * 32
+INVOCATION_A = "1" * 32
+INVOCATION_B = "2" * 32
+STARTING_ID = "7d4958e842da4a758f6c1cdc7b36dcc5"
+STARTED_ID = "39f53479d3a045ac8e11786248231fbf"
+SUCCESS_ID = "7ad2d189f7e94e70a38c781354912448"
+PROCESS_EXIT_ID = "98e322203f7a4ed290d09fe03c09fe15"
+FAILURE_ID = "d9b373ed55a64feb8242e02dbe79a49c"
+STOPPING_ID = "de5b426a63be47a7b6ac3eaac82e2f6f"
+STOPPED_ID = "9d1aaa27d60140bd96365438aad20286"
 
 
 def _spec() -> FrozenLaunchSpec:
@@ -56,6 +65,76 @@ def _loaded(*, active: str, description: str) -> str:
         f"ActiveState={active}\n"
         f"Description={description}\n"
         "Result=success\nMainPID=42\nInvocationID=inv-1\nExecMainCode=1\nExecMainStatus=0\n"
+    )
+
+
+def _manager_record(
+    message: str,
+    message_id: str | None,
+    *,
+    unit: str = UNIT,
+    boot_id: str = BOOT_A,
+    invocation_id: str = INVOCATION_A,
+    **fields: str,
+) -> dict[str, str]:
+    record = {
+        "_PID": "1",
+        "_SYSTEMD_UNIT": "init.scope",
+        "SYSLOG_IDENTIFIER": "systemd",
+        "UNIT": unit,
+        "_BOOT_ID": boot_id,
+        "INVOCATION_ID": invocation_id,
+        "MESSAGE": message,
+        **fields,
+    }
+    if message_id is not None:
+        record["MESSAGE_ID"] = message_id
+    return record
+
+
+def _start_records(
+    execution_spec_hash: str,
+    *,
+    unit: str = UNIT,
+    boot_id: str = BOOT_A,
+    invocation_id: str = INVOCATION_A,
+) -> list[dict[str, str]]:
+    description = f"labpilot:{execution_spec_hash}"
+    return [
+        _manager_record(
+            f"Starting {unit} - {description}...",
+            STARTING_ID,
+            unit=unit,
+            boot_id=boot_id,
+            invocation_id=invocation_id,
+            JOB_TYPE="start",
+        ),
+        _manager_record(
+            f"Started {unit} - {description}.",
+            STARTED_ID,
+            unit=unit,
+            boot_id=boot_id,
+            invocation_id=invocation_id,
+            JOB_TYPE="start",
+            JOB_RESULT="done",
+        ),
+    ]
+
+
+def _journal_supervisor(
+    records: list[dict[str, str]], *, current_boot_id: str = BOOT_B
+) -> SystemdSupervisor:
+    return SystemdSupervisor(
+        Commands(
+            [
+                (0, "LoadState=not-found\n"),
+                (0, "\n".join(json.dumps(record) for record in records)),
+            ]
+        ),
+        execution_user="labpilot-train",
+        execution_group="labpilot-train",
+        stop_timeout_seconds=30,
+        boot_id=current_boot_id,
     )
 
 
@@ -171,6 +250,173 @@ def test_pid1_journal_terminal_evidence_survives_unit_gc() -> None:
     assert supervisor.observe(X, expected).kind is PhysicalObservationKind.TERMINAL_MATCH
     assert commands.argv[0][4] == UNIT
     assert commands.argv[1][1] == f"--unit={UNIT}"
+
+
+def test_real_natural_exit_zero_survives_unit_gc() -> None:
+    expected = "a" * 64
+    records = [
+        *_start_records(expected),
+        _manager_record(f"{UNIT}: Deactivated successfully.", SUCCESS_ID),
+    ]
+
+    observation = _journal_supervisor(records).observe(X, expected)
+
+    assert observation.kind is PhysicalObservationKind.TERMINAL_MATCH
+    assert observation.observed_spec_hash == expected
+    assert observation.invocation_id == INVOCATION_A
+    assert observation.boot_id == BOOT_A
+    assert observation.result == "success"
+    assert observation.exit_code == 0
+    assert observation.termination_signal is None
+
+
+def test_matching_start_without_terminal_record_remains_unknown() -> None:
+    expected = "a" * 64
+
+    observation = _journal_supervisor(_start_records(expected)).observe(X, expected)
+
+    assert observation.kind is PhysicalObservationKind.UNKNOWN
+    assert observation.observed_spec_hash == expected
+    assert observation.invocation_id == INVOCATION_A
+    assert observation.boot_id == BOOT_A
+    assert observation.result == "systemd_manager_start_retained"
+
+
+def test_wrong_hash_start_remains_identity_conflict_after_terminal_record() -> None:
+    expected = "a" * 64
+    wrong = "f" * 64
+    records = [
+        *_start_records(wrong),
+        _manager_record(f"{UNIT}: Deactivated successfully.", SUCCESS_ID),
+    ]
+
+    observation = _journal_supervisor(records).observe(X, expected)
+
+    assert observation.kind is PhysicalObservationKind.IDENTITY_CONFLICT
+    assert observation.observed_spec_hash == wrong
+    assert observation.boot_id == BOOT_A
+
+
+def test_real_nonzero_exit_preserves_structured_exit_status_after_gc() -> None:
+    expected = "a" * 64
+    records = [
+        *_start_records(expected),
+        _manager_record(
+            f"{UNIT}: Main process exited, code=exited, status=7/NOTRUNNING",
+            PROCESS_EXIT_ID,
+            EXIT_CODE="exited",
+            EXIT_STATUS="7",
+        ),
+        _manager_record(
+            f"{UNIT}: Failed with result 'exit-code'.",
+            FAILURE_ID,
+        ),
+    ]
+
+    observation = _journal_supervisor(records).observe(X, expected)
+
+    assert observation.kind is PhysicalObservationKind.TERMINAL_MATCH
+    assert observation.result == "exit-code"
+    assert observation.exit_code == 7
+    assert observation.termination_signal is None
+
+
+def test_real_explicit_stop_does_not_invent_exit_zero_or_signal() -> None:
+    expected = "a" * 64
+    description = f"labpilot:{expected}"
+    records = [
+        *_start_records(expected),
+        _manager_record(
+            f"Stopping {UNIT} - {description}...",
+            STOPPING_ID,
+            JOB_TYPE="stop",
+        ),
+        _manager_record(f"{UNIT}: Deactivated successfully.", SUCCESS_ID),
+        _manager_record(
+            f"Stopped {UNIT} - {description}.",
+            STOPPED_ID,
+            JOB_TYPE="stop",
+            JOB_RESULT="done",
+        ),
+    ]
+
+    observation = _journal_supervisor(records).observe(X, expected)
+
+    assert observation.kind is PhysicalObservationKind.TERMINAL_MATCH
+    assert observation.result == "success"
+    assert observation.exit_code is None
+    assert observation.termination_signal is None
+
+
+def test_real_runtime_max_timeout_preserves_timeout_result_after_gc() -> None:
+    expected = "a" * 64
+    records = [
+        *_start_records(expected),
+        _manager_record(
+            f"{UNIT}: Service reached runtime time limit. Stopping.",
+            None,
+        ),
+        _manager_record(
+            f"{UNIT}: Failed with result 'timeout'.",
+            FAILURE_ID,
+        ),
+    ]
+
+    observation = _journal_supervisor(records).observe(X, expected)
+
+    assert observation.kind is PhysicalObservationKind.TERMINAL_MATCH
+    assert observation.result == "timeout"
+    assert observation.exit_code is None
+    assert observation.termination_signal is None
+
+
+def test_workload_cannot_spoof_real_systemd_259_terminal_shape() -> None:
+    expected = "a" * 64
+    fake = _manager_record(
+        f"{UNIT}: Deactivated successfully.",
+        SUCCESS_ID,
+    )
+    fake["_PID"] = "4242"
+    fake["_SYSTEMD_UNIT"] = UNIT
+
+    observation = _journal_supervisor([fake]).observe(X, expected)
+
+    assert observation.kind is PhysicalObservationKind.NOT_FOUND
+
+
+def test_correlated_terminal_preserves_historical_boot_not_current_boot() -> None:
+    expected = "a" * 64
+    records = [
+        *_start_records(expected, boot_id=BOOT_A),
+        _manager_record(
+            f"{UNIT}: Deactivated successfully.",
+            SUCCESS_ID,
+            boot_id=BOOT_A,
+        ),
+    ]
+
+    observation = _journal_supervisor(records, current_boot_id=BOOT_B).observe(X, expected)
+
+    assert observation.kind is PhysicalObservationKind.TERMINAL_MATCH
+    assert observation.boot_id == BOOT_A
+
+
+def test_unrelated_invocation_terminal_does_not_complete_matching_start() -> None:
+    expected = "a" * 64
+    records = [
+        *_start_records(expected, invocation_id=INVOCATION_A),
+        _manager_record(
+            f"{UNIT}: Deactivated successfully.",
+            SUCCESS_ID,
+            invocation_id=INVOCATION_B,
+        ),
+    ]
+
+    observation = _journal_supervisor(records).observe(X, expected)
+
+    assert observation.kind is PhysicalObservationKind.UNKNOWN
+    assert observation.invocation_id == INVOCATION_A
+    assert observation.result == "systemd_manager_start_retained"
 
 
 def test_launch_uses_exact_fixed_systemd_profile() -> None:
