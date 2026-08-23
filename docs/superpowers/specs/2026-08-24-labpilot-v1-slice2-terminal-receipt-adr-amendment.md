@@ -1,22 +1,24 @@
 # LabPilot V1 Slice 2 — Candidate B v2 / TerminalReceiptV1 ADR Amendment
 
-**Status:** Proposed / Pending External Architecture Review
+**Status:** Accepted / Current Amendment
 
 **Date:** 2026-08-24
 
 **Documentation baseline:** `de7e426d69ee826ad79610bf702d1e3f3c9d666a`
 
+**External architecture acceptance baseline:** `a1b3aaf8730fe14729bc4ef42b0b3f8a202b9f76`
+
 **Original accepted ADR:** `docs/superpowers/specs/2026-08-13-labpilot-v1-slice2-runner-supervision-adr.md`
 
-**Proposed disposition:** `SELECT_CANDIDATE_B_V2`
+**Disposition:** `SELECT_CANDIDATE_B_V2`
 
 **Selected physical evidence stack:** `systemd + persistent journald`
 
-This document proposes a focused amendment to the original Candidate B Runner Supervision ADR. The original ADR remains the currently Accepted authority. If externally accepted, this amendment will supersede only its affected clauses concerning terminal-cause retention, the fixed Candidate B launch profile, the narrow privileged `TerminalReceiptV1` producer, receipt-related `UNKNOWN` semantics, and security review of the new root post-stop surface.
+This document is a focused amendment to the original Candidate B Runner Supervision ADR. The original ADR remains Accepted. This Accepted amendment supersedes only its affected clauses concerning terminal-cause retention, the fixed Candidate B launch profile, the narrow privileged `TerminalReceiptV1` producer, receipt-related `UNKNOWN` semantics, and security review of the new root post-stop surface.
 
 This amendment does not accept Slice 2, authorize implementation, authorize Task 5 native revalidation, authorize F18, or change G3/G4 status. It does not modify the Task 5 recovery plan or authorize an implementation plan. Historical F01 remains sealed and stopped.
 
-Task 5 remains `AUTHORIZED / IN PROGRESS` under its existing governance. That status does not authorize Candidate B v2 implementation before this amendment receives external architecture acceptance and a later implementation plan is separately authorized.
+Task 5 remains `AUTHORIZED / IN PROGRESS` under its existing governance. This architecture acceptance does not authorize Candidate B v2 implementation; a separate implementation plan must be written, reviewed, and explicitly authorized.
 
 ## 1. Problem statement
 
@@ -740,7 +742,7 @@ The original document:
 docs/superpowers/specs/2026-08-13-labpilot-v1-slice2-runner-supervision-adr.md
 ```
 
-remains the currently Accepted authority. If externally accepted, this amendment will supersede only affected clauses concerning:
+remains Accepted. This Accepted amendment supersedes only affected clauses concerning:
 
 - the fixed systemd launch profile;
 - terminal-cause retention;
@@ -809,7 +811,7 @@ Historical F01 remains sealed and is not repaired or reused.
 
 ```text
 Original Candidate B Runner Supervision ADR = ACCEPTED / UNCHANGED
-This Candidate B v2 amendment             = PROPOSED / PENDING EXTERNAL REVIEW
+This Candidate B v2 amendment             = ACCEPTED / CURRENT AMENDMENT
 TerminalReceipt R1 architecture spike     = PASSED
 Task 5                                     = AUTHORIZED / IN PROGRESS
 Slice 2 overall                           = NOT ACCEPTED BY THIS AMENDMENT
@@ -819,4 +821,4 @@ F18                                       = NOT AUTHORIZED
 G3 / G4 status                            = UNCHANGED
 ```
 
-External architecture review must accept this amendment before any implementation plan or Candidate B v2 production change begins.
+External architecture review has accepted this amendment. Candidate B v2 implementation remains not authorized until a separate implementation plan is written, reviewed, and explicitly authorized.
