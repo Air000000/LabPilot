@@ -1391,6 +1391,10 @@ tests/unit/s2_runner_poc/test_terminal_receipt_v2_probe.py
     deterministic probe argv/result/evidence tests
 docs/superpowers/evidence/2026-08-24-labpilot-v1-slice2-terminal-receipt-mechanism.md
     exact native mechanism result, host version, commands, and bounded evidence
+tests/acceptance/slice2/candidate_b_v2_fixtures.py
+    closed test-admin fixtures, isolation classes, cleanup, and fingerprints
+tests/acceptance/slice2/fixtures/a18_installer_drift_probe.sh
+    fixed mount-namespace invocation of real installer validation logic
 ```
 
 Modify for production:
@@ -1707,6 +1711,14 @@ class TerminalCause:
 
 parse_terminal_receipt_v1(message: object) -> TerminalReceiptV1
 map_terminal_receipt_v1(receipt: TerminalReceiptV1) -> TerminalCause
+SystemdSupervisor._current_unit_terminal_cause(
+    properties: Mapping[str, str],
+) -> TerminalCause | None
+SystemdSupervisor._retained_manager_terminal_cause(
+    records: Sequence[Mapping[str, object]],
+    invocation_id: str,
+    boot_id: str,
+) -> TerminalCause | None
 ```
 
 The parser requires canonical JSON with exactly the four Accepted fields,
@@ -1735,9 +1747,46 @@ _BOOT_ID=<exact historical boot>
 The angle-bracket values are the already verified correlation key. The
 unit/root/invocation/boot provenance filters precede the tail bound. H is
 accepted only from the exact trusted PID1 Started witness. Receipt bytes never
-establish X, H, invocation, boot, or terminality. Both a loaded terminal unit
-and a GC-retained manager terminal record call the same receipt parser and
-cause mapper after ManagerEvidence proves terminality.
+establish X, H, invocation, boot, or terminality.
+
+Cause evidence uses this exact precedence after ManagerEvidence proves the
+matching lifecycle and terminality:
+
+```text
+A. current-unit cause independently proven by trusted systemd state
+   + exact X/H
+   + real ExecMainCode / ExecMainStatus
+   -> preserve exit code or signal
+   -> Result=timeout takes precedence over killed TERM
+
+B. historical cause independently proven by a trusted manager process-exit
+   record correlated to exact unit + invocation + boot
+   -> preserve exit code or signal
+   -> correlated manager timeout takes precedence over killed TERM
+
+C. no independently proven current/retained cause
+   + one valid correlated TerminalReceiptV1
+   -> apply the admitted receipt cause mapping
+
+D. no independently proven current/retained cause
+   + manager terminality
+   + successful receipt query with zero matching receipts
+   -> TERMINAL_MATCH / PROCESS_TERMINAL_UNCLASSIFIED
+```
+
+Receipt absence, query failure, or weaker receipt content never erases a cause
+that current-unit or retained trusted process evidence already proves.
+`Deactivated successfully` alone remains terminality evidence only and never
+becomes exit zero. Historical v1 and Candidate B v2 use the same physical
+evidence precedence; no profile field, persisted profile state, Coordinator
+awareness, or Runner protocol change is introduced.
+
+Loaded-unit/post-GC equivalence applies when the retained trusted fact sets are
+the same. In particular, a retained process-exit fact and its loaded-unit
+counterpart map identically, and RuntimeMax timeout precedence is identical on
+both paths. A loaded current-unit cause that was never retained is a stronger
+fact set than manager terminality alone after GC; preserving it while loaded
+does not license fabrication after it disappears.
 
 Cardinality and errors are exact:
 
@@ -1751,7 +1800,15 @@ wrong invocation/boot                         -> cannot complete current lifecyc
 same X/wrong H                                 -> sticky IDENTITY_CONFLICT before cause use
 ```
 
-- [ ] **RED:** add parser tests and loaded/post-GC paired parameterized tests
+- [ ] **RED/characterization:** first freeze these exact historical v1 tests
+  in `tests/unit/execution/test_systemd_supervisor.py`:
+  `test_loaded_v1_real_exit_zero_precedes_receipt_absence`,
+  `test_loaded_v1_real_sigkill_precedes_receipt_absence`,
+  `test_retained_v1_real_exit_seven_precedes_receipt_absence`, and
+  `test_gc_v1_manager_only_without_receipt_is_terminal_unclassified`.
+  The first three are characterization tests and must PASS before the
+  observation refactor; the fourth must RED on the unsafe inferred-zero
+  baseline. Then add parser tests and loaded/post-GC paired parameterized tests
   for natural 0, exit 7, clean SIGTERM, SIGKILL, RuntimeMaxSec, explicit stop,
   missing, malformed, duplicate, query failure/timeout, unsupported bounded,
   wrong invocation/boot, byte-identical workload spoof, and wrong H. Run
@@ -1759,11 +1816,13 @@ same X/wrong H                                 -> sticky IDENTITY_CONFLICT befor
   Expected RED: retained success guesses zero, loaded timeout exposes TERM, and
   no ReceiptEvidence query/parser exists.
 - [ ] **Minimal implementation:** remove the inferred-zero fallback; parse
-  ManagerEvidence and ReceiptEvidence separately; use one shared cause mapper
-  for loaded and GC observations. Do not change `PhysicalObservation`, domain
-  terminal kinds, or Coordinator code.
+  ManagerEvidence and ReceiptEvidence separately; apply A→B→C→D precedence;
+  share only the receipt cause mapper and trusted process-cause normalizer
+  between loaded and GC observations. Do not change `PhysicalObservation`,
+  domain terminal kinds, or Coordinator code.
 - [ ] **GREEN:** rerun the RED command. Each paired loaded/GC case must produce
-  identical `PhysicalObservation` fields; timeout must be
+  identical `PhysicalObservation` fields for the same retained facts; all four
+  named v1 tests must pass; timeout must be
   `result="timeout"`, `exit_code=None`, `termination_signal=None` on both
   paths.
 - [ ] **Focused regression:**
@@ -1846,6 +1905,8 @@ def validate_candidate_b_v2_deployment(
 ) -> CandidateBV2ProfileManifest
 
 RUNNER_VERSION = "candidate-b-v2"
+
+shell: install_or_verify_terminal_receipt() -> status
 ```
 
 The validator walks `/opt`, `/opt/labpilot-runner`, and
@@ -1913,6 +1974,8 @@ No H1/H2 harness robustness edit is included in this gate.
 **Files:**
 
 ```text
+Create: tests/acceptance/slice2/candidate_b_v2_fixtures.py
+Create: tests/acceptance/slice2/fixtures/a18_installer_drift_probe.sh
 Modify: tests/acceptance/slice2/native_preflight.py
 Modify: tests/acceptance/slice2/native_campaign.py
 Modify: tests/acceptance/slice2/scenarios.py
@@ -1926,14 +1989,92 @@ Modify: scripts/run_slice2_native_acceptance.py
 and CLI option `--profile-matrix V2-A1-V2-A20`. The closed formal scenario
 registry and Runner wire operations remain unchanged.
 
+`candidate_b_v2_fixtures.py` owns these exact closed interfaces:
+
+```text
+class V2MatrixIsolation(StrEnum):
+    NON_DESTRUCTIVE_FINAL_STACK_CHECK
+    ISOLATED_TEST_ADMIN_FIXTURE
+    DESTRUCTIVE_HOST_CHECK_REQUIRING_FULL_REBASELINE_BEFORE_CAMPAIGN
+
+@dataclass(frozen=True, slots=True)
+class FinalStackFingerprint:
+    tested_sha: str
+    reporter_sha256: str
+    policy_identity: str
+    runner_exec_start: str
+    runner_active_state: str
+    runner_invocation_id: str
+    compose_container_ids: tuple[tuple[str, str], ...]
+    compose_image_ids: tuple[tuple[str, str], ...]
+
+@dataclass(frozen=True, slots=True)
+class V2FixtureLease:
+    row: str
+    units: tuple[str, ...]
+    proof_root: Path | None
+    compose_project: str | None
+    cleanup_is_domain_evidence: bool
+
+capture_final_stack_fingerprint(
+    config: NativeAcceptanceConfig,
+) -> FinalStackFingerprint
+create_missing_receipt_fixture(
+    config: NativeAcceptanceConfig,
+    tested_sha: str,
+) -> V2FixtureLease
+create_trusted_receipt_fixture(
+    config: NativeAcceptanceConfig,
+    tested_sha: str,
+    variant: Literal["malformed", "duplicate"],
+) -> V2FixtureLease
+create_isolated_v2_runner_fixture(
+    config: NativeAcceptanceConfig,
+    tested_sha: str,
+) -> V2FixtureLease
+create_isolated_v2_compose_fixture(
+    config: NativeAcceptanceConfig,
+    tested_sha: str,
+) -> V2FixtureLease
+prepare_v1_compatibility_before_v2_install(
+    config: NativeAcceptanceConfig,
+    tested_sha: str,
+) -> V2FixtureLease
+verify_v1_compatibility_after_v2_install(
+    config: NativeAcceptanceConfig,
+    lease: V2FixtureLease,
+) -> dict[str, object]
+run_isolated_installer_drift_fixture(
+    config: NativeAcceptanceConfig,
+    tested_sha: str,
+) -> dict[str, object]
+cleanup_candidate_b_v2_fixture(
+    config: NativeAcceptanceConfig,
+    lease: V2FixtureLease,
+) -> None
+```
+
+Every helper switches on a closed row/variant and constructs fixed argv. It
+accepts no shell fragment, arbitrary executable, systemd property, unit name,
+root path, or cleanup command from the caller. X, H, unit, proof root, socket,
+Compose project, and evidence paths are deterministically derived from the
+exact tested SHA and row under the configured dedicated test-admin roots.
+
 - [ ] **RED:** add registry/CLI/evidence tests requiring exactly V2-A1 through
   V2-A20, rejecting unknown/partial/duplicate IDs, binding the frozen tested
-  SHA, and preventing any F scenario dispatch. Run
+  SHA, and preventing any F scenario dispatch. Add exact tests named
+  `test_v2_a11_uses_real_missing_receipt_unit_without_reporter_mutation`,
+  `test_v2_a12_uses_real_root_post_stop_records`,
+  `test_v2_a15_is_prepared_before_v2_install_without_downgrade`,
+  `test_v2_a18_uses_mount_namespace_and_fixed_installer_validator`, and
+  `test_matrix_cleanup_requires_equal_final_stack_fingerprint`. Run
   `uv run pytest tests/acceptance/slice2/test_native_preflight.py tests/acceptance/slice2/test_native_slice2.py -v -m 'not native' -k 'profile_matrix or v2'`.
-  Expected RED: no profile-matrix selector or executor exists.
-- [ ] **Minimal implementation:** wire the exact 20-row test-admin matrix to
-  the production artifact/observation checks planned in V2-A1–V2-A20. Reuse
-  existing bounded command/evidence primitives; add no production API.
+  Expected RED: no profile-matrix selector, closed fixture module, final-stack
+  fingerprint, or isolated A11/A12/A15/A18 mechanic exists.
+- [ ] **Minimal implementation:** implement the closed fixtures and wire the
+  exact 20-row matrix under §7.1.1. Reuse existing bounded command/evidence
+  primitives; add no generic root executor, production API, or fabricated
+  systemd/journal record.
 - [ ] **GREEN:** rerun the RED command, then run at one exact production
   implementation HEAD:
 
@@ -1958,6 +2099,8 @@ Then rerun the dedicated Step 0 mechanism proof using the production artifact
 and execute V2-A1 through V2-A20 as the Candidate B v2 native profile proof.
 - [ ] **Focused regression:**
   `uv run pytest tests/acceptance/slice2 -v -m 'not native'`.
+- [ ] **Fixture script syntax:**
+  `bash -n tests/acceptance/slice2/fixtures/a18_installer_drift_probe.sh`.
 - [ ] **Commit:** `test: verify candidate b v2 production profile`.
 
 After these commands and the native profile proof pass, **STOP FOR EXTERNAL
@@ -2853,28 +2996,172 @@ production implementation HEAD before the formal campaign. Every row records
 the exact tested SHA, unit/invocation/boot where applicable, bounded manager
 and receipt evidence, and a determinate pass/fail result.
 
-| ID | Exact proof and pass condition |
-|---|---|
-| V2-A1 | Install or exactly reuse the immutable root-owned reporter; verify trusted `/opt/labpilot-runner` and `libexec` path chain, regular non-symlink artifact, write safety, and manifest digest. |
-| V2-A2 | Run a workload with adversarial `LD_LIBRARY_PATH`/`PYTHONPATH`; main UID/GID remain `labpilot-train`, main NNP is 1, capability sets remain empty, root receipt provenance is `_UID=0`/`_GID=0`, and no loader/import canary appears. |
-| V2-A3 | Make the fixed reporter exit nonzero after its bounded record; the main service `Result`, `SERVICE_RESULT`, `EXIT_CODE`, and `EXIT_STATUS` remain identical to the reporter-zero control. |
-| V2-A4 | Emit a byte-identical receipt from the workload; root provenance filtering rejects it and only the root producer record is eligible. |
-| V2-A5 | Natural exit 0, allow unit GC, then OBSERVE returns `TERMINAL_MATCH`, `exit_code=0`, and no signal from one valid correlated receipt. |
-| V2-A6 | Exit 7, allow unit GC, then OBSERVE returns exact `exit_code=7`. |
-| V2-A7 | Clean SIGTERM, allow unit GC, then OBSERVE returns exact `termination_signal=15`. |
-| V2-A8 | SIGKILL, allow unit GC, then OBSERVE returns exact `termination_signal=9`. |
-| V2-A9 | RuntimeMax termination returns `result=timeout`, no exit code, and no signal both loaded and post-GC. |
-| V2-A10 | Explicit STOP retains the strongest proven physical signal while receipt alone makes no Batch-cancel causality claim. |
-| V2-A11 | Suppress the reporter while manager terminality remains provable; successful receipt query yields terminal-unclassified and never exit zero. |
-| V2-A12 | Inject one malformed and then duplicate trusted matching receipt records in isolated fixtures; each yields `UNKNOWN`, attention, no retry, and no relaunch. |
-| V2-A13 | Restart Runner during active v2 execution; systemd still emits the receipt and later OBSERVE recovers it. |
-| V2-A14 | Stop Coordinator after physical terminal but before DB commit; startup reconciliation consumes the same retained cause and converges the original Attempt. |
-| V2-A15 | Keep a v1 Attempt running during v2 Runner deployment; v2 OBSERVE/STOP compatibility preserves the running execution without relaunch. |
-| V2-A16 | Observe a GC'd v1 terminal lifecycle with manager terminality and no retained cause; result is terminal-unclassified, never fabricated zero. |
-| V2-A17 | Present the same X with wrong H; result remains sticky `IDENTITY_CONFLICT` with no stop, replacement, retry, or relaunch. |
-| V2-A18 | Change one reporter-v1 byte at the installed ABI path; installer fails closed before activation and does not overwrite it. |
-| V2-A19 | Emit high workload journal volume; trusted manager filters are applied before their tail bound and retain the exact H/lifecycle witness. |
-| V2-A20 | Exercise protocol decoding and INFO; operation set remains exactly INFO/LAUNCH/OBSERVE/STOP and no hook/reporter operation exists. |
+| ID | Class | Exact proof and pass condition |
+|---|---|---|
+| V2-A1 | NON-DESTRUCTIVE FINAL-STACK CHECK | Read and verify the immutable root-owned reporter, trusted `/opt/labpilot-runner` and `libexec` path chain, regular non-symlink artifact, write safety, and manifest digest. |
+| V2-A2 | ISOLATED TEST-ADMIN FIXTURE | Launch a dedicated throwaway unit with adversarial `LD_LIBRARY_PATH`/`PYTHONPATH`; main UID/GID remain `labpilot-train`, main NNP is 1, capability sets remain empty, root receipt provenance is `_UID=0`/`_GID=0`, and no loader/import canary appears. |
+| V2-A3 | ISOLATED TEST-ADMIN FIXTURE | Use the fixed mechanism-proof producer in a dedicated unit and compare reporter exit 71 with the exit-0 control; main `Result`, `SERVICE_RESULT`, `EXIT_CODE`, and `EXIT_STATUS` remain identical. |
+| V2-A4 | ISOLATED TEST-ADMIN FIXTURE | Emit byte-identical receipt bytes from the non-root workload in a dedicated unit; root provenance filtering rejects them and only the real root producer record is eligible. |
+| V2-A5 | ISOLATED TEST-ADMIN FIXTURE | Natural exit 0 in a dedicated unit, allow GC, then production OBSERVE returns `TERMINAL_MATCH`, `exit_code=0`, and no signal from one valid correlated receipt. |
+| V2-A6 | ISOLATED TEST-ADMIN FIXTURE | Exit 7 in a dedicated unit, allow GC, then production OBSERVE returns exact `exit_code=7`. |
+| V2-A7 | ISOLATED TEST-ADMIN FIXTURE | Clean SIGTERM in a dedicated unit, allow GC, then production OBSERVE returns exact `termination_signal=15`. |
+| V2-A8 | ISOLATED TEST-ADMIN FIXTURE | SIGKILL a dedicated unit, allow GC, then production OBSERVE returns exact `termination_signal=9`. |
+| V2-A9 | ISOLATED TEST-ADMIN FIXTURE | RuntimeMax on a dedicated unit returns `result=timeout`, no exit code, and no signal both loaded and post-GC. |
+| V2-A10 | ISOLATED TEST-ADMIN FIXTURE | Explicitly STOP a dedicated unit; production OBSERVE retains the strongest proven physical signal while receipt alone makes no Batch-cancel causality claim. |
+| V2-A11 | ISOLATED TEST-ADMIN FIXTURE | Launch a separate deterministic X/unit with real PID1 lifecycle evidence and no post-stop producer; production OBSERVE sees a successful zero-match receipt query and returns terminal-unclassified without modifying the production reporter. |
+| V2-A12 | ISOLATED TEST-ADMIN FIXTURE | Run two dedicated units using the fixed root-owned test-admin post-stop producer: one emits exactly one malformed root-provenance record and one emits exactly two canonical records. Real unit/invocation/boot correlation reaches production OBSERVE and each case yields `UNKNOWN`, attention, no retry, and no relaunch. |
+| V2-A13 | ISOLATED TEST-ADMIN FIXTURE | Use a separate fixed v2 Runner service/socket/policy and dedicated active unit; restart only that Runner, then prove systemd emitted the receipt and later production OBSERVE recovers it. |
+| V2-A14 | ISOLATED TEST-ADMIN FIXTURE | Use a separate Compose project, DB/schema, workspace, evidence root, and isolated Runner fixture; stop its Coordinator after physical terminal/before DB commit, then prove startup reconciliation consumes the retained cause and converges the original Attempt. |
+| V2-A15 | NON-DESTRUCTIVE FINAL-STACK CHECK | Consume the sealed Phase H v1→v2 transition evidence prepared before v2 installation: v2 OBSERVE/STOP preserved the already-active v1-compatible X/H lifecycle without relaunch or v2→v1 downgrade. |
+| V2-A16 | ISOLATED TEST-ADMIN FIXTURE | Create a dedicated v1-equivalent GC'd lifecycle with manager terminality and no retained cause/receipt; production OBSERVE returns terminal-unclassified, never fabricated zero. |
+| V2-A17 | ISOLATED TEST-ADMIN FIXTURE | Create a dedicated same-X/wrong-H unit; production OBSERVE remains sticky `IDENTITY_CONFLICT` with no stop, replacement, retry, or relaunch. |
+| V2-A18 | ISOLATED TEST-ADMIN FIXTURE | In a private mount namespace, bind an isolated disposable tree over the fixed `/opt/labpilot-runner` view, drift one isolated reporter byte, and invoke the real fixed-path installer validation function; it fails closed while the host production reporter hash remains unchanged. |
+| V2-A19 | ISOLATED TEST-ADMIN FIXTURE | Emit high workload journal volume from a dedicated unit; trusted manager filters precede their tail bound and retain the exact H/lifecycle witness. |
+| V2-A20 | NON-DESTRUCTIVE FINAL-STACK CHECK | Read protocol/INFO state and run closed decoder tests; operation set remains exactly INFO/LAUNCH/OBSERVE/STOP and no hook/reporter operation exists. |
+
+#### Matrix mutation, cleanup, and rebaseline contract
+
+Each row records its class in `scenario.json`. Before the first row and before
+and after every isolated fixture, the harness calls
+`capture_final_stack_fingerprint()` and compares exact tested SHA, production
+reporter digest, Runner policy identity/effective ExecStart/active state, and
+Runner invocation plus Compose container/image IDs.
+
+```text
+NON-DESTRUCTIVE FINAL-STACK CHECK
+mutation scope: none; read-only inspection only
+cleanup authority: none
+cleanup is domain evidence: NO / not applicable
+Phase H / Phase I / N1-N7 rerun: NO
+evidence remaining valid: all exact-SHA preflight and earlier matrix evidence
+
+ISOLATED TEST-ADMIN FIXTURE
+mutation scope: only lease-listed dedicated X/unit, proof root, isolated
+                Runner socket/service/policy, isolated Compose project/DB/
+                workspace, or private mount namespace
+cleanup authority: cleanup_candidate_b_v2_fixture() under explicit test-admin
+cleanup is domain evidence: NO
+Phase H / Phase I / N1-N7 rerun: NO only when cleanup completes and the exact
+                                 final-stack fingerprint is unchanged
+evidence remaining valid: sealed row evidence and all prior exact-SHA final-
+                          stack evidence only after that equality check
+
+DESTRUCTIVE HOST CHECK REQUIRING FULL REBASELINE BEFORE CAMPAIGN
+mutation scope: any unavoidable change to final Runner installation, immutable
+                reporter, final policy identity, final services, or final
+                Compose stack
+cleanup authority: external test admin only
+cleanup is domain evidence: NO
+required order: STOP -> seal evidence -> external admin restoration -> fresh
+                Phase H -> fresh Phase I if affected -> fresh N1-N7 -> fresh
+                required V2-A validation -> only then F01
+evidence remaining valid: behavioral evidence from the destructive row may be
+                          reviewed, but no pre-restoration evidence proves the
+                          restored final stack
+```
+
+No current V2-A row is planned as destructive. If any isolated mechanic cannot
+maintain its lease boundary or final-stack fingerprint, the row is
+reclassified as destructive at execution time and the full stop/rebaseline
+order applies. Cleanup failure, unexpected root-owned state, or a changed
+fingerprint is `STOPPED`; test-admin cleanup never fabricates domain success.
+
+Dedicated units use deterministic valid X/H values derived from tested SHA
+and row, never an Attempt from the formal F campaign. A fixture may call the
+production `SystemdSupervisor.observe(X, H)` to exercise real parsing, but it
+cannot write a physical observation, journal JSON, Attempt state, or verdict.
+
+#### V2-A11 real missing-receipt fixture
+
+`create_missing_receipt_fixture()` creates one valid test-admin X and exact
+`X.service` with `Description=labpilot:<H>`, `Type=exec`, the accepted non-root
+main security profile, and `/usr/bin/true`; it deliberately has no
+`ExecStopPost`. It waits for real trusted PID1 start/terminal records and unit
+GC, then calls the production observer. The receipt query is real and
+successful, with zero exact root/unit/invocation/boot matches. The fixture
+first asserts that the retained manager stream contains terminality but no
+independent process-exit cause; if systemd retains a real cause, the fixture is
+STOPPED rather than hiding that fact. Pass is
+`TERMINAL_MATCH` with no exit code or signal. The production immutable reporter
+and final Runner installation are read and fingerprinted, never suppressed,
+renamed, edited, or replaced.
+
+Cleanup resets/removes only the lease-listed throwaway unit and proof metadata.
+It is not domain evidence. Equal before/after final-stack fingerprints mean no
+Phase H/I/N1-N7 rerun; otherwise STOP and full rebaseline.
+
+#### V2-A12 real trusted-root cardinality fixtures
+
+`create_trusted_receipt_fixture(..., variant="malformed")` and
+`create_trusted_receipt_fixture(..., variant="duplicate")` install one exact-
+digest test-only producer under
+`/opt/labpilot-runner-mechanism-proof/libexec/receipt-cardinality-probe.py`.
+The producer is root-owned, regular, non-group/world-writable, accepts no
+caller data, and is referenced by fixed `ExecStopPost=-+` in two separate
+throwaway units:
+
+```text
+malformed -> one bounded non-JSON stdout record
+duplicate -> two newline-delimited canonical TerminalReceiptV1 stdout records
+```
+
+systemd/journald, not the harness, creates the records and supplies their real
+`_SYSTEMD_UNIT`, `_UID=0`, `_GID=0`, `_SYSTEMD_INVOCATION_ID`, and `_BOOT_ID`.
+The helper first records those actual correlation fields and proves manager
+terminality with no independently retained process-exit cause, then invokes
+the production observer for the exact X/H. If a stronger cause was retained,
+the fixture is STOPPED instead of discarding it. The malformed case and
+duplicate case must each yield `UNKNOWN`/attention. No synthetic journal JSON
+enters the observer and the production immutable reporter is untouched.
+
+Cleanup removes only both lease-listed units and the fixed mechanism-proof
+artifact after sealing journal evidence. Cleanup is not domain evidence.
+Fingerprint equality avoids rebaseline; any mismatch or incomplete cleanup
+stops for the full rebaseline order.
+
+#### V2-A15 sealed v1-to-v2 Phase H transition
+
+Immediately before §7.5 Phase H activates the v2 Runner,
+`prepare_v1_compatibility_before_v2_install()` creates one long-running
+v1-equivalent physical lifecycle using the exact previously Accepted v1
+launch profile, deterministic test-admin X/H, `labpilot-train`, and no receipt
+hook. It seals X, H, PID, invocation, boot, unit properties, start cardinality,
+and the pre-v2 installation identity. It does not install or start a v1 Runner.
+
+Phase H then performs the normal one-way v2 installation. Without any
+downgrade, `verify_v1_compatibility_after_v2_install()` requires the v2 Runner
+to return `ACTIVE_MATCH` for the sealed X/H, perform STOP only after that fresh
+match, observe terminality, and prove physical start cardinality remained one.
+Failure stops Phase H. Cleanup of the dedicated unit is test-admin action and
+not domain evidence.
+
+The later V2-A15 matrix row is a non-destructive check of that sealed exact-SHA
+transition evidence and current v2 final-stack fingerprint. It never performs
+or claims a v2-to-v1 hot downgrade.
+
+#### V2-A18 isolated immutable-drift proof
+
+`run_isolated_installer_drift_fixture()` invokes only the fixed committed
+`tests/acceptance/slice2/fixtures/a18_installer_drift_probe.sh`. The Python
+caller validates one generated fixture root beneath the configured evidence
+root; the shell helper rejects extra operations and enters a private mount
+namespace with private propagation. Inside that namespace it bind-mounts the
+disposable exact app/libexec tree over the fixed `/opt/labpilot-runner` view,
+changes one byte only in the isolated reporter, sources the real
+`scripts/install_labpilot_runner_host.sh`, and calls its production
+`install_or_verify_terminal_receipt` function. The expected result is fail-closed
+before activation or overwrite.
+
+Namespace exit removes the isolated view automatically. The harness hashes the
+real host reporter before and after and requires equality, plus the complete
+final-stack fingerprint. It never modifies
+`/opt/labpilot-runner/libexec/labpilot-terminal-receipt-v1.py` on the host.
+Therefore Phase H/I/N1-N7 do not rerun on PASS. If mount isolation is
+unavailable, the host hash changes, or the real validator cannot run through
+this fixed mechanic, A18 becomes destructive: STOP, external restoration,
+fresh Phase H, fresh Phase I if affected, fresh N1-N7, and fresh required V2-A
+validation before F01. No evidence predating restoration proves that restored
+stack.
 
 The dedicated profile command is:
 
@@ -2996,20 +3283,30 @@ For scenarios intentionally ending UNKNOWN or IDENTITY_CONFLICT, seal/hash the v
 The obsolete direct-to-campaign ordering is replaced by this exact sequence.
 Each numbered item is a gate; later items do not authorize themselves.
 
-1. **Accepted ADR already closed.** Confirm both Accepted supervision
+1. **Accepted architecture amendment already closed.** Confirm both Accepted supervision
    documents and the Candidate B v2 acceptance baseline; do not edit them.
-2. **Implementation plan externally reviewed/accepted.** This proposed delta
-   must receive explicit external acceptance before Internal Step 0 or TDD.
-3. **Candidate B v2 production TDD implementation.** Execute Internal Steps
+2. **External implementation-plan review.** Review may return ACCEPT or
+   REQUEST CHANGES. An external ACCEPT verdict is an architecture/governance
+   review fact only and does not authorize Internal Step 0 or any TDD.
+3. **Governance-only implementation-plan acceptance recorded.** After an
+   external ACCEPT verdict, a separate docs-only commit may change this delta
+   from Proposed to Accepted. That commit does not authorize Internal Step 0,
+   production edits, native execution, the formal campaign, or F18.
+4. **Separate explicit Candidate B v2 IMPLEMENTATION AUTHORIZATION.** Only a
+   later authorization that explicitly permits Candidate B v2 implementation
+   may start Internal Step 0 and production TDD. Its scope must separately
+   state whether the bounded native Step 0 mechanism proof is authorized; it
+   never implies final native-campaign or F18 authority.
+5. **Candidate B v2 production TDD implementation.** Execute Internal Steps
    0–6 in order, including the native M1 mechanism gate before production
    semantics depend on it.
-4. **External production code review.** Stop at the exact production HEAD;
+6. **External production code review.** Stop at the exact production HEAD;
    H1/H2 are excluded from this semantic review.
-5. **H1 harness remediation.** Execute Internal Step 7 as its own RED/GREEN
+7. **H1 harness remediation.** Execute Internal Step 7 as its own RED/GREEN
    test-only commit.
-6. **H2 harness remediation.** Execute Internal Step 8 as its own deterministic
+8. **H2 harness remediation.** Execute Internal Step 8 as its own deterministic
    RED/GREEN test-only commit.
-7. **Exact-head full repository verification.** In supported Python 3.12 with
+9. **Exact-head full repository verification.** In supported Python 3.12 with
    PostgreSQL drivers, run:
 
    ```bash
@@ -3022,40 +3319,43 @@ Each numbered item is a gate; later items do not authorize themselves.
 
    Create a fresh PostgreSQL database, migrate from zero through
    `0010_attempt_physical_execution.py`, and rerun the integration suite.
-8. **Freeze one final Task 5 scenario SHA.** Record one 40-hex `TESTED_SHA`
+10. **Freeze one final Task 5 scenario SHA.** Record one 40-hex `TESTED_SHA`
    after every production, test, and documentation commit required for the
    campaign is present.
-9. **Exact Runner install / Phase H.** Install that SHA and exact policy;
-   verify immutable reporter/profile identity, effective service, INFO
+11. **Exact Runner install / Phase H.** Before v2 activation, prepare and seal
+   the V2-A15 v1-equivalent active lifecycle. Then install that SHA and exact
+   policy, verify the v2 Runner observes/stops that lifecycle without relaunch,
+   and verify immutable reporter/profile identity, effective service, INFO
    readiness, runtime directory, socket, and installed application tree.
-10. **Fresh production stack / Phase I.** Build and start the API,
+12. **Fresh production stack / Phase I.** Build and start the API,
     Coordinator, and PostgreSQL stack from the same frozen SHA and record
     exact image/container identities.
-11. **Fresh N1–N7.** Run the existing native preflight set once against the
+13. **Fresh N1–N7.** Run the existing native preflight set once against the
     exact installed and composed stack; any failure stops the lineage.
-12. **Candidate B v2 profile acceptance matrix.** Run V2-A1–V2-A20 and seal
+14. **Candidate B v2 profile acceptance matrix.** Run V2-A1–V2-A20 under the
+    classification, isolation, cleanup, and rebaseline rules in §7.1.1; seal
     bounded per-row evidence before F01.
-13. **Fresh F01–F17.** Run in numeric order with first-failure-stop and fresh
+15. **Fresh F01–F17.** Run in numeric order with first-failure-stop and fresh
     state per scenario:
 
     ```bash
     uv run python scripts/run_slice2_native_acceptance.py --scenarios F01-F17
     ```
 
-14. **F18 NOT RUN.** Do not prepare, reboot, or verify F18 in the non-reboot
+16. **F18 NOT RUN.** Do not prepare, reboot, or verify F18 in the non-reboot
     campaign.
-15. **Fresh F19–F22.** Continue only if F01–F17 all produced determinate PASS:
+17. **Fresh F19–F22.** Continue only if F01–F17 all produced determinate PASS:
 
     ```bash
     uv run python scripts/run_slice2_native_acceptance.py --scenarios F19-F22
     ```
 
-16. **External evidence review.** Review N1–N7, V2-A1–V2-A20, F01–F17, and
+18. **External evidence review.** Review N1–N7, V2-A1–V2-A20, F01–F17, and
     F19–F22 plus hashes, critical-class scan, and stop-on-first-failure
     compliance.
-17. **Explicit separate F18 authorization.** No previous gate implies reboot
+19. **Explicit separate F18 authorization.** No previous gate implies reboot
     authority.
-18. **F18 prepare/reboot/verify only if authorized.** After explicit approval:
+20. **F18 prepare/reboot/verify only if authorized.** After explicit approval:
 
     ```bash
     uv run python scripts/run_slice2_native_acceptance.py --scenario F18 --phase prepare
@@ -3065,13 +3365,17 @@ Each numbered item is a gate; later items do not authorize themselves.
     The authorized human/admin reboot occurs between commands. Verify uses the
     frozen historical boot/X/H/receipt locator and never LAUNCHes the old
     Attempt.
-19. **Final G4 external review.** Review the complete evidence set and final
+21. **Final G4 external review.** Review the complete evidence set and final
     repository gate; green automation alone does not accept G4.
-20. **Governance-only Slice 2 closure after G4.** Only a separate explicit
+22. **Governance-only Slice 2 closure after G4.** Only a separate explicit
     governance authorization may mark Task 5/Slice 2 accepted and update
     `DOCUMENT-STATUS.md` exactly once.
 
-Any repository commit after item 8 invalidates the campaign lineage. Reinstall
+At plan-acceptance time the native campaign remains NOT AUTHORIZED, F18 remains
+separately gated, G4 remains unreached, and `DOCUMENT-STATUS.md` remains
+unchanged.
+
+Any repository commit after item 10 invalidates the campaign lineage. Reinstall
 the exact new HEAD, rebuild the production stack, rerun N1–N7 and V2-A1–V2-A20,
 and start a fresh formal campaign; never mix evidence across SHAs.
 
@@ -3162,7 +3466,7 @@ Before G0 implementation authorization, verify:
 | TR-D7 no guessed zero | Internal Step 3 missing-receipt test; V2-A11; fresh F01 |
 | TR-D8 failure neutrality | Internal Step 0 native proof; V2-A3 |
 | TR-D9 artifact-bound H | Internal Step 2 digest/identity/H RED test; V2-A1 and V2-A18 |
-| TR-D10 v1 compatibility / v2 admission | Internal Steps 2 and 5; V2-A15 and V2-A16 |
+| TR-D10 v1 compatibility / v2 admission | Internal Steps 2, 3, and 5; the four named historical-v1 stronger/absent-cause tests; V2-A15 and V2-A16 |
 | TR-D11 no domain expansion | File map and every stop condition; V2-A20 |
 | TR-D12 retained proven cause | Internal Step 3 loaded/GC equivalence; V2-A5–V2-A16; F08/F18/F22 |
 
@@ -3175,6 +3479,35 @@ order in §25 is implemented by §7.5. Sections 23, 24, and 26 are enforced by
 the authority precedence, explicit out-of-scope stop conditions, and proposed
 governance status in this delta.
 
+### I1–I3 remediation self-review
+
+1. External plan ACCEPT and implementation authorization are distinct facts.
+2. Section 7.5 records a docs-only plan-acceptance commit followed by a later
+   explicit implementation-authorization gate before Internal Step 0.
+3. Current-unit exact X/H + real ExecMainCode/ExecMainStatus evidence outranks
+   receipt evidence and preserves historical v1 exit/signal cause with timeout
+   precedence.
+4. Correlated retained trusted process-exit evidence preserves historical v1
+   cause; manager-only terminality still never guesses zero.
+5. V2-A11 uses a separate real systemd lifecycle with real zero-match receipt
+   absence and never suppresses the production reporter.
+6. V2-A12 uses real root post-stop producer records with exact real
+   unit/invocation/boot provenance and never fabricated journal JSON.
+7. V2-A15 prepares a v1-equivalent active lifecycle before v2 Phase H and
+   never performs a v2-to-v1 downgrade.
+8. V2-A18 runs real fixed-path installer validation inside a private mount
+   namespace and requires the host reporter hash to remain unchanged.
+9. Every mutating matrix row has a closed lease, non-domain cleanup, exact
+   fingerprint postcondition, and explicit rebaseline consequence.
+10. All introduced fixture functions and their owning files are named before
+    use; the installer function consumed by A18 is defined in Internal Step 5.
+11. The placeholder scan covers the full plan delta and admits no unspecified
+    helper or work item.
+12. The delta remains **PROPOSED / PENDING EXTERNAL IMPLEMENTATION-PLAN
+    REVIEW**.
+13. Candidate B v2 implementation, native execution, and F18 remain **NOT
+    AUTHORIZED** by this plan remediation.
+
 ### Consistency results
 
 - **Spec coverage:** PASS. Every TR-D1–TR-D12 criterion maps to at least one
@@ -3183,11 +3516,14 @@ governance status in this delta.
   deferred helper/function name.
 - **Type/interface consistency:** PASS. Producer bytes precede manifest
   identity; manifest identity precedes policy/H tests; parser interfaces
-  precede supervisor use; production review precedes H1/H2; H1 evidence types
-  precede their campaign use.
+  precede supervisor use; the installer validator precedes A18; closed matrix
+  fixture interfaces precede matrix execution; production review precedes
+  H1/H2; H1 evidence types precede their campaign use.
 - **File responsibility:** PASS. The standalone asset only produces a receipt;
   `terminal_receipt.py` only parses/maps it; existing policy, supervisor,
-  daemon, installer, and harness files retain their established roles.
+  daemon, installer, and harness files retain their established roles;
+  `candidate_b_v2_fixtures.py` owns only closed test-admin matrix mechanics and
+  the A18 shell helper owns only its fixed private mount-namespace probe.
 - **Governance:** PASS. The delta remains **PROPOSED / PENDING EXTERNAL
   IMPLEMENTATION-PLAN REVIEW**. Implementation, native execution, F18, G4,
   and `DOCUMENT-STATUS.md` closure remain unauthorized.
