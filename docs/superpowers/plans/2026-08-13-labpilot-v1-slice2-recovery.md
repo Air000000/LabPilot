@@ -1269,6 +1269,26 @@ TimeoutStopSec=<fixed root-owned policy>
 
 Current loaded unit evidence is preferred. After unit GC/controller loss, bounded persistent journald PID-1 manager evidence may establish exact X/H start/terminal facts. Workload stdout is never authoritative physical evidence.
 
+### 5.9.1 Task 5 systemd journal terminal-retention finding
+
+Task 5 F01 at `TESTED_SHA=d3d3513022b1526ab6763ec2e91dca1e86c6ce5d`
+showed that real `Type=exec` transient units can be collected immediately after
+completion. The production journal fallback had only been tested with a
+synthetic `Finished UNIT - labpilot:H.` record. On the dedicated systemd 259
+host, a successful lifecycle instead retained a trusted exact-H start record
+followed by a PID-1 `UNIT: Deactivated successfully.` terminal record that did
+not repeat the Description/H marker.
+
+The existing parser therefore found the matching start witness but failed to
+correlate its later terminal manager record, incorrectly degrading normal
+unit-GC recovery to UNKNOWN. This violates the accepted terminal-retention
+contract. The bounded remediation remains within the selected systemd plus
+persistent-journald evidence stack: correlate trusted records for the exact
+UNIT only when their structured `INVOCATION_ID` and historical `_BOOT_ID`
+match, preserve wrong-H as IDENTITY_CONFLICT, and consume structured terminal
+fields only when present. It introduces no Runner authority, ledger, worker,
+retry system, or execution state.
+
 ## 5.10 Task 3 TDD execution steps
 
 - [ ] **Step 1: Add physical persistence, closed state types, and audit bridge.**
