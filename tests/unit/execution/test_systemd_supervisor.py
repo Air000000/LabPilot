@@ -1,5 +1,6 @@
 import json
 import subprocess
+from dataclasses import replace
 
 import pytest
 
@@ -42,7 +43,7 @@ def _spec() -> FrozenLaunchSpec:
         300,
         "labpilot-train",
         "labpilot-train",
-        "candidate-b-v1",
+        "candidate-b-v2",
         "c" * 64,
     )
 
@@ -901,12 +902,15 @@ def test_launch_uses_exact_fixed_systemd_profile() -> None:
         ).kind
         is ControlOutcomeKind.CREATED
     )
-    argv = commands.argv[-1]
-    assert f"--unit={UNIT}" in argv
-    for exact in (
+    h = frozen_launch_spec_hash(spec)
+    assert commands.argv[-1] == (
+        "systemd-run",
+        "--system",
+        "--no-ask-password",
+        f"--unit={UNIT}",
+        f"--description=labpilot:{h}",
         "--service-type=exec",
-        "--uid=labpilot-train",
-        "--gid=labpilot-train",
+        "--expand-environment=no",
         "--property=Restart=no",
         "--property=KillMode=control-group",
         "--property=NoNewPrivileges=yes",
@@ -914,10 +918,60 @@ def test_launch_uses_exact_fixed_systemd_profile() -> None:
         "--property=CapabilityBoundingSet=",
         "--property=StandardOutput=journal",
         "--property=StandardError=journal",
+        "--property=UnsetEnvironment=LD_AUDIT LD_DEBUG LD_LIBRARY_PATH LD_PRELOAD "
+        "PYTHONHOME PYTHONPATH",
+        "--property=ExecStopPost=-+/usr/bin/python3 -I -B "
+        "/opt/labpilot-runner/libexec/labpilot-terminal-receipt-v1.py",
         "--property=RuntimeMaxSec=300s",
         "--property=TimeoutStopSec=30s",
-    ):
-        assert exact in argv
+        "--uid=labpilot-train",
+        "--gid=labpilot-train",
+        "--working-directory=/srv/labpilot/attempts/a/source/.",
+        "--",
+        "/usr/bin/env",
+        "-i",
+        "PATH=/opt/python/bin:/usr/bin",
+        "/opt/python/bin/python",
+        "/srv/labpilot/attempts/a/source/train.py",
+        "--output",
+        "/srv/labpilot/attempts/a/runtime/output",
+    )
+
+
+def test_launch_environment_is_only_inside_nonroot_env_i() -> None:
+    supervisor = SystemdSupervisor(
+        Commands([]),
+        execution_user="labpilot-train",
+        execution_group="labpilot-train",
+        stop_timeout_seconds=30,
+    )
+    spec = replace(
+        _spec(),
+        environment=(
+            ("LD_LIBRARY_PATH", "/workspace/loader-canary"),
+            ("PYTHONPATH", "/workspace/import-canary"),
+        ),
+    )
+
+    argv = supervisor._launch_argv(X, "a" * 64, spec)
+
+    env_index = argv.index("/usr/bin/env")
+    reporter = (
+        "--property=ExecStopPost=-+/usr/bin/python3 -I -B "
+        "/opt/labpilot-runner/libexec/labpilot-terminal-receipt-v1.py"
+    )
+    assert "--setenv=LD_LIBRARY_PATH=/workspace/loader-canary" not in argv
+    assert argv.index("LD_LIBRARY_PATH=/workspace/loader-canary") > env_index
+    assert argv.index("PYTHONPATH=/workspace/import-canary") > env_index
+    assert argv.index(reporter) < env_index
+
+
+def test_launch_profile_has_no_caller_selected_root_hook() -> None:
+    spec = _spec()
+
+    assert not hasattr(spec, "exec_stop_post")
+    assert not hasattr(spec, "reporter_path")
+    assert not hasattr(spec, "reporter_argv")
 
 
 def test_terminal_signal_is_not_invented_as_exit_code() -> None:

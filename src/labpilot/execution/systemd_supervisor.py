@@ -5,6 +5,10 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
+from labpilot.execution.runner_policy import (
+    TERMINAL_RECEIPT_REPORTER_PATH,
+    TRUSTED_REPORTER_INTERPRETER,
+)
 from labpilot.execution.terminal_receipt import (
     TerminalCause,
     TerminalReceiptV1,
@@ -505,15 +509,26 @@ class SystemdSupervisor:
             "--property=CapabilityBoundingSet=",
             "--property=StandardOutput=journal",
             "--property=StandardError=journal",
+            "--property=UnsetEnvironment=LD_AUDIT LD_DEBUG LD_LIBRARY_PATH LD_PRELOAD "
+            "PYTHONHOME PYTHONPATH",
+            f"--property=ExecStopPost=-+{TRUSTED_REPORTER_INTERPRETER} -I -B "
+            f"{TERMINAL_RECEIPT_REPORTER_PATH}",
             f"--property=RuntimeMaxSec={spec.timeout_seconds}s",
             f"--property=TimeoutStopSec={self._stop_timeout}s",
             f"--uid={self._user}",
             f"--gid={self._group}",
             f"--working-directory={source}/{spec.workdir_relative_path}",
         ]
-        command.extend(f"--setenv={key}={value}" for key, value in spec.environment)
         command.extend(
-            ("--", spec.runtime_path, f"{source}/{spec.train_entrypoint_relative_path}", *spec.argv)
+            (
+                "--",
+                "/usr/bin/env",
+                "-i",
+                *(f"{key}={value}" for key, value in sorted(spec.environment)),
+                spec.runtime_path,
+                f"{source}/{spec.train_entrypoint_relative_path}",
+                *spec.argv,
+            )
         )
         return tuple(command)
 
