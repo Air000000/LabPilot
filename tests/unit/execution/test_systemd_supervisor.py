@@ -64,7 +64,8 @@ def _loaded(*, active: str, description: str) -> str:
         "LoadState=loaded\n"
         f"ActiveState={active}\n"
         f"Description={description}\n"
-        "Result=success\nMainPID=42\nInvocationID=inv-1\nExecMainCode=1\nExecMainStatus=0\n"
+        f"Result=success\nMainPID=42\nInvocationID={INVOCATION_A}\n"
+        "ExecMainCode=1\nExecMainStatus=0\n"
     )
 
 
@@ -122,13 +123,21 @@ def _start_records(
 
 
 def _journal_supervisor(
-    records: list[dict[str, str]], *, current_boot_id: str = BOOT_B
+    records: list[dict[str, str]],
+    *,
+    receipts: list[dict[str, object]] | None = None,
+    receipt_returncode: int = 0,
+    current_boot_id: str = BOOT_B,
 ) -> SystemdSupervisor:
     return SystemdSupervisor(
         Commands(
             [
                 (0, "LoadState=not-found\n"),
                 (0, "\n".join(json.dumps(record) for record in records)),
+                (
+                    receipt_returncode,
+                    "\n".join(json.dumps(record) for record in receipts or []),
+                ),
             ]
         ),
         execution_user="labpilot-train",
@@ -136,6 +145,45 @@ def _journal_supervisor(
         stop_timeout_seconds=30,
         boot_id=current_boot_id,
     )
+
+
+def _receipt_message(
+    service_result: str | None,
+    exit_code: str | None,
+    exit_status: str | None,
+) -> str:
+    return json.dumps(
+        {
+            "schema_version": "labpilot-terminal-receipt-v1",
+            "service_result": service_result,
+            "exit_code": exit_code,
+            "exit_status": exit_status,
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _receipt_record(
+    service_result: str | None,
+    exit_code: str | None,
+    exit_status: str | None,
+    *,
+    unit: str = UNIT,
+    uid: str = "0",
+    gid: str = "0",
+    invocation_id: str = INVOCATION_A,
+    boot_id: str = BOOT_A,
+) -> dict[str, object]:
+    return {
+        "_SYSTEMD_UNIT": unit,
+        "_UID": uid,
+        "_GID": gid,
+        "_SYSTEMD_INVOCATION_ID": invocation_id,
+        "_BOOT_ID": boot_id,
+        "MESSAGE": _receipt_message(service_result, exit_code, exit_status),
+    }
 
 
 def test_same_x_different_h_is_identity_conflict_without_creation() -> None:
@@ -283,7 +331,10 @@ def test_real_natural_exit_zero_survives_unit_gc() -> None:
         _manager_record(f"{UNIT}: Deactivated successfully.", SUCCESS_ID),
     ]
 
-    observation = _journal_supervisor(records).observe(X, expected)
+    observation = _journal_supervisor(
+        records,
+        receipts=[_receipt_record("success", "exited", "0")],
+    ).observe(X, expected)
 
     assert observation.kind is PhysicalObservationKind.TERMINAL_MATCH
     assert observation.observed_spec_hash == expected
@@ -292,6 +343,302 @@ def test_real_natural_exit_zero_survives_unit_gc() -> None:
     assert observation.result == "success"
     assert observation.exit_code == 0
     assert observation.termination_signal is None
+
+
+def test_loaded_v1_real_exit_zero_precedes_receipt_absence() -> None:
+    expected = "a" * 64
+    supervisor = SystemdSupervisor(
+        Commands([(0, _loaded(active="inactive", description=f"labpilot:{expected}"))]),
+        execution_user="labpilot-train",
+        execution_group="labpilot-train",
+        stop_timeout_seconds=30,
+        boot_id=BOOT_A,
+    )
+
+    observation = supervisor.observe(X, expected)
+
+    assert observation.kind is PhysicalObservationKind.TERMINAL_MATCH
+    assert observation.result == "success"
+    assert observation.exit_code == 0
+    assert observation.termination_signal is None
+
+
+def test_loaded_v1_real_sigkill_precedes_receipt_absence() -> None:
+    expected = "a" * 64
+    loaded = _loaded(active="failed", description=f"labpilot:{expected}").replace(
+        "Result=success", "Result=signal"
+    ).replace("ExecMainCode=1\nExecMainStatus=0", "ExecMainCode=2\nExecMainStatus=9")
+    supervisor = SystemdSupervisor(
+        Commands([(0, loaded)]),
+        execution_user="labpilot-train",
+        execution_group="labpilot-train",
+        stop_timeout_seconds=30,
+        boot_id=BOOT_A,
+    )
+
+    observation = supervisor.observe(X, expected)
+
+    assert observation.kind is PhysicalObservationKind.TERMINAL_MATCH
+    assert observation.result == "signal"
+    assert observation.exit_code is None
+    assert observation.termination_signal == 9
+
+
+def test_retained_v1_real_exit_seven_precedes_receipt_absence() -> None:
+    expected = "a" * 64
+    records = [
+        *_start_records(expected),
+        _manager_record(
+            f"{UNIT}: Main process exited, code=exited, status=7/NOTRUNNING",
+            PROCESS_EXIT_ID,
+            EXIT_CODE="exited",
+            EXIT_STATUS="7",
+        ),
+        _manager_record(f"{UNIT}: Failed with result 'exit-code'.", FAILURE_ID),
+    ]
+
+    observation = _journal_supervisor(records).observe(X, expected)
+
+    assert observation.kind is PhysicalObservationKind.TERMINAL_MATCH
+    assert observation.result == "exit-code"
+    assert observation.exit_code == 7
+    assert observation.termination_signal is None
+
+
+def test_gc_v1_manager_only_without_receipt_is_terminal_unclassified() -> None:
+    expected = "a" * 64
+    records = [
+        *_start_records(expected),
+        _manager_record(f"{UNIT}: Deactivated successfully.", SUCCESS_ID),
+    ]
+
+    observation = _journal_supervisor(records).observe(X, expected)
+
+    assert observation.kind is PhysicalObservationKind.TERMINAL_MATCH
+    assert observation.result == "success"
+    assert observation.exit_code is None
+    assert observation.termination_signal is None
+
+
+@pytest.mark.parametrize(
+    (
+        "receipt_values",
+        "manager_result",
+        "expected_result",
+        "expected_exit_code",
+        "expected_signal",
+    ),
+    [
+        (("success", "exited", "0"), "success", "success", 0, None),
+        (("exit-code", "exited", "7"), "exit-code", "exit-code", 7, None),
+        (("success", "killed", "TERM"), "success", "success", None, 15),
+        (("signal", "killed", "KILL"), "signal", "signal", None, 9),
+        (("timeout", "killed", "TERM"), "timeout", "timeout", None, None),
+        (("watchdog", "killed", "ABRT"), "success", "watchdog", None, None),
+    ],
+)
+def test_loaded_and_gc_receipt_causes_are_equivalent(
+    receipt_values: tuple[str, str, str],
+    manager_result: str,
+    expected_result: str,
+    expected_exit_code: int | None,
+    expected_signal: int | None,
+) -> None:
+    expected = "a" * 64
+    loaded = (
+        _loaded(active="inactive", description=f"labpilot:{expected}")
+        .replace("Result=success", f"Result={manager_result}")
+        .replace("ExecMainCode=1\nExecMainStatus=0", "ExecMainCode=\nExecMainStatus=")
+    )
+    receipt = _receipt_record(*receipt_values)
+    loaded_supervisor = SystemdSupervisor(
+        Commands([(0, loaded), (0, json.dumps(receipt))]),
+        execution_user="labpilot-train",
+        execution_group="labpilot-train",
+        stop_timeout_seconds=30,
+        boot_id=BOOT_A,
+    )
+    terminal_record = (
+        _manager_record(f"{UNIT}: Deactivated successfully.", SUCCESS_ID)
+        if manager_result == "success"
+        else _manager_record(
+            f"{UNIT}: Failed with result '{manager_result}'.",
+            FAILURE_ID,
+        )
+    )
+    gc_supervisor = _journal_supervisor(
+        [*_start_records(expected), terminal_record],
+        receipts=[receipt],
+        current_boot_id=BOOT_A,
+    )
+
+    loaded_observation = loaded_supervisor.observe(X, expected)
+    gc_observation = gc_supervisor.observe(X, expected)
+
+    assert loaded_observation == gc_observation
+    assert loaded_observation.kind is PhysicalObservationKind.TERMINAL_MATCH
+    assert loaded_observation.result == expected_result
+    assert loaded_observation.exit_code == expected_exit_code
+    assert loaded_observation.termination_signal == expected_signal
+
+
+def test_receipt_query_filters_provenance_before_tail_bound() -> None:
+    expected = "a" * 64
+    commands = Commands(
+        [
+            (0, "LoadState=not-found\n"),
+            (
+                0,
+                "\n".join(
+                    json.dumps(record)
+                    for record in [
+                        *_start_records(expected),
+                        _manager_record(
+                            f"{UNIT}: Deactivated successfully.", SUCCESS_ID
+                        ),
+                    ]
+                ),
+            ),
+            (0, ""),
+        ]
+    )
+    supervisor = SystemdSupervisor(
+        commands,
+        execution_user="labpilot-train",
+        execution_group="labpilot-train",
+        stop_timeout_seconds=30,
+    )
+
+    supervisor.observe(X, expected)
+
+    assert commands.argv[2] == (
+        "journalctl",
+        f"_SYSTEMD_UNIT={UNIT}",
+        "_UID=0",
+        "_GID=0",
+        f"_SYSTEMD_INVOCATION_ID={INVOCATION_A}",
+        f"_BOOT_ID={BOOT_A}",
+        "--output=json",
+        "--no-pager",
+        "-n",
+        "10",
+    )
+
+
+@pytest.mark.parametrize(
+    ("receipts", "receipt_returncode"),
+    [
+        (
+            [
+                {
+                    "_SYSTEMD_UNIT": UNIT,
+                    "_UID": "0",
+                    "_GID": "0",
+                    "_SYSTEMD_INVOCATION_ID": INVOCATION_A,
+                    "_BOOT_ID": BOOT_A,
+                    "MESSAGE": "not-json",
+                }
+            ],
+            0,
+        ),
+        ([_receipt_record("success", "exited", "0")] * 2, 0),
+        ([], 1),
+    ],
+)
+def test_malformed_duplicate_or_unavailable_receipt_is_unknown(
+    receipts: list[dict[str, object]],
+    receipt_returncode: int,
+) -> None:
+    expected = "a" * 64
+    records = [
+        *_start_records(expected),
+        _manager_record(f"{UNIT}: Deactivated successfully.", SUCCESS_ID),
+    ]
+
+    observation = _journal_supervisor(
+        records,
+        receipts=receipts,
+        receipt_returncode=receipt_returncode,
+    ).observe(X, expected)
+
+    assert observation.kind is PhysicalObservationKind.UNKNOWN
+
+
+@pytest.mark.parametrize(
+    "receipt",
+    [
+        _receipt_record("success", "exited", "0", invocation_id=INVOCATION_B),
+        _receipt_record("success", "exited", "0", boot_id=BOOT_B),
+        _receipt_record("success", "exited", "0", unit="other.service"),
+        _receipt_record("success", "exited", "0", uid="995", gid="982"),
+    ],
+)
+def test_wrong_correlation_or_workload_spoof_cannot_supply_cause(
+    receipt: dict[str, object],
+) -> None:
+    expected = "a" * 64
+    records = [
+        *_start_records(expected),
+        _manager_record(f"{UNIT}: Deactivated successfully.", SUCCESS_ID),
+    ]
+
+    observation = _journal_supervisor(records, receipts=[receipt]).observe(X, expected)
+
+    assert observation.kind is PhysicalObservationKind.TERMINAL_MATCH
+    assert observation.exit_code is None
+    assert observation.termination_signal is None
+
+
+def test_byte_identical_workload_spoof_does_not_create_duplicate_receipt() -> None:
+    expected = "a" * 64
+    root_receipt = _receipt_record("success", "exited", "0")
+    workload_spoof = {**root_receipt, "_UID": "995", "_GID": "982"}
+    records = [
+        *_start_records(expected),
+        _manager_record(f"{UNIT}: Deactivated successfully.", SUCCESS_ID),
+    ]
+
+    observation = _journal_supervisor(
+        records,
+        receipts=[workload_spoof, root_receipt],
+    ).observe(X, expected)
+
+    assert observation.kind is PhysicalObservationKind.TERMINAL_MATCH
+    assert observation.exit_code == 0
+
+
+def test_wrong_h_is_identity_conflict_before_receipt_cause_use() -> None:
+    expected = "a" * 64
+    wrong = "f" * 64
+    commands = Commands(
+        [
+            (0, "LoadState=not-found\n"),
+            (
+                0,
+                "\n".join(
+                    json.dumps(record)
+                    for record in [
+                        *_start_records(wrong),
+                        _manager_record(
+                            f"{UNIT}: Deactivated successfully.", SUCCESS_ID
+                        ),
+                    ]
+                ),
+            ),
+            (0, json.dumps(_receipt_record("success", "exited", "0"))),
+        ]
+    )
+    supervisor = SystemdSupervisor(
+        commands,
+        execution_user="labpilot-train",
+        execution_group="labpilot-train",
+        stop_timeout_seconds=30,
+    )
+
+    observation = supervisor.observe(X, expected)
+
+    assert observation.kind is PhysicalObservationKind.IDENTITY_CONFLICT
+    assert len(commands.argv) == 2
 
 
 def test_matching_start_without_terminal_record_remains_unknown() -> None:
@@ -402,7 +749,7 @@ def test_real_signal_requires_matching_invocation_and_boot_after_gc(
     assert observation.boot_id == BOOT_A
 
 
-def test_real_explicit_stop_does_not_invent_exit_zero_or_signal() -> None:
+def test_real_explicit_stop_receipt_preserves_physical_signal() -> None:
     expected = "a" * 64
     description = f"labpilot:{expected}"
     records = [
@@ -421,12 +768,15 @@ def test_real_explicit_stop_does_not_invent_exit_zero_or_signal() -> None:
         ),
     ]
 
-    observation = _journal_supervisor(records).observe(X, expected)
+    observation = _journal_supervisor(
+        records,
+        receipts=[_receipt_record("success", "killed", "TERM")],
+    ).observe(X, expected)
 
     assert observation.kind is PhysicalObservationKind.TERMINAL_MATCH
     assert observation.result == "success"
     assert observation.exit_code is None
-    assert observation.termination_signal is None
+    assert observation.termination_signal == 15
 
 
 def test_real_runtime_max_timeout_preserves_timeout_result_after_gc() -> None:
@@ -438,12 +788,44 @@ def test_real_runtime_max_timeout_preserves_timeout_result_after_gc() -> None:
             None,
         ),
         _manager_record(
+            f"{UNIT}: Main process exited, code=killed, status=15/TERM",
+            PROCESS_EXIT_ID,
+            EXIT_CODE="killed",
+            EXIT_STATUS="15",
+        ),
+        _manager_record(
             f"{UNIT}: Failed with result 'timeout'.",
             FAILURE_ID,
         ),
     ]
 
-    observation = _journal_supervisor(records).observe(X, expected)
+    observation = _journal_supervisor(
+        records,
+        receipts=[_receipt_record("timeout", "killed", "TERM")],
+    ).observe(X, expected)
+
+    assert observation.kind is PhysicalObservationKind.TERMINAL_MATCH
+    assert observation.result == "timeout"
+    assert observation.exit_code is None
+    assert observation.termination_signal is None
+
+
+def test_loaded_runtime_max_timeout_precedes_killed_term() -> None:
+    expected = "a" * 64
+    loaded = (
+        _loaded(active="failed", description=f"labpilot:{expected}")
+        .replace("Result=success", "Result=timeout")
+        .replace("ExecMainCode=1\nExecMainStatus=0", "ExecMainCode=2\nExecMainStatus=15")
+    )
+    supervisor = SystemdSupervisor(
+        Commands([(0, loaded)]),
+        execution_user="labpilot-train",
+        execution_group="labpilot-train",
+        stop_timeout_seconds=30,
+        boot_id=BOOT_A,
+    )
+
+    observation = supervisor.observe(X, expected)
 
     assert observation.kind is PhysicalObservationKind.TERMINAL_MATCH
     assert observation.result == "timeout"

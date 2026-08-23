@@ -1,10 +1,16 @@
 import json
 import re
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
+from labpilot.execution.terminal_receipt import (
+    TerminalCause,
+    TerminalReceiptV1,
+    map_terminal_receipt_v1,
+    parse_terminal_receipt_v1,
+)
 from labpilot.execution.types import FrozenLaunchSpec, frozen_launch_spec_hash
 
 CommandRunner = Callable[[tuple[str, ...], float], subprocess.CompletedProcess[str]]
@@ -121,20 +127,152 @@ class SystemdSupervisor:
                 result=properties.get("Result") or None,
             )
         if properties.get("ActiveState") in {"inactive", "failed"}:
-            status = _integer(properties.get("ExecMainStatus"))
-            code = properties.get("ExecMainCode")
+            cause = self._current_unit_terminal_cause(properties)
+            invocation_id = _journal_invocation_id(properties.get("InvocationID"))
+            if cause is not None and _cause_is_strong(cause):
+                return PhysicalObservation(
+                    PhysicalObservationKind.TERMINAL_MATCH,
+                    observed_spec_hash=observed_hash,
+                    invocation_id=invocation_id,
+                    boot_id=self._boot_id,
+                    result=cause.result,
+                    exit_code=cause.exit_code,
+                    termination_signal=cause.termination_signal,
+                )
+            if invocation_id is None or self._boot_id is None:
+                return PhysicalObservation(
+                    PhysicalObservationKind.TERMINAL_MATCH,
+                    observed_spec_hash=observed_hash,
+                    invocation_id=invocation_id,
+                    boot_id=self._boot_id,
+                    result=cause.result if cause is not None else None,
+                )
+            receipts = self._observe_receipts(
+                _unit_name(execution_identity), invocation_id, self._boot_id
+            )
+            if receipts is None or len(receipts) > 1:
+                return PhysicalObservation(
+                    PhysicalObservationKind.UNKNOWN,
+                    observed_spec_hash=observed_hash,
+                    invocation_id=invocation_id,
+                    boot_id=self._boot_id,
+                )
+            terminal_cause = (
+                map_terminal_receipt_v1(receipts[0])
+                if receipts
+                else cause or TerminalCause(None, None, None)
+            )
             return PhysicalObservation(
                 PhysicalObservationKind.TERMINAL_MATCH,
                 observed_spec_hash=observed_hash,
-                invocation_id=properties.get("InvocationID") or None,
+                invocation_id=invocation_id,
                 boot_id=self._boot_id,
-                result=properties.get("Result") or None,
-                exit_code=status if code in {"1", "exited"} else None,
-                termination_signal=(
-                    status if code in {"2", "3", "killed", "dumped"} else None
-                ),
+                result=terminal_cause.result,
+                exit_code=terminal_cause.exit_code,
+                termination_signal=terminal_cause.termination_signal,
             )
         return PhysicalObservation(PhysicalObservationKind.UNKNOWN, boot_id=self._boot_id)
+
+    def _current_unit_terminal_cause(
+        self,
+        properties: Mapping[str, str],
+    ) -> TerminalCause | None:
+        result = properties.get("Result") or None
+        if result == "timeout":
+            return TerminalCause("timeout", None, None)
+        status = _integer(properties.get("ExecMainStatus"))
+        code = properties.get("ExecMainCode")
+        if status is not None and code in {"1", "exited"}:
+            return TerminalCause(result, status, None)
+        if status is not None and code in {"2", "3", "killed", "dumped"}:
+            return TerminalCause(result, None, status)
+        return TerminalCause(result, None, None) if result is not None else None
+
+    def _retained_manager_terminal_cause(
+        self,
+        records: Sequence[Mapping[str, object]],
+        invocation_id: str,
+        boot_id: str,
+    ) -> TerminalCause | None:
+        result: str | None = None
+        exit_code: int | None = None
+        termination_signal: int | None = None
+        for record in records:
+            if (
+                _journal_invocation_id(record.get("INVOCATION_ID")) != invocation_id
+                or _journal_boot_id(record.get("_BOOT_ID")) != boot_id
+            ):
+                continue
+            message = record.get("MESSAGE")
+            message_id = record.get("MESSAGE_ID")
+            if message_id == _SYSTEMD_PROCESS_EXIT:
+                status = _integer_object(record.get("EXIT_STATUS"))
+                if record.get("EXIT_CODE") == "exited" and status is not None:
+                    exit_code = status
+                    termination_signal = None
+                elif record.get("EXIT_CODE") in {"killed", "dumped"} and status is not None:
+                    exit_code = None
+                    termination_signal = status
+            elif message_id == _SYSTEMD_SUCCESS and type(message) is str:
+                result = "success"
+            elif message_id == _SYSTEMD_FAILURE and type(message) is str:
+                for failure_result in ("exit-code", "timeout", "signal"):
+                    if message.endswith(f"Failed with result '{failure_result}'."):
+                        result = failure_result
+                        break
+        if result == "timeout":
+            return TerminalCause("timeout", None, None)
+        if result is not None or exit_code is not None or termination_signal is not None:
+            return TerminalCause(result, exit_code, termination_signal)
+        return None
+
+    def _observe_receipts(
+        self,
+        unit: str,
+        invocation_id: str,
+        boot_id: str,
+    ) -> tuple[TerminalReceiptV1, ...] | None:
+        try:
+            result = self._run(
+                (
+                    "journalctl",
+                    f"_SYSTEMD_UNIT={unit}",
+                    "_UID=0",
+                    "_GID=0",
+                    f"_SYSTEMD_INVOCATION_ID={invocation_id}",
+                    f"_BOOT_ID={boot_id}",
+                    "--output=json",
+                    "--no-pager",
+                    "-n",
+                    "10",
+                ),
+                10.0,
+            )
+        except (OSError, subprocess.SubprocessError, TimeoutError, IndexError):
+            return None
+        if result.returncode != 0:
+            return None
+        receipts: list[TerminalReceiptV1] = []
+        for line in result.stdout.splitlines():
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                return None
+            if type(record) is not dict:
+                return None
+            if (
+                record.get("_SYSTEMD_UNIT") != unit
+                or record.get("_UID") != "0"
+                or record.get("_GID") != "0"
+                or record.get("_SYSTEMD_INVOCATION_ID") != invocation_id
+                or record.get("_BOOT_ID") != boot_id
+            ):
+                continue
+            try:
+                receipts.append(parse_terminal_receipt_v1(record.get("MESSAGE")))
+            except ValueError:
+                return None
+        return tuple(receipts)
 
     def _observe_journal(
         self, execution_identity: str, execution_spec_hash: str
@@ -163,9 +301,7 @@ class SystemdSupervisor:
         retained_invocation: str | None = None
         retained_boot: str | None = None
         lifecycle: tuple[str, str] | None = None
-        stop_seen = False
-        exit_code: int | None = None
-        termination_signal: int | None = None
+        lifecycle_records: list[Mapping[str, object]] = []
         for line in result.stdout.splitlines():
             try:
                 record = json.loads(line)
@@ -207,9 +343,7 @@ class SystemdSupervisor:
                     if invocation_id is not None and boot_id is not None
                     else None
                 )
-                stop_seen = False
-                exit_code = None
-                termination_signal = None
+                lifecycle_records = []
                 continue
             if (
                 observed_hash == execution_spec_hash
@@ -224,47 +358,29 @@ class SystemdSupervisor:
                 )
             if lifecycle != (invocation_id, boot_id):
                 continue
-            if (
-                message_id in {_SYSTEMD_STOPPING, _SYSTEMD_STOPPED}
-                and record.get("JOB_TYPE") == "stop"
-            ):
-                stop_seen = True
-            if message_id == _SYSTEMD_PROCESS_EXIT:
-                status = _integer(record.get("EXIT_STATUS"))
-                if record.get("EXIT_CODE") == "exited" and status is not None:
-                    exit_code = status
-                elif record.get("EXIT_CODE") in {"killed", "dumped"} and status is not None:
-                    termination_signal = status
+            lifecycle_records.append(record)
             if (
                 message_id == _SYSTEMD_SUCCESS
                 and message == f"{unit}: Deactivated successfully."
             ):
-                return PhysicalObservation(
-                    PhysicalObservationKind.TERMINAL_MATCH,
-                    observed_spec_hash=retained_hash,
+                return self._terminal_from_manager_evidence(
+                    unit=unit,
+                    observed_hash=retained_hash,
                     invocation_id=retained_invocation,
                     boot_id=retained_boot,
-                    result="success",
-                    exit_code=(
-                        exit_code
-                        if exit_code is not None
-                        else 0
-                        if termination_signal is None and not stop_seen
-                        else None
-                    ),
-                    termination_signal=termination_signal,
+                    records=lifecycle_records,
+                    manager_result="success",
                 )
             if message_id == _SYSTEMD_FAILURE:
                 for failure_result in ("exit-code", "timeout", "signal"):
                     if message == f"{unit}: Failed with result '{failure_result}'.":
-                        return PhysicalObservation(
-                            PhysicalObservationKind.TERMINAL_MATCH,
-                            observed_spec_hash=retained_hash,
+                        return self._terminal_from_manager_evidence(
+                            unit=unit,
+                            observed_hash=retained_hash,
                             invocation_id=retained_invocation,
                             boot_id=retained_boot,
-                            result=failure_result,
-                            exit_code=exit_code,
-                            termination_signal=termination_signal,
+                            records=lifecycle_records,
+                            manager_result=failure_result,
                         )
         if retained_hash is not None:
             return PhysicalObservation(
@@ -275,6 +391,49 @@ class SystemdSupervisor:
                 result="systemd_manager_start_retained",
             )
         return PhysicalObservation(PhysicalObservationKind.NOT_FOUND)
+
+    def _terminal_from_manager_evidence(
+        self,
+        *,
+        unit: str,
+        observed_hash: str | None,
+        invocation_id: str | None,
+        boot_id: str | None,
+        records: Sequence[Mapping[str, object]],
+        manager_result: str,
+    ) -> PhysicalObservation:
+        if invocation_id is None or boot_id is None:
+            return PhysicalObservation(
+                PhysicalObservationKind.TERMINAL_MATCH,
+                observed_spec_hash=observed_hash,
+                invocation_id=invocation_id,
+                boot_id=boot_id,
+                result=manager_result,
+            )
+        manager_cause = self._retained_manager_terminal_cause(
+            records, invocation_id, boot_id
+        ) or TerminalCause(manager_result, None, None)
+        if _cause_is_strong(manager_cause):
+            cause = manager_cause
+        else:
+            receipts = self._observe_receipts(unit, invocation_id, boot_id)
+            if receipts is None or len(receipts) > 1:
+                return PhysicalObservation(
+                    PhysicalObservationKind.UNKNOWN,
+                    observed_spec_hash=observed_hash,
+                    invocation_id=invocation_id,
+                    boot_id=boot_id,
+                )
+            cause = map_terminal_receipt_v1(receipts[0]) if receipts else manager_cause
+        return PhysicalObservation(
+            PhysicalObservationKind.TERMINAL_MATCH,
+            observed_spec_hash=observed_hash,
+            invocation_id=invocation_id,
+            boot_id=boot_id,
+            result=cause.result,
+            exit_code=cause.exit_code,
+            termination_signal=cause.termination_signal,
+        )
 
     def launch(
         self,
@@ -385,6 +544,18 @@ def _journal_message_hash(message: str) -> str | None:
 
 def _properties(stdout: str) -> dict[str, str]:
     return dict(line.split("=", 1) for line in stdout.splitlines() if "=" in line)
+
+
+def _cause_is_strong(cause: TerminalCause) -> bool:
+    return (
+        cause.result == "timeout"
+        or cause.exit_code is not None
+        or cause.termination_signal is not None
+    )
+
+
+def _integer_object(value: object) -> int | None:
+    return _integer(value if type(value) is str else None)
 
 
 def _integer(value: str | None) -> int | None:
