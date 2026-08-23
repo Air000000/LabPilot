@@ -249,7 +249,31 @@ def test_pid1_journal_terminal_evidence_survives_unit_gc() -> None:
     )
     assert supervisor.observe(X, expected).kind is PhysicalObservationKind.TERMINAL_MATCH
     assert commands.argv[0][4] == UNIT
-    assert commands.argv[1][1] == f"--unit={UNIT}"
+    assert UNIT in commands.argv[1][1]
+
+
+def test_journal_tail_is_applied_after_exact_trusted_manager_selection() -> None:
+    commands = Commands([(0, "LoadState=not-found\n"), (0, "")])
+    supervisor = SystemdSupervisor(
+        commands,
+        execution_user="labpilot-train",
+        execution_group="labpilot-train",
+        stop_timeout_seconds=30,
+    )
+
+    supervisor.observe(X, "a" * 64)
+
+    assert commands.argv[1] == (
+        "journalctl",
+        f"UNIT={UNIT}",
+        "_PID=1",
+        "_SYSTEMD_UNIT=init.scope",
+        "SYSLOG_IDENTIFIER=systemd",
+        "--output=json",
+        "--no-pager",
+        "-n",
+        "100",
+    )
 
 
 def test_real_natural_exit_zero_survives_unit_gc() -> None:
@@ -319,6 +343,63 @@ def test_real_nonzero_exit_preserves_structured_exit_status_after_gc() -> None:
     assert observation.result == "exit-code"
     assert observation.exit_code == 7
     assert observation.termination_signal is None
+
+
+def test_real_signal_preserves_structured_signal_after_gc() -> None:
+    expected = "a" * 64
+    records = [
+        *_start_records(expected),
+        _manager_record(
+            f"{UNIT}: Main process exited, code=killed, status=9/KILL",
+            PROCESS_EXIT_ID,
+            EXIT_CODE="killed",
+            EXIT_STATUS="9",
+        ),
+        _manager_record(
+            f"{UNIT}: Failed with result 'signal'.",
+            FAILURE_ID,
+        ),
+    ]
+
+    observation = _journal_supervisor(records).observe(X, expected)
+
+    assert observation.kind is PhysicalObservationKind.TERMINAL_MATCH
+    assert observation.result == "signal"
+    assert observation.exit_code is None
+    assert observation.termination_signal == 9
+
+
+@pytest.mark.parametrize(
+    ("terminal_invocation", "terminal_boot"),
+    ((INVOCATION_B, BOOT_A), (INVOCATION_A, BOOT_B)),
+)
+def test_real_signal_requires_matching_invocation_and_boot_after_gc(
+    terminal_invocation: str, terminal_boot: str
+) -> None:
+    expected = "a" * 64
+    records = [
+        *_start_records(expected),
+        _manager_record(
+            f"{UNIT}: Main process exited, code=killed, status=9/KILL",
+            PROCESS_EXIT_ID,
+            invocation_id=terminal_invocation,
+            boot_id=terminal_boot,
+            EXIT_CODE="killed",
+            EXIT_STATUS="9",
+        ),
+        _manager_record(
+            f"{UNIT}: Failed with result 'signal'.",
+            FAILURE_ID,
+            invocation_id=terminal_invocation,
+            boot_id=terminal_boot,
+        ),
+    ]
+
+    observation = _journal_supervisor(records).observe(X, expected)
+
+    assert observation.kind is PhysicalObservationKind.UNKNOWN
+    assert observation.invocation_id == INVOCATION_A
+    assert observation.boot_id == BOOT_A
 
 
 def test_real_explicit_stop_does_not_invent_exit_zero_or_signal() -> None:
@@ -488,7 +569,7 @@ def test_observe_uses_exact_production_x_service() -> None:
     supervisor.observe(X, "a" * 64)
 
     assert commands.argv[0][4] == UNIT
-    assert commands.argv[1][1] == f"--unit={UNIT}"
+    assert UNIT in commands.argv[1][1]
 
 
 @pytest.mark.parametrize(

@@ -142,7 +142,17 @@ class SystemdSupervisor:
         unit = _unit_name(execution_identity)
         try:
             result = self._run(
-                ("journalctl", f"--unit={unit}", "--output=json", "--no-pager", "-n", "100"),
+                (
+                    "journalctl",
+                    f"UNIT={unit}",
+                    "_PID=1",
+                    "_SYSTEMD_UNIT=init.scope",
+                    "SYSLOG_IDENTIFIER=systemd",
+                    "--output=json",
+                    "--no-pager",
+                    "-n",
+                    "100",
+                ),
                 10.0,
             )
         except (OSError, subprocess.SubprocessError, TimeoutError, IndexError):
@@ -245,7 +255,7 @@ class SystemdSupervisor:
                     termination_signal=termination_signal,
                 )
             if message_id == _SYSTEMD_FAILURE:
-                for failure_result in ("exit-code", "timeout"):
+                for failure_result in ("exit-code", "timeout", "signal"):
                     if message == f"{unit}: Failed with result '{failure_result}'.":
                         return PhysicalObservation(
                             PhysicalObservationKind.TERMINAL_MATCH,
