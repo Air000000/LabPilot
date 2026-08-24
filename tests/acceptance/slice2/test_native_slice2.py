@@ -579,6 +579,71 @@ def test_native_campaign_f01_uses_real_snapshot_fields_and_seals_verdict(
     )
 
 
+def test_unexpected_worker_failure_writes_exact_diagnostic_schema(
+    tmp_path: Path,
+) -> None:
+    from tests.acceptance.slice2.native_campaign import NativeCampaign
+    from tests.acceptance.slice2.native_preflight import NativeCommandFailure
+    from tests.acceptance.slice2.scenarios import ScenarioProcedure
+
+    configured_secret = "opaque-configured-value"
+    stdout = f"worker exposed {configured_secret}".encode()
+    stderr = b"safe worker failure\n"
+
+    def worker(*_args: object) -> dict[str, object]:
+        raise NativeCommandFailure("python3", "b" * 64, 17, stdout, stderr)
+
+    campaign = NativeCampaign(
+        {
+            "config": {
+                "evidence_root": str(tmp_path.resolve()),
+                "workspace_root": str((tmp_path / "workspace").resolve()),
+                "python_profile": "python-3.12",
+                "compose_project": "labpilot-task5",
+            },
+            "tested_sha": "a" * 40,
+            "database_url": configured_secret,
+        },
+        preflight={
+            "containers": {
+                "coordinator": "a1b2c3d4e5f6",
+                "postgres": "b1c2d3e4f5a6",
+            }
+        },
+        worker=worker,
+        admin=lambda _argv: None,
+        campaign_nonce="01234567",
+    )
+
+    with pytest.raises(NativeCommandFailure):
+        campaign.execute(ScenarioProcedure("F01", (), ()))
+
+    evidence = json.loads(next(tmp_path.rglob("worker-failure.json")).read_text())
+    assert evidence == {
+        "schema_version": 1,
+        "scenario": "F01",
+        "operation": "python3",
+        "argv_sha256": "b" * 64,
+        "return_code": 17,
+        "stdout": {
+            "byte_count": len(stdout),
+            "sha256": hashlib.sha256(stdout).hexdigest(),
+            "truncated": False,
+            "excerpt": "[REDACTED]",
+        },
+        "stderr": {
+            "byte_count": len(stderr),
+            "sha256": hashlib.sha256(stderr).hexdigest(),
+            "truncated": False,
+            "excerpt": "safe worker failure\n",
+        },
+        "unexpected_worker_failure": True,
+    }
+    verdict = json.loads(next(tmp_path.rglob("verdict.json")).read_text())
+    assert verdict["verdict"] == "STOPPED"
+    assert "unexpected_worker_failure" not in verdict
+
+
 def test_coordinator_down_commands_run_while_container_remains_exec_capable(
     tmp_path: Path,
 ) -> None:
@@ -766,16 +831,16 @@ def test_native_worker_crash_boundary_has_distinct_process_exit(
     )
 
 
-def test_native_campaign_accepts_only_declared_crash_process_exit(
+def test_status_86_remains_expected_without_worker_failure_evidence(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     from tests.acceptance.slice2 import native_campaign
     from tests.acceptance.slice2.native_campaign import NativeCampaign
-    from tests.acceptance.slice2.native_preflight import NativePreflightError
+    from tests.acceptance.slice2.native_preflight import NativeCommandFailure
 
     def failed(_argv: object, **_kwargs: object) -> object:
-        raise NativePreflightError("native command failed with status 86")
+        raise NativeCommandFailure("python3", "b" * 64, 86, b"", b"")
 
     monkeypatch.setattr(native_campaign, "run_command", failed)
     campaign = NativeCampaign(
@@ -798,7 +863,8 @@ def test_native_campaign_accepts_only_declared_crash_process_exit(
         ]
         == 86
     )
-    with pytest.raises(NativePreflightError):
+    assert not list(tmp_path.rglob("worker-failure.json"))
+    with pytest.raises(NativeCommandFailure):
         campaign._run_worker("a1b2c3d4e5f6", "F05", "snapshot", "a" * 40, "python-3.12")
 
 
@@ -912,7 +978,7 @@ def test_evidence_writer_excludes_secrets(tmp_path: Path, payload: object) -> No
         EvidenceWriter(tmp_path).write_json("runner-info.json", payload)
 
 
-def test_evidence_package_has_only_the_authorized_names() -> None:
+def test_worker_failure_is_the_only_added_authorized_evidence_name() -> None:
     from tests.acceptance.slice2.oracles import EVIDENCE_FILES
 
     assert EVIDENCE_FILES == {
@@ -927,6 +993,7 @@ def test_evidence_package_has_only_the_authorized_names() -> None:
         "systemd-exact-unit.json",
         "journal-exact-unit.jsonl",
         "workload-test-oracle.json",
+        "worker-failure.json",
         "verdict.json",
     }
 

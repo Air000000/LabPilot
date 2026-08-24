@@ -25,6 +25,7 @@ EVIDENCE_FILES = {
     "systemd-exact-unit.json",
     "journal-exact-unit.jsonl",
     "workload-test-oracle.json",
+    "worker-failure.json",
     "verdict.json",
 }
 _JSONL_FILES = {

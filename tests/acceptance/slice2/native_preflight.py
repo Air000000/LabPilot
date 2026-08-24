@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import grp
+import hashlib
 import json
 import os
 import pwd
@@ -16,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_SAFE_OPERATION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$", re.ASCII)
 _COMPOSE_PROJECT = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$", re.ASCII)
 _EXECUTION_IDENTITY = re.compile(r"^labpilot-v1-[0-9a-f]{64}-[0-9a-f]{32}$", re.ASCII)
 _COMPOSE_SERVICES = {"postgres", "migrate", "api", "coordinator"}
@@ -32,7 +35,7 @@ _SECRET_KEYS = (
     "privatekey",
     "databaseurl",
 )
-_CREDENTIAL_URL = re.compile(r"^[a-z][a-z0-9+.-]*://[^/@\s:]+:[^/@\s]+@", re.I)
+_CREDENTIAL_URL = re.compile(r"[a-z][a-z0-9+.-]*://[^/@\s:]+:[^/@\s]+@", re.I)
 _EXPECTED_IDENTITIES = {
     "labpilot-controller": {"uid": 999, "gid": 983},
     "labpilot-control": {"gid": 983},
@@ -122,11 +125,72 @@ class NativePreflightError(RuntimeError):
     pass
 
 
+class NativeCommandFailure(NativePreflightError):
+    operation: str
+    argv_sha256: str
+    return_code: int
+    stdout: bytes
+    stderr: bytes
+
+    def __init__(
+        self,
+        operation: str,
+        argv_sha256: str,
+        return_code: int,
+        stdout: bytes,
+        stderr: bytes,
+    ) -> None:
+        if (
+            _SAFE_OPERATION.fullmatch(operation) is None
+            or _SHA256.fullmatch(argv_sha256) is None
+            or type(return_code) is not int
+            or type(stdout) is not bytes
+            or type(stderr) is not bytes
+            or len(stdout) > 64 * 1024
+            or len(stderr) > 64 * 1024
+        ):
+            raise ValueError("native command failure evidence is invalid")
+        super().__init__(f"native command failed with status {return_code}")
+        self.operation = operation
+        self.argv_sha256 = argv_sha256
+        self.return_code = return_code
+        self.stdout = stdout
+        self.stderr = stderr
+
+
 @dataclass(frozen=True, slots=True)
 class CommandResult:
     argv: tuple[str, ...]
     stdout: bytes
     stderr: bytes
+
+
+def bounded_failure_stream(value: bytes, *, limit: int = 8192) -> dict[str, object]:
+    if type(value) is not bytes or type(limit) is not int or not 0 < limit <= 8192:
+        raise ValueError("failure stream bounds are invalid")
+    excerpt_bytes = value[:limit]
+    try:
+        full_text = value.decode("utf-8", "strict")
+        excerpt = excerpt_bytes.decode("utf-8", "strict")
+    except UnicodeError:
+        excerpt = "[REDACTED]"
+    else:
+        if (
+            any(
+                character not in "\n\t" and not character.isprintable()
+                for character in full_text
+            )
+            or _secret_key(full_text)
+            or _CREDENTIAL_URL.search(full_text) is not None
+            or "PRIVATE KEY-----" in full_text
+        ):
+            excerpt = "[REDACTED]"
+    return {
+        "byte_count": len(value),
+        "sha256": hashlib.sha256(value).hexdigest(),
+        "truncated": len(value) > limit,
+        "excerpt": excerpt,
+    }
 
 
 def compose_admin_command(project: str, service: str, action: str) -> tuple[str, ...]:
@@ -292,8 +356,17 @@ def run_command(
         or any(not argument or len(argument.encode()) > 4096 for argument in command)
         or timeout_seconds <= 0
         or max_output_bytes <= 0
+        or max_output_bytes > 64 * 1024
     ):
         raise ValueError("native command bounds are invalid")
+    operation = Path(command[0]).name
+    if _SAFE_OPERATION.fullmatch(operation) is None:
+        raise ValueError("native command operation is invalid")
+    argv_sha256 = hashlib.sha256(
+        json.dumps(
+            list(command), ensure_ascii=False, separators=(",", ":")
+        ).encode("utf-8", "strict")
+    ).hexdigest()
     process = subprocess.Popen(
         command,
         stdin=subprocess.DEVNULL,
@@ -330,7 +403,13 @@ def run_command(
             _kill_process_group(process)
             raise
     if return_code != 0:
-        raise NativePreflightError(f"native command failed with status {return_code}")
+        raise NativeCommandFailure(
+            operation,
+            argv_sha256,
+            return_code,
+            bytes(outputs["stdout"]),
+            bytes(outputs["stderr"]),
+        )
     return CommandResult(command, bytes(outputs["stdout"]), bytes(outputs["stderr"]))
 
 

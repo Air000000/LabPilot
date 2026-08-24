@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -229,6 +231,104 @@ def test_native_command_output_is_bounded() -> None:
         code = f"import sys; sys.{stream}.buffer.write(b'x' * 65); sys.{stream}.flush()"
         with pytest.raises(NativePreflightError, match=stream):
             run_command((sys.executable, "-c", code), max_output_bytes=64)
+
+
+def test_native_command_failure_retains_both_streams_without_raw_argv() -> None:
+    from tests.acceptance.slice2 import native_preflight
+
+    code = (
+        "import os; os.write(1, b'safe-out\\n'); "
+        "os.write(2, b'safe-err\\n'); raise SystemExit(17)"
+    )
+    argv = (sys.executable, "-c", code)
+
+    with pytest.raises(native_preflight.NativePreflightError) as raised:
+        native_preflight.run_command(argv)
+
+    failure = raised.value
+    assert type(failure) is native_preflight.NativeCommandFailure
+    assert failure.operation == Path(sys.executable).name
+    assert failure.argv_sha256 == hashlib.sha256(
+        json.dumps(list(argv), ensure_ascii=False, separators=(",", ":")).encode()
+    ).hexdigest()
+    assert failure.return_code == 17
+    assert failure.stdout == b"safe-out\n"
+    assert failure.stderr == b"safe-err\n"
+    assert set(vars(failure)) == {
+        "operation",
+        "argv_sha256",
+        "return_code",
+        "stdout",
+        "stderr",
+    }
+    assert not hasattr(failure, "argv")
+
+
+def test_native_command_output_bound_terminates_process_group(tmp_path: Path) -> None:
+    from tests.acceptance.slice2.native_preflight import NativePreflightError, run_command
+
+    marker = tmp_path / "child-survived"
+    child = (
+        "import time; from pathlib import Path; time.sleep(0.5); "
+        f"Path({str(marker)!r}).write_text('survived')"
+    )
+    parent = (
+        "import subprocess,sys,time; "
+        f"subprocess.Popen([{sys.executable!r}, '-c', {child!r}]); "
+        "sys.stdout.buffer.write(b'x' * (64 * 1024 + 1)); "
+        "sys.stdout.flush(); time.sleep(5)"
+    )
+
+    with pytest.raises(NativePreflightError, match="stdout limit exceeded"):
+        run_command((sys.executable, "-c", parent), timeout_seconds=2)
+    time.sleep(0.8)
+
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        b"invalid-utf8:\xff",
+        b"unsafe-control:\x00",
+        b"-----BEGIN PRIVATE KEY-----",
+        b"access_token=do-not-retain",
+        b"credential=do-not-retain",
+        b"x" * 8192 + b"\xff",
+        b"x" * 8192 + b"\ncredential=do-not-retain",
+    ),
+    ids=(
+        "invalid-utf8",
+        "unsafe-control",
+        "private-key",
+        "token",
+        "credential",
+        "invalid-utf8-after-limit",
+        "credential-after-limit",
+    ),
+)
+def test_command_failure_stream_redacts_unsafe_excerpt(value: bytes) -> None:
+    from tests.acceptance.slice2.native_preflight import bounded_failure_stream
+
+    assert bounded_failure_stream(value) == {
+        "byte_count": len(value),
+        "sha256": hashlib.sha256(value).hexdigest(),
+        "truncated": len(value) > 8192,
+        "excerpt": "[REDACTED]",
+    }
+
+
+def test_command_failure_stream_truncates_safe_excerpt_at_8192_bytes() -> None:
+    from tests.acceptance.slice2.native_preflight import bounded_failure_stream
+
+    value = b"x" * 9000
+
+    assert bounded_failure_stream(value) == {
+        "byte_count": 9000,
+        "sha256": hashlib.sha256(value).hexdigest(),
+        "truncated": True,
+        "excerpt": "x" * 8192,
+    }
 
 
 def test_compose_admin_command_selects_only_exact_project_service_and_action() -> None:

@@ -21,7 +21,8 @@ from tests.acceptance.slice2.candidate_b_v2_fixtures import (
     select_v2_profile_matrix,
 )
 from tests.acceptance.slice2.native_preflight import (
-    NativePreflightError,
+    NativeCommandFailure,
+    bounded_failure_stream,
     compose_admin_command,
     exact_systemd_unit,
     native_worker_command,
@@ -265,6 +266,38 @@ class NativeCampaign:
                     )
                 )
             raise
+        except NativeCommandFailure as error:
+            stdout = bounded_failure_stream(error.stdout)
+            stderr = bounded_failure_stream(error.stderr)
+            configured_secret = self.database_url.encode("utf-8", "strict")
+            if configured_secret in error.stdout:
+                stdout["excerpt"] = "[REDACTED]"
+            if configured_secret in error.stderr:
+                stderr["excerpt"] = "[REDACTED]"
+            writer.write_json(
+                "worker-failure.json",
+                {
+                    "schema_version": 1,
+                    "scenario": procedure.scenario,
+                    "operation": error.operation,
+                    "argv_sha256": error.argv_sha256,
+                    "return_code": error.return_code,
+                    "stdout": stdout,
+                    "stderr": stderr,
+                    "unexpected_worker_failure": True,
+                },
+            )
+            if not writer.root.joinpath("verdict.json").exists():
+                writer.seal_verdict(
+                    ScenarioVerdict(
+                        1,
+                        procedure.scenario,
+                        self.tested_sha,
+                        "STOPPED",
+                        "harness_stopped",
+                    )
+                )
+            raise
         except BaseException:
             if not writer.root.joinpath("verdict.json").exists():
                 writer.seal_verdict(
@@ -431,11 +464,11 @@ class NativeCampaign:
                 ),
                 timeout_seconds=240,
             )
-        except NativePreflightError as error:
+        except NativeCommandFailure as error:
             if (scenario, operation) in {
                 ("F05", "crash_before_runner"),
                 ("F22", "crash_before_uow_commit"),
-            } and str(error) == "native command failed with status 86":
+            } and error.return_code == 86:
                 return {
                     "scenario": scenario,
                     "operation": operation,
