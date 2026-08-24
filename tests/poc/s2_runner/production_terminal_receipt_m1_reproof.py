@@ -559,12 +559,6 @@ def launch(unit: str, control: str) -> dict[str, object]:
 
 
 def validate(controls: dict[str, dict[str, object]], train_uid: int, train_gid: int) -> None:
-    expected_environment = {
-        "LABPILOT_M1_CONTROL",
-        "LABPILOT_M1_MAIN_EVIDENCE",
-        "LD_LIBRARY_PATH",
-        "PYTHONPATH",
-    }
     for control, value in controls.items():
         main = value["main"]
         if (main["uid"], main["gid"]) != (train_uid, train_gid):
@@ -573,7 +567,21 @@ def validate(controls: dict[str, dict[str, object]], train_uid: int, train_gid: 
             raise RuntimeError(f"main_nnp_failed:{control}:{main!r}")
         if any(main[key] != "0000000000000000" for key in ("cap_prm", "cap_eff", "cap_amb")):
             raise RuntimeError(f"main_caps_failed:{control}:{main!r}")
-        if {pair[0] for pair in main["environment"]} != expected_environment:
+        environment = dict(main["environment"])
+        expected_environment = {
+            "LABPILOT_M1_CONTROL": control,
+            "LABPILOT_M1_MAIN_EVIDENCE": str(
+                EVIDENCE / "main" / f"{control}.json"
+            ),
+            "LD_LIBRARY_PATH": str(PROOF / "canary/ld"),
+            "PYTHONPATH": str(PROOF / "canary/python"),
+        }
+        if any(
+            environment.get(key) != expected
+            for key, expected in expected_environment.items()
+        ) or any(
+            key in environment for key in ("LD_AUDIT", "LD_DEBUG", "LD_PRELOAD", "PYTHONHOME")
+        ):
             raise RuntimeError(f"main_environment_failed:{control}:{main!r}")
         if main.get("import_canary_seen") is not False:
             raise RuntimeError(f"main_import_isolation_failed:{control}:{main!r}")

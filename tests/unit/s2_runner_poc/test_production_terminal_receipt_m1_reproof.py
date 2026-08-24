@@ -147,6 +147,66 @@ def _install_systemd_boundary(
     return driver, calls
 
 
+def _valid_controls(driver) -> dict[str, dict[str, object]]:
+    wait_report = {
+        "service_result": "exit-code",
+        "main_code": "exited",
+        "main_status": "23",
+        "systemd_run_return_code": 23,
+    }
+    controls: dict[str, dict[str, object]] = {}
+    for control, unit in zip(("direct", "exit71"), driver.UNITS, strict=True):
+        invocation = f"{control}-invocation"
+        controls[control] = {
+            "main": {
+                "uid": 995,
+                "gid": 982,
+                "no_new_privs": "1",
+                "cap_prm": "0000000000000000",
+                "cap_eff": "0000000000000000",
+                "cap_amb": "0000000000000000",
+                "environment": [
+                    ["LABPILOT_M1_CONTROL", control],
+                    [
+                        "LABPILOT_M1_MAIN_EVIDENCE",
+                        str(driver.EVIDENCE / "main" / f"{control}.json"),
+                    ],
+                    ["LD_LIBRARY_PATH", str(driver.PROOF / "canary/ld")],
+                    ["PYTHONPATH", str(driver.PROOF / "canary/python")],
+                ],
+                "import_canary_seen": False,
+            },
+            "receipt": {
+                "_UID": "0",
+                "_GID": "0",
+                "_spoof_UID": "995",
+                "_spoof_GID": "982",
+                "_SYSTEMD_UNIT": unit,
+                "reporter_invocation_raw": invocation,
+            },
+            "manager": {"manager_invocation_raw": invocation},
+            "correlation": {"matched": True},
+            "wrappers": []
+            if control == "direct"
+            else [
+                {
+                    "uid": 0,
+                    "gid": 0,
+                    "loader_environment": {
+                        key: None for key in driver.LOADER_KEYS
+                    },
+                }
+            ],
+            "wait_report": wait_report.copy(),
+        }
+    return controls
+
+
+def _validate_controls(driver, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, controls):
+    monkeypatch.setattr(driver, "MARKER", tmp_path / "loader-canary-seen")
+    driver.validate(controls, 995, 982)
+
+
 def test_expected_nonzero_wait_continues_to_trusted_evidence_acquisition(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -201,3 +261,58 @@ def test_expected_nonzero_wait_rejects_missing_or_contradictory_results(
             stderr=stderr,
             return_code=return_code,
         )
+
+
+def test_runtime_created_non_loader_environment_does_not_fail_validation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    driver = _driver()
+    controls = _valid_controls(driver)
+    controls["direct"]["main"]["environment"].append(["LC_CTYPE", "C.UTF-8"])
+
+    _validate_controls(driver, monkeypatch, tmp_path, controls)
+
+
+def test_missing_required_workload_environment_fails_validation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    driver = _driver()
+    controls = _valid_controls(driver)
+    environment = controls["direct"]["main"]["environment"]
+    controls["direct"]["main"]["environment"] = [
+        pair for pair in environment if pair[0] != "LABPILOT_M1_CONTROL"
+    ]
+
+    with pytest.raises(RuntimeError, match="main_environment_failed:direct"):
+        _validate_controls(driver, monkeypatch, tmp_path, controls)
+
+
+def test_wrong_required_workload_environment_value_fails_validation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    driver = _driver()
+    controls = _valid_controls(driver)
+    environment = controls["direct"]["main"]["environment"]
+    next(pair for pair in environment if pair[0] == "LABPILOT_M1_CONTROL")[1] = (
+        "wrong-control"
+    )
+
+    with pytest.raises(RuntimeError, match="main_environment_failed:direct"):
+        _validate_controls(driver, monkeypatch, tmp_path, controls)
+
+
+@pytest.mark.parametrize("loader_key", ("LD_AUDIT", "LD_DEBUG", "LD_PRELOAD", "PYTHONHOME"))
+def test_unexpected_dangerous_loader_environment_fails_validation(
+    loader_key: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    driver = _driver()
+    controls = _valid_controls(driver)
+    controls["direct"]["main"]["environment"].append([loader_key, "attacker-value"])
+
+    with pytest.raises(RuntimeError, match="main_environment_failed:direct"):
+        _validate_controls(driver, monkeypatch, tmp_path, controls)
