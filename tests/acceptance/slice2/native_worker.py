@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import fcntl
 import hashlib
 import json
 import os
@@ -1081,16 +1082,22 @@ class NativeWorkerRuntime:
     def _workload_oracle(workspace: Path) -> dict[str, object] | None:
         path = workspace / "runtime" / "output" / "workload-test-oracle.json"
         try:
-            encoded = path.read_bytes()
-            if not encoded or len(encoded) > 16 * 1024:
-                raise ValueError
-            value = json.loads(encoded)
+            with path.open("rb") as handle:
+                descriptor = handle.fileno()
+                fcntl.flock(descriptor, fcntl.LOCK_SH)
+                try:
+                    encoded = handle.read(16 * 1024 + 1)
+                    if not encoded or len(encoded) > 16 * 1024:
+                        raise ValueError
+                    value = json.loads(encoded)
+                    if type(value) is not dict or any(type(key) is not str for key in value):
+                        raise ValueError
+                finally:
+                    fcntl.flock(descriptor, fcntl.LOCK_UN)
         except FileNotFoundError:
             return None
         except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
             raise NativeWorkerExecutionError("workload oracle is invalid") from error
-        if type(value) is not dict or any(type(key) is not str for key in value):
-            raise NativeWorkerExecutionError("workload oracle is invalid")
         return value
 
     def _attempt_value(self, row: AttemptRow) -> dict[str, object]:

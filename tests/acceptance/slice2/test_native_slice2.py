@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import importlib.util
 import inspect
 import json
+import multiprocessing
+import queue
 import stat
 import subprocess
 import sys
@@ -460,6 +463,80 @@ def test_native_worker_state_root_is_exact_and_cannot_escape() -> None:
         worker_state_root(Path("relative"), "a" * 40, "F01")
     with pytest.raises(ValueError):
         worker_state_root(root, "A" * 40, "F01")
+
+
+def test_workload_oracle_flock_symmetry(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from tests.acceptance.slice2 import native_worker
+    from tests.acceptance.slice2.native_worker import NativeWorkerRuntime
+
+    workspace = tmp_path / "attempt"
+    output = workspace / "runtime" / "output"
+    output.mkdir(parents=True)
+    path = output / "workload-test-oracle.json"
+    path.write_bytes(b'{"source_sha256":"old","start_count":1}\n')
+    replacement = {"source_sha256": "b" * 64, "start_count": 1}
+    encoded = json.dumps(replacement, separators=(",", ":"), sort_keys=True).encode() + b"\n"
+
+    context = multiprocessing.get_context("fork")
+    writer_truncated = context.Event()
+    writer_release = context.Event()
+
+    def write_replacement() -> None:
+        import fcntl as writer_fcntl
+
+        with path.open("r+b") as handle:
+            writer_fcntl.flock(handle.fileno(), writer_fcntl.LOCK_EX)
+            handle.truncate(0)
+            handle.flush()
+            writer_truncated.set()
+            if not writer_release.wait(timeout=5):
+                raise RuntimeError("test writer release timed out")
+            handle.write(encoded)
+            handle.flush()
+            writer_fcntl.flock(handle.fileno(), writer_fcntl.LOCK_UN)
+
+    writer = context.Process(target=write_replacement)
+    writer.start()
+    assert writer_truncated.wait(timeout=5)
+
+    real_flock = fcntl.flock
+    observations: queue.Queue[tuple[str, object]] = queue.Queue()
+
+    def observed_flock(fd: int, operation: int) -> None:
+        if operation == fcntl.LOCK_SH:
+            observations.put(("lock-sh-requested", None))
+        real_flock(fd, operation)
+
+    monkeypatch.setattr(native_worker, "fcntl", fcntl, raising=False)
+    monkeypatch.setattr(fcntl, "flock", observed_flock)
+
+    def read_oracle() -> None:
+        try:
+            value = NativeWorkerRuntime._workload_oracle(workspace)
+        except BaseException as error:
+            observations.put(("reader-failed", error))
+        else:
+            observations.put(("reader-returned", value))
+
+    reader = threading.Thread(target=read_oracle, daemon=True)
+    try:
+        reader.start()
+        assert observations.get(timeout=5) == ("lock-sh-requested", None)
+        writer_release.set()
+        reader.join(timeout=5)
+        assert not reader.is_alive()
+        assert observations.get(timeout=1) == ("reader-returned", replacement)
+    finally:
+        writer_release.set()
+        reader.join(timeout=5)
+        writer.join(timeout=5)
+        if writer.is_alive():
+            writer.terminate()
+            writer.join()
+    assert writer.exitcode == 0
 
 
 def test_native_campaign_f01_uses_real_snapshot_fields_and_seals_verdict(
