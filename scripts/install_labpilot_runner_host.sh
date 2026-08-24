@@ -2,7 +2,11 @@
 set -euo pipefail
 
 service_name=labpilot-runner.service
+runner_root=/opt/labpilot-runner
 app_root=/opt/labpilot-runner/app
+libexec_dir=/opt/labpilot-runner/libexec
+reporter_target="$libexec_dir/labpilot-terminal-receipt-v1.py"
+reporter_source="$app_root/deploy/libexec/labpilot-terminal-receipt-v1.py"
 policy_target=/etc/labpilot/runner-policy.json
 service_target=/etc/systemd/system/labpilot-runner.service
 runtime_dir=/run/labpilot-runner
@@ -148,6 +152,54 @@ verify_install_tree() {
     done
 }
 
+verify_trusted_directory() {
+  local path=$1 uid gid mode
+  [[ -d "$path" && ! -L "$path" ]] || fail "terminal receipt directory invalid: $path"
+  read -r uid gid mode < <(stat -c '%u %g %a' -- "$path")
+  [[ "$uid" == 0 && "$gid" == 0 ]] || fail "terminal receipt directory not root owned: $path"
+  (( (8#$mode & 8#022) == 0 )) || fail "terminal receipt directory permissions unsafe: $path"
+}
+
+verify_terminal_receipt() {
+  local uid gid mode
+  [[ -f "$reporter_target" && ! -L "$reporter_target" ]] || fail "terminal receipt reporter must be a regular non-symlink file"
+  read -r uid gid mode < <(stat -c '%u %g %a' -- "$reporter_target")
+  [[ "$uid" == 0 && "$gid" == 0 ]] || fail "terminal receipt reporter not root owned"
+  (( (8#$mode & 8#022) == 0 )) || fail "terminal receipt reporter permissions unsafe"
+  cmp -s -- "$reporter_source" "$reporter_target" || fail "terminal receipt reporter digest drift"
+}
+
+install_or_verify_terminal_receipt() {
+  [[ -f "$reporter_source" && ! -L "$reporter_source" ]] || fail "terminal receipt source must be a regular non-symlink file"
+  if [[ "$runner_root" == /opt/* ]]; then
+    verify_trusted_directory /opt
+  fi
+  if [[ ! -e "$runner_root" && ! -L "$runner_root" ]]; then
+    install -d -o root -g root -m 0755 "$runner_root"
+  fi
+  verify_trusted_directory "$runner_root"
+  if [[ ! -e "$libexec_dir" && ! -L "$libexec_dir" ]]; then
+    install -d -o root -g root -m 0755 "$libexec_dir"
+  fi
+  verify_trusted_directory "$libexec_dir"
+
+  if [[ -e "$reporter_target" || -L "$reporter_target" ]]; then
+    verify_terminal_receipt
+    return
+  fi
+
+  local staged_reporter
+  staged_reporter=$(mktemp "$libexec_dir/.terminal-receipt.XXXXXX")
+  install -o root -g root -m 0555 "$reporter_source" "$staged_reporter"
+  if ! ln -- "$staged_reporter" "$reporter_target"; then
+    rm -f -- "$staged_reporter"
+    fail "terminal receipt reporter appeared during install"
+    return 1
+  fi
+  rm -f -- "$staged_reporter"
+  verify_terminal_receipt
+}
+
 activate_and_verify() {
   systemctl daemon-reload
   systemctl enable "$service_name"
@@ -166,16 +218,23 @@ main() {
   [[ "$git_sha" =~ ^[0-9a-f]{40}$ ]] || fail "exact 40-character Git SHA required"
   [[ -f "$policy_source" && ! -L "$policy_source" ]] || fail "policy source must be a regular non-symlink file"
 
-  local repo_root staging
+  local cleanup repo_root staging reporter_source
   repo_root=$(git rev-parse --show-toplevel)
   [[ "$(git -C "$repo_root" rev-parse "$git_sha^{commit}")" == "$git_sha" ]] || fail "Git SHA is not an exact commit"
-  install -d -o root -g root -m 0755 /opt/labpilot-runner
-  staging=$(mktemp -d /opt/labpilot-runner/.stage.XXXXXX)
-  trap 'rm -rf -- "$staging"' EXIT
+  verify_trusted_directory /opt
+  if [[ ! -e "$runner_root" && ! -L "$runner_root" ]]; then
+    install -d -o root -g root -m 0755 "$runner_root"
+  fi
+  verify_trusted_directory "$runner_root"
+  staging=$(mktemp -d "$runner_root/.stage.XXXXXX")
+  printf -v cleanup 'rm -rf -- %q' "$staging"
+  trap "$cleanup" EXIT
   git -C "$repo_root" archive "$git_sha" | tar -x -C "$staging"
   chown -R root:root "$staging"
   chmod -R go-w "$staging"
   (cd "$staging" && uv sync --locked --no-dev --no-editable)
+  reporter_source="$staging/deploy/libexec/labpilot-terminal-receipt-v1.py"
+  install_or_verify_terminal_receipt
 
   rm -rf -- "$app_root"
   mv "$staging" "$app_root"

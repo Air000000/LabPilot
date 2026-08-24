@@ -1,7 +1,10 @@
 import grp
+import hashlib
 import json
+import os
 import pwd
 import stat
+import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -101,8 +104,9 @@ def runner_policy_identity(
     )
 
 
-_CANDIDATE_B_V2_PROFILE_MANIFEST = candidate_b_v2_profile_manifest(
-    _TERMINAL_RECEIPT_REPORTER_SHA256
+_EMPTY_TERMINAL_RECEIPT = (
+    b'{"active_state":null,"exec_main_code":null,'
+    b'"exec_main_status":null,"result":null}\n'
 )
 
 
@@ -146,12 +150,111 @@ def load_runner_policy(path: Path) -> RunnerPolicy:
         raise ValueError("policy_invalid_json") from error
     controller_user = _string(value, "controller_user")
     controller_group = _string(value, "controller_group")
+    profile_manifest = validate_candidate_b_v2_deployment()
     return parse_runner_policy(
         value,
         controller_uid=pwd.getpwnam(controller_user).pw_uid,
         controller_gid=grp.getgrnam(controller_group).gr_gid,
-        profile_manifest=_CANDIDATE_B_V2_PROFILE_MANIFEST,
+        profile_manifest=profile_manifest,
     )
+
+
+def validate_candidate_b_v2_deployment(
+    reporter_path: Path = TERMINAL_RECEIPT_REPORTER_PATH,
+    interpreter_path: Path = TRUSTED_REPORTER_INTERPRETER,
+) -> CandidateBV2ProfileManifest:
+    reporter_digest = _trusted_file_sha256(reporter_path)
+    bundled_digest = _trusted_file_sha256(TERMINAL_RECEIPT_BUNDLED_SOURCE_PATH)
+    if (
+        reporter_digest != bundled_digest
+        or reporter_digest != _TERMINAL_RECEIPT_REPORTER_SHA256
+    ):
+        raise ValueError("terminal_receipt_reporter_digest_mismatch")
+
+    _validate_directory_chain(interpreter_path)
+    try:
+        resolved_interpreter = interpreter_path.resolve(strict=True)
+    except OSError as error:
+        raise ValueError("reporter_interpreter_unavailable") from error
+    _validate_directory_chain(resolved_interpreter)
+    _validate_regular_metadata(
+        resolved_interpreter.lstat(), kind="reporter_interpreter"
+    )
+
+    try:
+        result = subprocess.run(
+            [str(interpreter_path), "-I", "-B", str(reporter_path)],
+            capture_output=True,
+            check=False,
+            env={},
+            timeout=2.0,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ValueError("terminal_receipt_reporter_sanity_failed") from error
+    if (
+        result.returncode != 0
+        or result.stdout != _EMPTY_TERMINAL_RECEIPT
+        or result.stderr != b""
+    ):
+        raise ValueError("terminal_receipt_reporter_sanity_failed")
+    return candidate_b_v2_profile_manifest(reporter_digest)
+
+
+def _validate_directory_chain(path: Path) -> None:
+    if not path.is_absolute():
+        raise ValueError("deployment_path_not_absolute")
+    directories: list[Path] = []
+    parent = path.parent
+    while parent != parent.parent:
+        directories.append(parent)
+        parent = parent.parent
+    for directory in reversed(directories):
+        try:
+            metadata = directory.lstat()
+        except OSError as error:
+            raise ValueError("deployment_directory_unavailable") from error
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise ValueError("deployment_directory_invalid")
+        if metadata.st_uid != 0:
+            raise ValueError("deployment_directory_not_root_owned")
+        if metadata.st_mode & 0o022:
+            raise ValueError("deployment_directory_permissions_unsafe")
+
+
+def _validate_regular_metadata(metadata: os.stat_result, *, kind: str) -> None:
+    if stat.S_ISLNK(metadata.st_mode):
+        raise ValueError(f"{kind}_symlink_denied")
+    if not stat.S_ISREG(metadata.st_mode):
+        raise ValueError(f"{kind}_not_regular_file")
+    if metadata.st_uid != 0:
+        raise ValueError(f"{kind}_not_root_owned")
+    if metadata.st_mode & 0o022:
+        raise ValueError(f"{kind}_permissions_unsafe")
+
+
+def _trusted_file_sha256(path: Path) -> str:
+    _validate_directory_chain(path)
+    try:
+        metadata = path.lstat()
+    except OSError as error:
+        raise ValueError("terminal_receipt_reporter_unavailable") from error
+    _validate_regular_metadata(metadata, kind="terminal_receipt_reporter")
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise ValueError("terminal_receipt_reporter_open_failed") from error
+    try:
+        opened = os.fstat(descriptor)
+        _validate_regular_metadata(opened, kind="terminal_receipt_reporter")
+        if (metadata.st_dev, metadata.st_ino) != (opened.st_dev, opened.st_ino):
+            raise ValueError("terminal_receipt_reporter_changed")
+        digest = hashlib.sha256()
+        while chunk := os.read(descriptor, 65536):
+            digest.update(chunk)
+        return digest.hexdigest()
+    finally:
+        os.close(descriptor)
 
 
 def parse_runner_policy(

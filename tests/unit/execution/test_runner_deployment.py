@@ -4,13 +4,15 @@ import subprocess
 import venv
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).parents[3]
 SERVICE = ROOT / "deploy/systemd/labpilot-runner.service"
 INSTALLER = ROOT / "scripts/install_labpilot_runner_host.sh"
 
 
 def _run_fake_installer(
-    tmp_path: Path, *, controller_import_status: int = 0
+    tmp_path: Path, *, controller_import_status: int = 0, receipt_status: int = 0
 ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
     events = tmp_path / "events.log"
     policy = tmp_path / "policy.json"
@@ -19,6 +21,7 @@ def _run_fake_installer(
     command = f"""
 source '{INSTALLER}'
 test_root='{tmp_path}'
+runner_root="$test_root"
 app_root="$test_root/app"
 policy_target="$test_root/runner-policy.json"
 service_target="$test_root/labpilot-runner.service"
@@ -47,6 +50,11 @@ runuser() {{
   return {controller_import_status}
 }}
 activate_and_verify() {{ printf 'activate\n' >> '{events}'; }}
+install_or_verify_terminal_receipt() {{
+  printf 'receipt\n' >> '{events}'
+  return {receipt_status}
+}}
+verify_trusted_directory() {{ :; }}
 main '{sha}' '{policy}'
 """
     result = subprocess.run(
@@ -266,6 +274,7 @@ def test_installer_sets_exact_app_root_mode_before_controller_import_and_activat
     assert lines[0] == "uv:sync --locked --no-dev --no-editable"
     final_events = lines[1:]
     assert final_events == [
+        "receipt",
         "move",
         f"chown:-R root:root {tmp_path}/app",
         f"chmod:-R go-w {tmp_path}/app",
@@ -287,6 +296,106 @@ def test_installer_stops_before_activation_when_controller_final_import_fails(
 
     assert result.returncode == 19
     assert not any(line == "activate" for line in lines)
+
+
+def test_installer_stops_before_app_replacement_when_receipt_validation_fails(
+    tmp_path: Path,
+) -> None:
+    result, lines = _run_fake_installer(tmp_path, receipt_status=29)
+
+    assert result.returncode == 29
+    assert "receipt" in lines
+    assert "move" not in lines
+    assert "activate" not in lines
+
+
+def _run_receipt_install(
+    tmp_path: Path,
+    *,
+    installed: bytes | None,
+    directory_metadata: str = "0 0 755",
+) -> tuple[subprocess.CompletedProcess[str], Path, list[str]]:
+    runner_root = tmp_path / "opt/labpilot-runner"
+    libexec_dir = runner_root / "libexec"
+    target = libexec_dir / "labpilot-terminal-receipt-v1.py"
+    source = tmp_path / "source.py"
+    source.write_bytes(b"expected")
+    if installed is not None:
+        libexec_dir.mkdir(parents=True)
+        target.write_bytes(installed)
+    events = tmp_path / "receipt-events.log"
+    command = f"""
+source '{INSTALLER}'
+runner_root='{runner_root}'
+libexec_dir='{libexec_dir}'
+reporter_target='{target}'
+reporter_source='{source}'
+stat() {{
+  local path="${{@: -1}}"
+  if [[ -d "$path" ]]; then
+    printf '{directory_metadata}\n'
+  else
+    printf '0 0 555\n'
+  fi
+}}
+install() {{
+  printf 'install:%s\n' "$*" >> '{events}'
+  if [[ "$1" == '-d' ]]; then
+    command mkdir -p "${{@: -1}}"
+  else
+    command cp "${{@: -2:1}}" "${{@: -1}}"
+    command chmod 0555 "${{@: -1}}"
+  fi
+}}
+install_or_verify_terminal_receipt
+"""
+    result = subprocess.run(
+        ["bash", "-c", command], check=False, capture_output=True, text=True
+    )
+    return result, target, events.read_text().splitlines() if events.exists() else []
+
+
+def test_terminal_receipt_installs_once_when_absent(tmp_path: Path) -> None:
+    result, target, events = _run_receipt_install(tmp_path, installed=None)
+
+    assert result.returncode == 0, result.stderr
+    assert target.read_bytes() == b"expected"
+    assert any(not event.startswith("install:-d") for event in events)
+
+
+def test_terminal_receipt_exact_match_is_reused_without_replacement(
+    tmp_path: Path,
+) -> None:
+    result, target, events = _run_receipt_install(tmp_path, installed=b"expected")
+    inode = target.stat().st_ino
+
+    assert result.returncode == 0, result.stderr
+    assert target.stat().st_ino == inode
+    assert events == []
+
+
+def test_terminal_receipt_drift_fails_without_overwrite(tmp_path: Path) -> None:
+    result, target, events = _run_receipt_install(tmp_path, installed=b"drift")
+    inode = target.stat().st_ino
+
+    assert result.returncode != 0
+    assert "digest" in result.stderr
+    assert target.read_bytes() == b"drift"
+    assert target.stat().st_ino == inode
+    assert events == []
+
+
+@pytest.mark.parametrize("metadata", ["1000 0 755", "0 0 777"])
+def test_terminal_receipt_rejects_unsafe_trusted_directory_without_mutation(
+    tmp_path: Path, metadata: str
+) -> None:
+    result, target, events = _run_receipt_install(
+        tmp_path, installed=b"expected", directory_metadata=metadata
+    )
+
+    assert result.returncode != 0
+    assert target.read_bytes() == b"expected"
+    assert events == []
 
 
 def test_controller_final_import_runs_as_controller_and_imports_runner_modules(

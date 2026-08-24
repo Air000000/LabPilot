@@ -30,7 +30,7 @@ from labpilot.execution.systemd_supervisor import (
 )
 from labpilot.execution.types import FrozenLaunchSpec
 
-RUNNER_VERSION = "candidate-b-v1"
+RUNNER_VERSION = "candidate-b-v2"
 
 
 class RunnerDaemon:

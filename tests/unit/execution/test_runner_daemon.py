@@ -103,6 +103,7 @@ def test_info_returns_complete_nonsecret_policy_and_readiness(
     assert result["allowed_local_dataset_roots"] == ["/datasets"]
     assert result["max_runtime_seconds"] == 3600
     assert result["boot_id"] == "boot-1"
+    assert result["runner_version"] == "candidate-b-v2"
     assert result["readiness_reason"] == "ready"
 
 
