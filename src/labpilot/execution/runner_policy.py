@@ -105,8 +105,9 @@ def runner_policy_identity(
 
 
 _EMPTY_TERMINAL_RECEIPT = (
-    b'{"active_state":null,"exec_main_code":null,'
-    b'"exec_main_status":null,"result":null}\n'
+    b'{"exit_code":null,"exit_status":null,'
+    b'"schema_version":"labpilot-terminal-receipt-v1",'
+    b'"service_result":null}\n'
 )
 
 
