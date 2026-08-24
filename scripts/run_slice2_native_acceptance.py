@@ -135,9 +135,16 @@ def main(
     choice.add_argument("--scenarios")
     choice.add_argument("--scenario")
     choice.add_argument("--preflight-only", action="store_true")
+    choice.add_argument("--profile-matrix", choices=("V2-A1-V2-A20",))
     parser.add_argument("--phase", choices=("prepare", "verify"))
     args = parser.parse_args(list(argv) if argv is not None else None)
-    selected = () if args.preflight_only else select_scenarios(args.scenarios or args.scenario)
+    selected = (
+        ()
+        if args.preflight_only or args.profile_matrix
+        else select_scenarios(args.scenarios or args.scenario)
+    )
+    if args.profile_matrix and args.phase is not None:
+        parser.error("--phase cannot be combined with --profile-matrix")
     if args.phase is not None and [scenario.name for scenario in selected] != ["F18"]:
         parser.error("--phase is valid only for F18")
     if args.phase is None and [scenario.name for scenario in selected] == ["F18"]:
@@ -151,6 +158,9 @@ def main(
     }
     if args.preflight_only:
         request["phase"] = "preflight"
+    elif args.profile_matrix:
+        request["profile_matrix"] = args.profile_matrix
+        request["phase"] = "profile_matrix"
     if execute is None:
         from tests.acceptance.slice2.scenarios import run_native_request
 

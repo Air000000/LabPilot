@@ -15,6 +15,7 @@ from typing import cast
 import pytest
 
 EXPECTED_SCENARIOS = {f"F{number:02d}" for number in range(1, 23)}
+EXPECTED_V2_MATRIX = tuple(f"V2-A{number}" for number in range(1, 21))
 
 
 def _native_config(**changes: object) -> dict[str, object]:
@@ -50,6 +51,286 @@ def test_scenario_registry_is_exact_and_unknown_names_fail_closed() -> None:
     ]
     with pytest.raises(ScenarioSelectionError, match="unknown scenario"):
         select_scenarios("F01,F23")
+
+
+def test_v2_profile_matrix_registry_is_exact_closed_and_not_formal() -> None:
+    from tests.acceptance.slice2.candidate_b_v2_fixtures import (
+        V2_MATRIX_ROWS,
+        V2MatrixIsolation,
+        select_v2_profile_matrix,
+    )
+    from tests.acceptance.slice2.scenarios import SCENARIOS
+
+    assert tuple(V2_MATRIX_ROWS) == EXPECTED_V2_MATRIX
+    assert select_v2_profile_matrix("V2-A1-V2-A20") == EXPECTED_V2_MATRIX
+    assert set(V2_MATRIX_ROWS).isdisjoint(SCENARIOS)
+    assert {V2_MATRIX_ROWS[row] for row in ("V2-A1", "V2-A15", "V2-A20")} == {
+        V2MatrixIsolation.NON_DESTRUCTIVE_FINAL_STACK_CHECK
+    }
+    assert all(
+        isolation
+        is V2MatrixIsolation.ISOLATED_TEST_ADMIN_FIXTURE
+        for row, isolation in V2_MATRIX_ROWS.items()
+        if row not in {"V2-A1", "V2-A15", "V2-A20"}
+    )
+    for selection in (
+        "V2-A1",
+        "V2-A1,V2-A2",
+        "V2-A1-V2-A19",
+        "V2-A1-V2-A20,V2-A20",
+        "F01",
+    ):
+        with pytest.raises(ValueError, match="profile matrix"):
+            select_v2_profile_matrix(selection)
+
+
+def test_v2_a11_uses_real_missing_receipt_unit_without_reporter_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.acceptance.slice2 import candidate_b_v2_fixtures as fixtures
+    from tests.acceptance.slice2.native_preflight import CommandResult
+
+    calls: list[tuple[str, ...]] = []
+
+    def run(argv: tuple[str, ...], **_kwargs: object) -> CommandResult:
+        calls.append(tuple(argv))
+        return CommandResult(tuple(argv), b"", b"")
+
+    monkeypatch.setattr(fixtures, "run_command", run)
+    lease = fixtures.create_missing_receipt_fixture(_native_config(), "a" * 40)
+
+    launch = next(command for command in calls if command[0] == "systemd-run")
+    assert lease.row == "V2-A11"
+    assert lease.units == (
+        next(value[7:] for value in launch if value.startswith("--unit=")) + ".service",
+    )
+    assert "ExecStopPost" not in " ".join(launch)
+    assert "labpilot-terminal-receipt-v1.py" not in " ".join(launch)
+    assert "--property=Description=labpilot:" not in " ".join(launch)
+    assert any(value.startswith("--description=labpilot:") for value in launch)
+
+
+def test_v2_a12_uses_real_root_post_stop_records(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.acceptance.slice2 import candidate_b_v2_fixtures as fixtures
+    from tests.acceptance.slice2.native_preflight import CommandResult
+
+    calls: list[tuple[str, ...]] = []
+    installed: list[tuple[Path, bytes]] = []
+
+    def run(argv: tuple[str, ...], **_kwargs: object) -> CommandResult:
+        calls.append(tuple(argv))
+        return CommandResult(tuple(argv), b"", b"")
+
+    monkeypatch.setattr(fixtures, "run_command", run)
+    monkeypatch.setattr(
+        fixtures,
+        "_install_fixed_proof_asset",
+        lambda path, content: installed.append((path, content)),
+    )
+
+    malformed = fixtures.create_trusted_receipt_fixture(
+        _native_config(), "a" * 40, "malformed"
+    )
+    duplicate = fixtures.create_trusted_receipt_fixture(
+        _native_config(), "a" * 40, "duplicate"
+    )
+
+    launches = [command for command in calls if command[0] == "systemd-run"]
+    assert {malformed.row, duplicate.row} == {"V2-A12"}
+    assert len(installed) == 2
+    assert len(launches) == 2
+    assert all("ExecStopPost=-+/usr/bin/python3 -I -B" in " ".join(argv) for argv in launches)
+    assert all("journalctl" not in argv for argv in launches)
+    assert all("_SYSTEMD_UNIT" not in " ".join(argv) for argv in launches)
+
+
+def test_v2_a15_is_prepared_before_v2_install_without_downgrade(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.acceptance.slice2 import candidate_b_v2_fixtures as fixtures
+    from tests.acceptance.slice2.native_preflight import CommandResult
+
+    calls: list[tuple[str, ...]] = []
+
+    def run(argv: tuple[str, ...], **_kwargs: object) -> CommandResult:
+        calls.append(tuple(argv))
+        if argv[0] == "systemctl" and "show" in argv:
+            return CommandResult(
+                tuple(argv),
+                b"ActiveState=active\nInvocationID=11111111111111111111111111111111\n",
+                b"",
+            )
+        return CommandResult(tuple(argv), b"", b"")
+
+    monkeypatch.setattr(fixtures, "run_command", run)
+    lease = fixtures.prepare_v1_compatibility_before_v2_install(
+        _native_config(evidence_root=str(tmp_path)), "a" * 40
+    )
+
+    assert lease.row == "V2-A15"
+    assert any(command[0] == "systemd-run" for command in calls)
+    encoded = "\n".join(" ".join(command) for command in calls)
+    assert "ExecStopPost" not in encoded
+    assert "install_labpilot_runner_host.sh" not in encoded
+    assert "candidate-b-v1" in encoded
+
+
+def test_v2_a18_uses_mount_namespace_and_fixed_installer_validator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.acceptance.slice2 import candidate_b_v2_fixtures as fixtures
+    from tests.acceptance.slice2.native_preflight import CommandResult
+
+    calls: list[tuple[str, ...]] = []
+    hashes = iter(("a" * 64, "a" * 64))
+    monkeypatch.setattr(fixtures, "_host_reporter_sha256", lambda: next(hashes))
+    monkeypatch.setattr(fixtures, "_prepare_a18_fixture", lambda *args: None)
+
+    def run(argv: tuple[str, ...], **_kwargs: object) -> CommandResult:
+        calls.append(tuple(argv))
+        return CommandResult(
+            tuple(argv),
+            b'{"host_reporter_unchanged":true,"validator_failed_closed":true}\n',
+            b"",
+        )
+
+    monkeypatch.setattr(fixtures, "run_command", run)
+    result = fixtures.run_isolated_installer_drift_fixture(
+        _native_config(
+            repository_root=str(Path(__file__).parents[3]),
+            evidence_root=str(tmp_path),
+        ),
+        "a" * 40,
+    )
+
+    assert result["validator_failed_closed"] is True
+    assert calls == [
+        (
+            "bash",
+            str(
+                Path(__file__).parents[3]
+                / "tests/acceptance/slice2/fixtures/a18_installer_drift_probe.sh"
+            ),
+            str(tmp_path / "candidate-b-v2/a18-aaaaaaaaaaaa"),
+            str(Path(__file__).parents[3]),
+        )
+    ]
+
+
+@pytest.mark.parametrize("_profile_matrix_keyword", [None], ids=["profile_matrix"])
+def test_matrix_cleanup_requires_equal_final_stack_fingerprint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    _profile_matrix_keyword: None,
+) -> None:
+    del _profile_matrix_keyword
+    from tests.acceptance.slice2 import candidate_b_v2_fixtures as fixtures
+    from tests.acceptance.slice2 import native_campaign
+
+    base = fixtures.FinalStackFingerprint(
+        tested_sha="a" * 40,
+        reporter_sha256="b" * 64,
+        policy_identity="c" * 64,
+        runner_exec_start="fixed",
+        runner_active_state="active",
+        runner_invocation_id="d" * 32,
+        compose_container_ids=(("api", "container"),),
+        compose_image_ids=(("api", "image"),),
+    )
+    changed = fixtures.FinalStackFingerprint(
+        tested_sha=base.tested_sha,
+        reporter_sha256=base.reporter_sha256,
+        policy_identity=base.policy_identity,
+        runner_exec_start=base.runner_exec_start,
+        runner_active_state=base.runner_active_state,
+        runner_invocation_id="e" * 32,
+        compose_container_ids=base.compose_container_ids,
+        compose_image_ids=base.compose_image_ids,
+    )
+    fingerprints = iter((base, base, changed))
+    cleaned: list[fixtures.V2FixtureLease] = []
+    lease = fixtures.V2FixtureLease(
+        "V2-A2", ("labpilot-v2-a2.service",), None, None, False
+    )
+    monkeypatch.setattr(
+        native_campaign,
+        "capture_final_stack_fingerprint",
+        lambda config: next(fingerprints),
+    )
+    monkeypatch.setattr(
+        native_campaign,
+        "select_v2_profile_matrix",
+        lambda selection: ("V2-A2",),
+    )
+    monkeypatch.setattr(
+        native_campaign,
+        "execute_candidate_b_v2_row",
+        lambda row, config, sha: ({"row": row}, lease),
+    )
+    monkeypatch.setattr(
+        native_campaign,
+        "cleanup_candidate_b_v2_fixture",
+        lambda config, value: cleaned.append(value),
+    )
+
+    with pytest.raises(RuntimeError, match="fingerprint"):
+        native_campaign.run_profile_matrix(
+            "V2-A1-V2-A20",
+            _native_config(evidence_root=str(tmp_path)),
+        )
+
+    assert cleaned == [lease]
+
+
+def test_profile_matrix_evidence_binds_the_frozen_tested_sha(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.acceptance.slice2 import candidate_b_v2_fixtures as fixtures
+    from tests.acceptance.slice2 import native_campaign
+
+    fingerprint = fixtures.FinalStackFingerprint(
+        tested_sha="a" * 40,
+        reporter_sha256="b" * 64,
+        policy_identity="c" * 64,
+        runner_exec_start="fixed",
+        runner_active_state="active",
+        runner_invocation_id="d" * 32,
+        compose_container_ids=(("api", "container"),),
+        compose_image_ids=(("api", "image"),),
+    )
+    monkeypatch.setattr(
+        native_campaign,
+        "select_v2_profile_matrix",
+        lambda selection: ("V2-A1",),
+    )
+    monkeypatch.setattr(
+        native_campaign,
+        "capture_final_stack_fingerprint",
+        lambda config: fingerprint,
+    )
+    monkeypatch.setattr(
+        native_campaign,
+        "execute_candidate_b_v2_row",
+        lambda row, config, sha: ({"tested_sha": sha}, None),
+    )
+
+    native_campaign.run_profile_matrix(
+        "V2-A1-V2-A20", _native_config(evidence_root=str(tmp_path))
+    )
+
+    evidence = json.loads(
+        (
+            tmp_path
+            / "candidate-b-v2/profile-matrix"
+            / ("a" * 40)
+            / "V2-A1/scenario.json"
+        ).read_text()
+    )
+    assert evidence["row"] == "V2-A1"
+    assert evidence["tested_sha"] == "a" * 40
+    assert evidence["evidence"] == {"tested_sha": "a" * 40}
 
 
 def test_all_scenarios_have_concrete_distinct_driver_bindings() -> None:

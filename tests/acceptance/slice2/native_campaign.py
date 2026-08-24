@@ -12,6 +12,14 @@ from pathlib import Path
 from typing import cast
 from urllib.parse import urlsplit
 
+from tests.acceptance.slice2.candidate_b_v2_fixtures import (
+    V2_MATRIX_ROWS,
+    V2MatrixIsolation,
+    capture_final_stack_fingerprint,
+    cleanup_candidate_b_v2_fixture,
+    execute_candidate_b_v2_row,
+    select_v2_profile_matrix,
+)
 from tests.acceptance.slice2.native_preflight import (
     NativePreflightError,
     compose_admin_command,
@@ -38,6 +46,74 @@ from tests.acceptance.slice2.scenarios import (
 
 Worker = Callable[[str, str, str, str, str], dict[str, object]]
 Admin = Callable[[tuple[str, ...]], None]
+NativeAcceptanceConfig = Mapping[str, object]
+
+
+def run_profile_matrix(
+    selection: str, config: NativeAcceptanceConfig
+) -> None:
+    rows = select_v2_profile_matrix(selection)
+    initial = capture_final_stack_fingerprint(config)
+    evidence_root_value = config.get("evidence_root")
+    if not isinstance(evidence_root_value, str):
+        raise ValueError("profile matrix evidence root is missing")
+    evidence_root = (
+        Path(evidence_root_value)
+        / "candidate-b-v2"
+        / "profile-matrix"
+        / initial.tested_sha
+    )
+    if not evidence_root.is_absolute() or evidence_root.exists():
+        raise RuntimeError("profile matrix evidence root must be new and absolute")
+    evidence_root.mkdir(parents=True)
+
+    for row in rows:
+        isolation = V2_MATRIX_ROWS[row]
+        before = capture_final_stack_fingerprint(config)
+        if before != initial:
+            raise RuntimeError(f"profile matrix fingerprint changed before {row}")
+        lease = None
+        try:
+            evidence, lease = execute_candidate_b_v2_row(
+                row, config, initial.tested_sha
+            )
+            if (
+                isolation
+                is V2MatrixIsolation.NON_DESTRUCTIVE_FINAL_STACK_CHECK
+                and lease is not None
+            ):
+                raise RuntimeError(f"non-destructive profile row leased mutation: {row}")
+            if (
+                isolation is V2MatrixIsolation.ISOLATED_TEST_ADMIN_FIXTURE
+                and (lease is None or lease.row != row)
+            ):
+                raise RuntimeError(f"isolated profile row has no exact lease: {row}")
+        finally:
+            if lease is not None:
+                cleanup_candidate_b_v2_fixture(config, lease)
+        after = capture_final_stack_fingerprint(config)
+        value = {
+            "schema_version": 1,
+            "row": row,
+            "isolation": isolation.value,
+            "tested_sha": initial.tested_sha,
+            "before": asdict(before),
+            "after": asdict(after),
+            "cleanup_is_domain_evidence": False,
+            "evidence": evidence,
+            "verdict": "PASS" if after == initial else "STOPPED",
+        }
+        _write_profile_matrix_evidence(evidence_root / row / "scenario.json", value)
+        if after != initial:
+            raise RuntimeError(f"profile matrix fingerprint changed after {row}")
+
+
+def _write_profile_matrix_evidence(path: Path, value: object) -> None:
+    path.parent.mkdir(parents=True)
+    encoded = json.dumps(value, separators=(",", ":"), sort_keys=True).encode()
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_bytes(encoded)
+    temporary.replace(path)
 
 
 class NativeCampaign:

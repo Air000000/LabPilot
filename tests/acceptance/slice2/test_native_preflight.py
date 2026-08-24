@@ -67,8 +67,9 @@ def _run_fake_native_preflight(
                         "operation": "INFO",
                         "outcome": "ok",
                         "result": {
-                            "runner_version": "v1",
+                            "runner_version": "candidate-b-v2",
                             "policy_identity": "b" * 64,
+                            "launch_profile_version": "candidate-b-v2",
                             "workspace_root": "/srv/labpilot/attempts",
                             "boot_id": "11111111-1111-1111-1111-111111111111",
                             "readiness_reason": "ready",
@@ -173,6 +174,52 @@ def test_preflight_cli_requires_and_binds_exact_tested_sha(tmp_path: Path) -> No
             "tested_sha": "a" * 40,
         }
     ]
+
+
+def test_profile_matrix_cli_is_closed_and_cannot_select_formal_scenarios(
+    tmp_path: Path,
+) -> None:
+    from tests.acceptance.slice2.test_native_slice2 import _native_config
+
+    script = Path(__file__).parents[3] / "scripts" / "run_slice2_native_acceptance.py"
+    spec = importlib.util.spec_from_file_location("slice2_profile_matrix_cli", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    config = (tmp_path / "config.json").resolve()
+    config.write_text(json.dumps(_native_config(expected_hostname="candidate-b-vm")))
+    calls: list[object] = []
+    environ = {
+        module.CONFIG_ENV: str(config),
+        module.TESTED_SHA_ENV: "a" * 40,
+        "LABPILOT_SLICE2_ACCEPTANCE_DATABASE_URL": "postgresql://authority",
+    }
+
+    assert module.main(
+        ["--profile-matrix", "V2-A1-V2-A20"],
+        environ=environ,
+        execute=calls.append,
+        hostname=lambda: "candidate-b-vm",
+        wsl_detector=lambda: False,
+    ) == 0
+    assert calls == [
+        {
+            "config": _native_config(expected_hostname="candidate-b-vm"),
+            "scenarios": (),
+            "profile_matrix": "V2-A1-V2-A20",
+            "phase": "profile_matrix",
+            "database_url": "postgresql://authority",
+            "tested_sha": "a" * 40,
+        }
+    ]
+    with pytest.raises(SystemExit):
+        module.main(
+            ["--profile-matrix", "V2-A1,V2-A2"],
+            environ=environ,
+            execute=calls.append,
+            hostname=lambda: "candidate-b-vm",
+            wsl_detector=lambda: False,
+        )
 
 
 def test_native_command_output_is_bounded() -> None:
@@ -282,6 +329,41 @@ def test_native_request_binds_preflight_without_exposing_scenario_actions(
     scenarios.run_native_request(request)
 
     assert json.loads(capsys.readouterr().out) == {"tested_sha": "a" * 40}
+
+
+def test_profile_matrix_request_never_dispatches_a_formal_scenario(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.acceptance.slice2 import native_campaign, native_preflight, scenarios
+
+    request = {
+        "config": {"repository_root": "/repo"},
+        "scenarios": (),
+        "profile_matrix": "V2-A1-V2-A20",
+        "phase": "profile_matrix",
+        "database_url": "postgresql://authority",
+        "tested_sha": "a" * 40,
+    }
+    calls: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        native_preflight,
+        "run_preflight_request",
+        lambda value: {"tested_sha": value["tested_sha"]},
+    )
+    monkeypatch.setattr(
+        native_campaign,
+        "run_profile_matrix",
+        lambda selection, config: calls.append((selection, config)),
+    )
+    monkeypatch.setattr(
+        scenarios,
+        "dispatch_native_scenario",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("F dispatch")),
+    )
+
+    scenarios.run_native_request(request)
+
+    assert calls == [("V2-A1-V2-A20", {"repository_root": "/repo"})]
 
 
 def test_native_admin_commands_are_confined_to_test_code() -> None:

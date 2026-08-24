@@ -542,6 +542,20 @@ def run_native_request(request: object) -> None:
     if request.get("phase") == "preflight":
         print(json.dumps(redact_evidence(facts), separators=(",", ":"), sort_keys=True))
         return
+    profile_matrix = request.get("profile_matrix")
+    if profile_matrix is not None:
+        config = request.get("config")
+        if (
+            profile_matrix != "V2-A1-V2-A20"
+            or request.get("phase") != "profile_matrix"
+            or request.get("scenarios") != ()
+            or not isinstance(config, dict)
+        ):
+            raise RuntimeError("native profile matrix request is invalid")
+        from tests.acceptance.slice2.native_campaign import run_profile_matrix
+
+        run_profile_matrix(profile_matrix, config)
+        return
     from tests.acceptance.slice2.native_campaign import NativeCampaign
 
     runtime = NativeCampaign(request, preflight=facts)

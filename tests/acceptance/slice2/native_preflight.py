@@ -96,6 +96,7 @@ result = response["result"]
 selected = {
     "runner_version": result["runner_version"],
     "policy_identity": result["policy_identity"],
+    "launch_profile_version": result["launch_profile_version"],
     "workspace_root": result["workspace_root"],
     "boot_id": result["boot_id"],
     "readiness_reason": result["readiness_reason"],
@@ -261,6 +262,8 @@ def run_preflight_request(request: Mapping[str, object]) -> dict[str, object]:
         or runner_info.get("operation") != "INFO"
         or runner_info.get("outcome") != "ok"
         or type(runner_info.get("result")) is not dict
+        or runner_info["result"].get("runner_version") != "candidate-b-v2"
+        or runner_info["result"].get("launch_profile_version") != "candidate-b-v2"
         or runner_info["result"].get("readiness_reason") != "ready"
     ):
         raise NativePreflightError("Coordinator Runner INFO contract mismatch")
