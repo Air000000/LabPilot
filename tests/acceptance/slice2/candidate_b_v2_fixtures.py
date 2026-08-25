@@ -424,14 +424,16 @@ def prepare_v1_compatibility_before_v2_install(
     )
     pre_v2_info = _physical_result(_runner_request("V2-A15", "INFO"))
     python_profile = _config_text(config, "python_profile")
+    pre_v2_profiles = pre_v2_info.get("runtime_profiles")
     if (
         pre_v2_info.get("runner_version") != "candidate-b-v1"
         or pre_v2_info.get("launch_profile_version") != "candidate-b-v1"
         or pre_v2_info.get("readiness_reason") != "ready"
+        or not isinstance(pre_v2_profiles, list)
         or not any(
             isinstance(profile, Mapping)
             and profile.get("python_profile") == python_profile
-            for profile in pre_v2_info.get("runtime_profiles", ())
+            for profile in pre_v2_profiles
         )
     ):
         raise RuntimeError("v1 Runner installation identity mismatch")
@@ -594,16 +596,18 @@ def verify_v1_compatibility_after_v2_install(
         _required(runner_service, name)
     runner_info = _physical_result(_runner_request("V2-A15", "INFO"))
     python_profile = _config_text(config, "python_profile")
+    runner_profiles = runner_info.get("runtime_profiles")
     if (
         runner_info.get("readiness_reason") != "ready"
         or runner_info.get("runner_version") != "candidate-b-v2"
         or runner_info.get("launch_profile_version") != "candidate-b-v2"
         or runner_info.get("policy_identity") != policy.policy_identity
         or not any(profile.name == python_profile for profile in policy.runtime_profiles)
+        or not isinstance(runner_profiles, list)
         or not any(
             isinstance(profile, Mapping)
             and profile.get("python_profile") == python_profile
-            for profile in runner_info.get("runtime_profiles", ())
+            for profile in runner_profiles
         )
     ):
         raise RuntimeError("v2 Runner installation identity mismatch")
