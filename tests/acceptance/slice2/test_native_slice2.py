@@ -40,6 +40,41 @@ def _native_config(**changes: object) -> dict[str, object]:
     return value
 
 
+def _runner_info(
+    *, runner_version: str, launch_profile_version: str, policy_identity: str
+) -> dict[str, object]:
+    return {
+        "version": "labpilot-runner:v1",
+        "operation": "INFO",
+        "outcome": "ok",
+        "result": {
+            "runner_version": runner_version,
+            "policy_identity": policy_identity,
+            "workspace_root": "/srv/labpilot/workspaces",
+            "execution_user": "labpilot-train",
+            "execution_group": "labpilot-train",
+            "launch_profile_version": launch_profile_version,
+            "allowed_local_dataset_roots": ["/srv/labpilot/datasets"],
+            "max_runtime_seconds": 3600,
+            "boot_id": "e" * 32,
+            "readiness_reason": "ready",
+            "runtime_profiles": [
+                {
+                    "python_profile": "python-3.12",
+                    "runtime_path": "/usr/bin/python3",
+                    "environment": {"PATH": "/usr/bin:/bin"},
+                }
+            ],
+        },
+    }
+
+
+def _v2_a15_execution_hash(tested_sha: str) -> str:
+    return hashlib.sha256(
+        f"labpilot-v2-matrix\0{tested_sha}\0V2-A15\0h".encode()
+    ).hexdigest()
+
+
 def test_scenario_registry_is_exact_and_unknown_names_fail_closed() -> None:
     from tests.acceptance.slice2.scenarios import (
         SCENARIOS,
@@ -156,18 +191,32 @@ def test_v2_a15_is_prepared_before_v2_install_without_downgrade(
     from tests.acceptance.slice2.native_preflight import CommandResult
 
     calls: list[tuple[str, ...]] = []
+    execution_hash = _v2_a15_execution_hash("a" * 40)
 
     def run(argv: tuple[str, ...], **_kwargs: object) -> CommandResult:
         calls.append(tuple(argv))
         if argv[0] == "systemctl" and "show" in argv:
+            output = (
+                "ActiveState=active\n"
+                "MainPID=4242\n"
+                "InvocationID=11111111111111111111111111111111\n"
+                f"Description=labpilot:{execution_hash}\n"
+                "Type=exec\n"
+                "User=labpilot-train\n"
+                "Group=labpilot-train\n"
+                "Restart=no\n"
+                "KillMode=control-group\n"
+                "NoNewPrivileges=yes\n"
+                "AmbientCapabilities=\n"
+                "CapabilityBoundingSet=\n"
+                "StandardOutput=journal\n"
+                "StandardError=journal\n"
+                "Environment=LABPILOT_PROFILE_VERSION=candidate-b-v1\n"
+                "ExecStart=/usr/bin/sleep 3600\n"
+            )
             return CommandResult(
                 tuple(argv),
-                (
-                    b"ActiveState=active\nMainPID=4242\n"
-                    b"InvocationID=11111111111111111111111111111111\n"
-                    b"User=labpilot-train\nGroup=labpilot-train\n"
-                    b"NoNewPrivileges=yes\nExecStart=/usr/bin/sleep 3600\n"
-                ),
+                output.encode(),
                 b"",
             )
         if argv[0] == "journalctl":
@@ -182,14 +231,11 @@ def test_v2_a15_is_prepared_before_v2_install_without_downgrade(
     monkeypatch.setattr(
         fixtures,
         "_runner_request",
-        lambda *_args: {
-            "outcome": "ok",
-            "result": {
-                "policy_identity": "d" * 64,
-                "python_profile": "candidate-b-v1",
-                "runner_version": "candidate-b-v1",
-            },
-        },
+        lambda *_args: _runner_info(
+            runner_version="candidate-b-v1",
+            launch_profile_version="candidate-b-v1",
+            policy_identity="d" * 64,
+        ),
     )
     lease = fixtures.prepare_v1_compatibility_before_v2_install(
         _native_config(evidence_root=str(tmp_path)), "a" * 40
@@ -212,6 +258,7 @@ def test_v2_a15_preparation_seals_real_v1_lifecycle_evidence(
     calls: list[tuple[str, ...]] = []
     boot_id = "b" * 32
     invocation_id = "c" * 32
+    execution_hash = _v2_a15_execution_hash("a" * 40)
 
     def run(argv: tuple[str, ...], **_kwargs: object) -> CommandResult:
         calls.append(tuple(argv))
@@ -222,9 +269,18 @@ def test_v2_a15_preparation_seals_real_v1_lifecycle_evidence(
                 "ActiveState=active\n"
                 "MainPID=4242\n"
                 f"InvocationID={invocation_id}\n"
+                f"Description=labpilot:{execution_hash}\n"
+                "Type=exec\n"
                 "User=labpilot-train\n"
                 "Group=labpilot-train\n"
+                "Restart=no\n"
+                "KillMode=control-group\n"
                 "NoNewPrivileges=yes\n"
+                "AmbientCapabilities=\n"
+                "CapabilityBoundingSet=\n"
+                "StandardOutput=journal\n"
+                "StandardError=journal\n"
+                "Environment=LABPILOT_PROFILE_VERSION=candidate-b-v1\n"
                 "ExecStart=/usr/bin/sleep 3600\n"
             )
         elif argv[0] == "journalctl":
@@ -243,15 +299,11 @@ def test_v2_a15_preparation_seals_real_v1_lifecycle_evidence(
     monkeypatch.setattr(
         fixtures,
         "_runner_request",
-        lambda *_args: {
-            "outcome": "ok",
-            "result": {
-                "policy_identity": "d" * 64,
-                "python_profile": "candidate-b-v1",
-                "readiness_reason": "ready",
-                "runner_version": "candidate-b-v1",
-            },
-        },
+        lambda *_args: _runner_info(
+            runner_version="candidate-b-v1",
+            launch_profile_version="candidate-b-v1",
+            policy_identity="d" * 64,
+        ),
     )
 
     lease = fixtures.prepare_v1_compatibility_before_v2_install(
@@ -278,15 +330,26 @@ def test_v2_a15_preparation_seals_real_v1_lifecycle_evidence(
     assert prepared["boot_id"] == boot_id
     assert prepared["start_cardinality"] == 1
     assert prepared["unit_properties"] == {
+        "AmbientCapabilities": "",
+        "CapabilityBoundingSet": "",
+        "Description": f"labpilot:{execution_hash}",
+        "Environment": "LABPILOT_PROFILE_VERSION=candidate-b-v1",
         "ExecStart": "/usr/bin/sleep 3600",
         "Group": "labpilot-train",
+        "KillMode": "control-group",
         "NoNewPrivileges": "yes",
+        "Restart": "no",
+        "StandardError": "journal",
+        "StandardOutput": "journal",
+        "Type": "exec",
         "User": "labpilot-train",
     }
     assert prepared["pre_v2_installation_identity"] == {
         "runner_info": {
+            "boot_id": "e" * 32,
+            "launch_profile_version": "candidate-b-v1",
             "policy_identity": "d" * 64,
-            "python_profile": "candidate-b-v1",
+            "readiness_reason": "ready",
             "runner_version": "candidate-b-v1",
         },
         "runner_service": {
@@ -312,8 +375,10 @@ def test_v2_a15_post_install_verification_has_no_phase_i_compose_dependency(
         "main_pid": 4242,
         "pre_v2_installation_identity": {
             "runner_info": {
+                "boot_id": "e" * 32,
+                "launch_profile_version": "candidate-b-v1",
                 "policy_identity": "e" * 64,
-                "python_profile": "candidate-b-v1",
+                "readiness_reason": "ready",
                 "runner_version": "candidate-b-v1",
             },
             "runner_service": {
@@ -326,9 +391,18 @@ def test_v2_a15_post_install_verification_has_no_phase_i_compose_dependency(
         "tested_sha": "a" * 40,
         "unit": unit,
         "unit_properties": {
+            "AmbientCapabilities": "",
+            "CapabilityBoundingSet": "",
+            "Description": "labpilot:" + "c" * 64,
+            "Environment": "LABPILOT_PROFILE_VERSION=candidate-b-v1",
             "ExecStart": "/usr/bin/sleep 3600",
             "Group": "labpilot-train",
+            "KillMode": "control-group",
             "NoNewPrivileges": "yes",
+            "Restart": "no",
+            "StandardError": "journal",
+            "StandardOutput": "journal",
+            "Type": "exec",
             "User": "labpilot-train",
         },
     }
@@ -363,6 +437,7 @@ def test_v2_a15_post_install_verification_has_no_phase_i_compose_dependency(
 
     class Policy:
         policy_identity = "e" * 64
+        runtime_profiles = (type("Profile", (), {"name": "python-3.12"})(),)
 
     monkeypatch.setattr(fixtures, "run_command", run)
     monkeypatch.setattr(fixtures, "validate_candidate_b_v2_deployment", Manifest)
@@ -371,15 +446,11 @@ def test_v2_a15_post_install_verification_has_no_phase_i_compose_dependency(
 
     def runner_request(_row: str, operation: str, *_args: str) -> dict[str, object]:
         if operation == "INFO":
-            return {
-                "outcome": "ok",
-                "result": {
-                    "policy_identity": "e" * 64,
-                    "python_profile": "python-3.12",
-                    "readiness_reason": "ready",
-                    "runner_version": "candidate-b-v2",
-                },
-            }
+            return _runner_info(
+                runner_version="candidate-b-v2",
+                launch_profile_version="candidate-b-v2",
+                policy_identity="e" * 64,
+            )
         if operation == "STOP":
             return {"outcome": "ok", "result": {}}
         return {"outcome": "ok", "result": {"kind": next(observations)}}

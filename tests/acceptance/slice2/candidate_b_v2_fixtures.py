@@ -423,10 +423,28 @@ def prepare_v1_compatibility_before_v2_install(
         )
     )
     pre_v2_info = _physical_result(_runner_request("V2-A15", "INFO"))
+    python_profile = _config_text(config, "python_profile")
+    if (
+        pre_v2_info.get("runner_version") != "candidate-b-v1"
+        or pre_v2_info.get("launch_profile_version") != "candidate-b-v1"
+        or pre_v2_info.get("readiness_reason") != "ready"
+        or not any(
+            isinstance(profile, Mapping)
+            and profile.get("python_profile") == python_profile
+            for profile in pre_v2_info.get("runtime_profiles", ())
+        )
+    ):
+        raise RuntimeError("v1 Runner installation identity mismatch")
     pre_v2_identity = {
         "runner_info": {
             name: _required_text(pre_v2_info, name)
-            for name in ("policy_identity", "python_profile", "runner_version")
+            for name in (
+                "runner_version",
+                "launch_profile_version",
+                "policy_identity",
+                "boot_id",
+                "readiness_reason",
+            )
         },
         "runner_service": {
             name: _required(pre_v2_service, name)
@@ -457,9 +475,18 @@ def prepare_v1_compatibility_before_v2_install(
                     "--property=ActiveState",
                     "--property=MainPID",
                     "--property=InvocationID",
+                    "--property=Description",
+                    "--property=Type",
                     "--property=User",
                     "--property=Group",
+                    "--property=Restart",
+                    "--property=KillMode",
                     "--property=NoNewPrivileges",
+                    "--property=AmbientCapabilities",
+                    "--property=CapabilityBoundingSet",
+                    "--property=StandardOutput",
+                    "--property=StandardError",
+                    "--property=Environment",
                     "--property=ExecStart",
                 )
             )
@@ -473,6 +500,23 @@ def prepare_v1_compatibility_before_v2_install(
         raise RuntimeError("v1 compatibility main PID is invalid") from error
     if main_pid <= 0:
         raise RuntimeError("v1 compatibility main PID is invalid")
+    unit_properties = {
+        "Description": f"labpilot:{execution_hash}",
+        "Type": "exec",
+        "User": "labpilot-train",
+        "Group": "labpilot-train",
+        "Restart": "no",
+        "KillMode": "control-group",
+        "NoNewPrivileges": "yes",
+        "AmbientCapabilities": "",
+        "CapabilityBoundingSet": "",
+        "StandardOutput": "journal",
+        "StandardError": "journal",
+        "Environment": "LABPILOT_PROFILE_VERSION=candidate-b-v1",
+    }
+    if any(properties.get(name) != expected for name, expected in unit_properties.items()):
+        raise RuntimeError("v1 compatibility unit profile is invalid")
+    unit_properties["ExecStart"] = _required(properties, "ExecStart")
     records = _journal_records(
         (
             "journalctl",
@@ -502,10 +546,7 @@ def prepare_v1_compatibility_before_v2_install(
             "main_pid": main_pid,
             "invocation_id": _required(properties, "InvocationID"),
             "boot_id": boot_id,
-            "unit_properties": {
-                name: _required(properties, name)
-                for name in ("ExecStart", "User", "Group", "NoNewPrivileges")
-            },
+            "unit_properties": unit_properties,
             "profile": "candidate-b-v1",
             "start_cardinality": len(starts),
             "pre_v2_installation_identity": pre_v2_identity,
@@ -552,11 +593,18 @@ def verify_v1_compatibility_after_v2_install(
     for name in ("ExecStart", "InvocationID"):
         _required(runner_service, name)
     runner_info = _physical_result(_runner_request("V2-A15", "INFO"))
+    python_profile = _config_text(config, "python_profile")
     if (
         runner_info.get("readiness_reason") != "ready"
         or runner_info.get("runner_version") != "candidate-b-v2"
+        or runner_info.get("launch_profile_version") != "candidate-b-v2"
         or runner_info.get("policy_identity") != policy.policy_identity
-        or runner_info.get("python_profile") != _config_text(config, "python_profile")
+        or not any(profile.name == python_profile for profile in policy.runtime_profiles)
+        or not any(
+            isinstance(profile, Mapping)
+            and profile.get("python_profile") == python_profile
+            for profile in runner_info.get("runtime_profiles", ())
+        )
     ):
         raise RuntimeError("v2 Runner installation identity mismatch")
     observed = _runner_request("V2-A15", "OBSERVE", execution_identity, execution_hash)
