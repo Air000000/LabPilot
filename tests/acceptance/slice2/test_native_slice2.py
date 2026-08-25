@@ -162,12 +162,35 @@ def test_v2_a15_is_prepared_before_v2_install_without_downgrade(
         if argv[0] == "systemctl" and "show" in argv:
             return CommandResult(
                 tuple(argv),
-                b"ActiveState=active\nInvocationID=11111111111111111111111111111111\n",
+                (
+                    b"ActiveState=active\nMainPID=4242\n"
+                    b"InvocationID=11111111111111111111111111111111\n"
+                    b"User=labpilot-train\nGroup=labpilot-train\n"
+                    b"NoNewPrivileges=yes\nExecStart=/usr/bin/sleep 3600\n"
+                ),
+                b"",
+            )
+        if argv[0] == "journalctl":
+            return CommandResult(
+                tuple(argv),
+                b'{"_BOOT_ID":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","JOB_RESULT":"done","JOB_TYPE":"start"}\n',
                 b"",
             )
         return CommandResult(tuple(argv), b"", b"")
 
     monkeypatch.setattr(fixtures, "run_command", run)
+    monkeypatch.setattr(
+        fixtures,
+        "_runner_request",
+        lambda *_args: {
+            "outcome": "ok",
+            "result": {
+                "policy_identity": "d" * 64,
+                "python_profile": "candidate-b-v1",
+                "runner_version": "candidate-b-v1",
+            },
+        },
+    )
     lease = fixtures.prepare_v1_compatibility_before_v2_install(
         _native_config(evidence_root=str(tmp_path)), "a" * 40
     )
@@ -178,6 +201,199 @@ def test_v2_a15_is_prepared_before_v2_install_without_downgrade(
     assert "ExecStopPost" not in encoded
     assert "install_labpilot_runner_host.sh" not in encoded
     assert "candidate-b-v1" in encoded
+
+
+def test_v2_a15_preparation_seals_real_v1_lifecycle_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.acceptance.slice2 import candidate_b_v2_fixtures as fixtures
+    from tests.acceptance.slice2.native_preflight import CommandResult
+
+    calls: list[tuple[str, ...]] = []
+    boot_id = "b" * 32
+    invocation_id = "c" * 32
+
+    def run(argv: tuple[str, ...], **_kwargs: object) -> CommandResult:
+        calls.append(tuple(argv))
+        if argv[:2] == ("systemctl", "show") and "--property=LoadState" in argv:
+            output = "LoadState=not-found\n"
+        elif argv[:2] == ("systemctl", "show"):
+            output = (
+                "ActiveState=active\n"
+                "MainPID=4242\n"
+                f"InvocationID={invocation_id}\n"
+                "User=labpilot-train\n"
+                "Group=labpilot-train\n"
+                "NoNewPrivileges=yes\n"
+                "ExecStart=/usr/bin/sleep 3600\n"
+            )
+        elif argv[0] == "journalctl":
+            output = json.dumps(
+                {
+                    "_BOOT_ID": boot_id,
+                    "JOB_RESULT": "done",
+                    "JOB_TYPE": "start",
+                }
+            ) + "\n"
+        else:
+            output = ""
+        return CommandResult(tuple(argv), output.encode(), b"")
+
+    monkeypatch.setattr(fixtures, "run_command", run)
+    monkeypatch.setattr(
+        fixtures,
+        "_runner_request",
+        lambda *_args: {
+            "outcome": "ok",
+            "result": {
+                "policy_identity": "d" * 64,
+                "python_profile": "candidate-b-v1",
+                "readiness_reason": "ready",
+                "runner_version": "candidate-b-v1",
+            },
+        },
+    )
+
+    lease = fixtures.prepare_v1_compatibility_before_v2_install(
+        _native_config(evidence_root=str(tmp_path)), "a" * 40
+    )
+
+    prepared = json.loads((lease.proof_root / "v2-a15-prepared.json").read_text())
+    assert set(prepared) == {
+        "boot_id",
+        "execution_identity",
+        "execution_spec_hash",
+        "invocation_id",
+        "main_pid",
+        "pre_v2_installation_identity",
+        "profile",
+        "start_cardinality",
+        "tested_sha",
+        "unit",
+        "unit_properties",
+    }
+    assert prepared["tested_sha"] == "a" * 40
+    assert prepared["main_pid"] == 4242
+    assert prepared["invocation_id"] == invocation_id
+    assert prepared["boot_id"] == boot_id
+    assert prepared["start_cardinality"] == 1
+    assert prepared["unit_properties"] == {
+        "ExecStart": "/usr/bin/sleep 3600",
+        "Group": "labpilot-train",
+        "NoNewPrivileges": "yes",
+        "User": "labpilot-train",
+    }
+    assert prepared["pre_v2_installation_identity"] == {
+        "runner_info": {
+            "policy_identity": "d" * 64,
+            "python_profile": "candidate-b-v1",
+            "runner_version": "candidate-b-v1",
+        },
+        "runner_service": {
+            "ExecStart": "/usr/bin/sleep 3600",
+            "InvocationID": invocation_id,
+        },
+    }
+    assert any(command[0] == "journalctl" for command in calls)
+
+
+def test_v2_a15_post_install_verification_has_no_phase_i_compose_dependency(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.acceptance.slice2 import candidate_b_v2_fixtures as fixtures
+    from tests.acceptance.slice2.native_preflight import CommandResult
+
+    unit = "labpilot-v1-" + "a" * 64 + "-" + "b" * 32 + ".service"
+    prepared = {
+        "boot_id": "b" * 32,
+        "execution_identity": unit.removesuffix(".service"),
+        "execution_spec_hash": "c" * 64,
+        "invocation_id": "d" * 32,
+        "main_pid": 4242,
+        "pre_v2_installation_identity": {
+            "runner_info": {
+                "policy_identity": "e" * 64,
+                "python_profile": "candidate-b-v1",
+                "runner_version": "candidate-b-v1",
+            },
+            "runner_service": {
+                "ExecStart": "/usr/bin/sleep 3600",
+                "InvocationID": "d" * 32,
+            },
+        },
+        "profile": "candidate-b-v1",
+        "start_cardinality": 1,
+        "tested_sha": "a" * 40,
+        "unit": unit,
+        "unit_properties": {
+            "ExecStart": "/usr/bin/sleep 3600",
+            "Group": "labpilot-train",
+            "NoNewPrivileges": "yes",
+            "User": "labpilot-train",
+        },
+    }
+    prepared_path = tmp_path / "v2-a15-prepared.json"
+    prepared_path.write_text(json.dumps(prepared), encoding="utf-8")
+    calls: list[tuple[str, ...]] = []
+
+    def run(argv: tuple[str, ...], **_kwargs: object) -> CommandResult:
+        calls.append(tuple(argv))
+        if argv[0] == "docker":
+            raise AssertionError("Phase H must not require a Compose container")
+        if argv[:2] == ("git", "-C") and argv[-2:] == ("rev-parse", "HEAD"):
+            output = "a" * 40 + "\n"
+        elif argv[:2] == ("git", "-C") and argv[-2:] == ("status", "--short"):
+            output = ""
+        elif argv[:2] == ("systemctl", "show"):
+            output = (
+                "ActiveState=active\n"
+                "ExecStart=/opt/labpilot-runner/app/.venv/bin/python\n"
+                "InvocationID="
+                + "f" * 32
+                + "\n"
+            )
+        elif argv[0] == "journalctl":
+            output = json.dumps({"JOB_RESULT": "done", "JOB_TYPE": "start"}) + "\n"
+        else:
+            output = ""
+        return CommandResult(tuple(argv), output.encode(), b"")
+
+    class Manifest:
+        reporter_sha256 = "f" * 64
+
+    class Policy:
+        policy_identity = "e" * 64
+
+    monkeypatch.setattr(fixtures, "run_command", run)
+    monkeypatch.setattr(fixtures, "validate_candidate_b_v2_deployment", Manifest)
+    monkeypatch.setattr(fixtures, "load_runner_policy", lambda _path: Policy())
+    observations = iter(("active_match", "terminal_match"))
+
+    def runner_request(_row: str, operation: str, *_args: str) -> dict[str, object]:
+        if operation == "INFO":
+            return {
+                "outcome": "ok",
+                "result": {
+                    "policy_identity": "e" * 64,
+                    "python_profile": "python-3.12",
+                    "readiness_reason": "ready",
+                    "runner_version": "candidate-b-v2",
+                },
+            }
+        if operation == "STOP":
+            return {"outcome": "ok", "result": {}}
+        return {"outcome": "ok", "result": {"kind": next(observations)}}
+
+    monkeypatch.setattr(fixtures, "_runner_request", runner_request)
+
+    verified = fixtures.verify_v1_compatibility_after_v2_install(
+        _native_config(repository_root="/srv/labpilot/repository"),
+        fixtures.V2FixtureLease("V2-A15", (unit,), tmp_path, None, False),
+    )
+
+    assert verified["start_cardinality"] == 1
+    assert (tmp_path / "v2-a15-verified.json").is_file()
+    assert all(command[0] != "docker" for command in calls)
 
 
 def test_v2_a18_uses_mount_namespace_and_fixed_installer_validator(

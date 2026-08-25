@@ -408,6 +408,31 @@ def prepare_v1_compatibility_before_v2_install(
     execution_identity, execution_hash = _identity("V2-A15", tested_sha)
     unit = f"{execution_identity}.service"
     _reset_failed_if_loaded(unit)
+    pre_v2_service = _properties(
+        _text(
+            run_command(
+                (
+                    "systemctl",
+                    "show",
+                    "labpilot-runner.service",
+                    "--no-pager",
+                    "--property=ExecStart",
+                    "--property=InvocationID",
+                )
+            )
+        )
+    )
+    pre_v2_info = _physical_result(_runner_request("V2-A15", "INFO"))
+    pre_v2_identity = {
+        "runner_info": {
+            name: _required_text(pre_v2_info, name)
+            for name in ("policy_identity", "python_profile", "runner_version")
+        },
+        "runner_service": {
+            name: _required(pre_v2_service, name)
+            for name in ("ExecStart", "InvocationID")
+        },
+    }
     run_command(
         _systemd_run_argv(
             "V2-A15",
@@ -430,13 +455,43 @@ def prepare_v1_compatibility_before_v2_install(
                     unit,
                     "--no-pager",
                     "--property=ActiveState",
+                    "--property=MainPID",
                     "--property=InvocationID",
+                    "--property=User",
+                    "--property=Group",
+                    "--property=NoNewPrivileges",
+                    "--property=ExecStart",
                 )
             )
         )
     )
     if properties.get("ActiveState") != "active":
         raise RuntimeError("v1 compatibility lifecycle is not active")
+    try:
+        main_pid = int(_required(properties, "MainPID"))
+    except ValueError as error:
+        raise RuntimeError("v1 compatibility main PID is invalid") from error
+    if main_pid <= 0:
+        raise RuntimeError("v1 compatibility main PID is invalid")
+    records = _journal_records(
+        (
+            "journalctl",
+            "--no-pager",
+            "--output=json",
+            f"UNIT={unit}",
+            "MESSAGE_ID=39f53479d3a045ac8e11786248231fbf",
+        )
+    )
+    starts = [
+        record
+        for record in records
+        if record.get("JOB_TYPE") == "start" and record.get("JOB_RESULT") == "done"
+    ]
+    if len(starts) != 1:
+        raise RuntimeError("v1 compatibility start cardinality is invalid")
+    boot_id = starts[0].get("_BOOT_ID")
+    if not isinstance(boot_id, str) or not boot_id:
+        raise RuntimeError("v1 compatibility boot ID is missing")
     _write_json(
         evidence_root / "v2-a15-prepared.json",
         {
@@ -444,9 +499,16 @@ def prepare_v1_compatibility_before_v2_install(
             "execution_identity": execution_identity,
             "execution_spec_hash": execution_hash,
             "unit": unit,
+            "main_pid": main_pid,
             "invocation_id": _required(properties, "InvocationID"),
+            "boot_id": boot_id,
+            "unit_properties": {
+                name: _required(properties, name)
+                for name in ("ExecStart", "User", "Group", "NoNewPrivileges")
+            },
             "profile": "candidate-b-v1",
-            "start_cardinality": 1,
+            "start_cardinality": len(starts),
+            "pre_v2_installation_identity": pre_v2_identity,
         },
     )
     return V2FixtureLease("V2-A15", (unit,), evidence_root, None, False)
@@ -461,34 +523,62 @@ def verify_v1_compatibility_after_v2_install(
     tested_sha = _required_text(value, "tested_sha")
     execution_identity = _required_text(value, "execution_identity")
     execution_hash = _required_text(value, "execution_spec_hash")
-    if tested_sha != capture_final_stack_fingerprint(config).tested_sha:
+    repository_root = _config_path(config, "repository_root")
+    if tested_sha != _text(
+        run_command(("git", "-C", str(repository_root), "rev-parse", "HEAD"))
+    ):
         raise RuntimeError("v1 compatibility tested SHA mismatch")
+    if _text(run_command(("git", "-C", str(repository_root), "status", "--short"))):
+        raise RuntimeError("v1 compatibility checkout is not clean")
+    validate_candidate_b_v2_deployment()
+    policy = load_runner_policy(_INSTALLED_POLICY)
+    runner_service = _properties(
+        _text(
+            run_command(
+                (
+                    "systemctl",
+                    "show",
+                    "labpilot-runner.service",
+                    "--no-pager",
+                    "--property=ExecStart",
+                    "--property=ActiveState",
+                    "--property=InvocationID",
+                )
+            )
+        )
+    )
+    if runner_service.get("ActiveState") != "active":
+        raise RuntimeError("v2 Runner is not active")
+    for name in ("ExecStart", "InvocationID"):
+        _required(runner_service, name)
+    runner_info = _physical_result(_runner_request("V2-A15", "INFO"))
+    if (
+        runner_info.get("readiness_reason") != "ready"
+        or runner_info.get("runner_version") != "candidate-b-v2"
+        or runner_info.get("policy_identity") != policy.policy_identity
+        or runner_info.get("python_profile") != _config_text(config, "python_profile")
+    ):
+        raise RuntimeError("v2 Runner installation identity mismatch")
     observed = _runner_request("V2-A15", "OBSERVE", execution_identity, execution_hash)
     if _physical_kind(observed) != "active_match":
         raise RuntimeError("v2 Runner did not preserve active v1 lifecycle")
     stopped = _runner_request("V2-A15", "STOP", execution_identity, execution_hash)
-    records = _journal_records(
-        (
-            "journalctl",
-            "--no-pager",
-            "--output=json",
-            f"UNIT={_required_text(value, 'unit')}",
-            "MESSAGE_ID=39f53479d3a045ac8e11786248231fbf",
-        )
-    )
-    starts = [
-        record
-        for record in records
-        if record.get("JOB_TYPE") == "start" and record.get("JOB_RESULT") == "done"
-    ]
-    if len(starts) != 1:
+    _physical_result(stopped)
+    terminal = _runner_request("V2-A15", "OBSERVE", execution_identity, execution_hash)
+    if _physical_kind(terminal) != "terminal_match":
+        raise RuntimeError("v2 Runner did not observe terminal v1 lifecycle")
+    start_cardinality = _start_cardinality(_required_text(value, "unit"))
+    if start_cardinality != 1:
         raise RuntimeError("v1 compatibility start cardinality changed")
     verified = {
         "tested_sha": tested_sha,
         "prepared": value,
+        "runner_service": runner_service,
+        "runner_info": runner_info,
         "observed": observed,
         "stopped": stopped,
-        "start_cardinality": 1,
+        "terminal": terminal,
+        "start_cardinality": start_cardinality,
     }
     _write_json(lease.proof_root / "v2-a15-verified.json", verified)
     return verified
