@@ -196,6 +196,7 @@ def test_v2_a15_is_prepared_before_v2_install_without_downgrade(
     def run(argv: tuple[str, ...], **_kwargs: object) -> CommandResult:
         calls.append(tuple(argv))
         if argv[0] == "systemctl" and "show" in argv:
+            exec_start = "3600" if argv[2] == "labpilot-runner.service" else "21600"
             output = (
                 "ActiveState=active\n"
                 "MainPID=4242\n"
@@ -212,7 +213,7 @@ def test_v2_a15_is_prepared_before_v2_install_without_downgrade(
                 "StandardOutput=journal\n"
                 "StandardError=journal\n"
                 "Environment=LABPILOT_PROFILE_VERSION=candidate-b-v1\n"
-                "ExecStart=/usr/bin/sleep 3600\n"
+                f"ExecStart=/usr/bin/sleep {exec_start}\n"
             )
             return CommandResult(
                 tuple(argv),
@@ -243,6 +244,8 @@ def test_v2_a15_is_prepared_before_v2_install_without_downgrade(
 
     assert lease.row == "V2-A15"
     assert any(command[0] == "systemd-run" for command in calls)
+    launch = next(command for command in calls if command[0] == "systemd-run")
+    assert launch[-2:] == ("/usr/bin/sleep", "21600")
     encoded = "\n".join(" ".join(command) for command in calls)
     assert "ExecStopPost" not in encoded
     assert "install_labpilot_runner_host.sh" not in encoded
@@ -265,6 +268,7 @@ def test_v2_a15_preparation_seals_real_v1_lifecycle_evidence(
         if argv[:2] == ("systemctl", "show") and "--property=LoadState" in argv:
             output = "LoadState=not-found\n"
         elif argv[:2] == ("systemctl", "show"):
+            exec_start = "3600" if argv[2] == "labpilot-runner.service" else "21600"
             output = (
                 "ActiveState=active\n"
                 "MainPID=4242\n"
@@ -281,7 +285,7 @@ def test_v2_a15_preparation_seals_real_v1_lifecycle_evidence(
                 "StandardOutput=journal\n"
                 "StandardError=journal\n"
                 "Environment=LABPILOT_PROFILE_VERSION=candidate-b-v1\n"
-                "ExecStart=/usr/bin/sleep 3600\n"
+                f"ExecStart=/usr/bin/sleep {exec_start}\n"
             )
         elif argv[0] == "journalctl":
             output = json.dumps(
@@ -334,7 +338,7 @@ def test_v2_a15_preparation_seals_real_v1_lifecycle_evidence(
         "CapabilityBoundingSet": "",
         "Description": f"labpilot:{execution_hash}",
         "Environment": "LABPILOT_PROFILE_VERSION=candidate-b-v1",
-        "ExecStart": "/usr/bin/sleep 3600",
+        "ExecStart": "/usr/bin/sleep 21600",
         "Group": "labpilot-train",
         "KillMode": "control-group",
         "NoNewPrivileges": "yes",
@@ -395,7 +399,7 @@ def test_v2_a15_post_install_verification_has_no_phase_i_compose_dependency(
             "CapabilityBoundingSet": "",
             "Description": "labpilot:" + "c" * 64,
             "Environment": "LABPILOT_PROFILE_VERSION=candidate-b-v1",
-            "ExecStart": "/usr/bin/sleep 3600",
+            "ExecStart": "/usr/bin/sleep 21600",
             "Group": "labpilot-train",
             "KillMode": "control-group",
             "NoNewPrivileges": "yes",

@@ -458,7 +458,7 @@ def prepare_v1_compatibility_before_v2_install(
             "V2-A15",
             execution_identity,
             execution_hash,
-            ("/usr/bin/sleep", "3600"),
+            ("/usr/bin/sleep", "21600"),
             reporter=None,
             wait=False,
             extra_properties=(
