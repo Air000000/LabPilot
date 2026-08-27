@@ -37,11 +37,24 @@ jobs:
           python-version: "3.12"
       - name: Run local-equivalent CI gate
         run: ./scripts/check_ci.sh
-      - name: Verify production image runtime dependencies
+      - name: Verify production image runtime dependencies and build-context hygiene
         env:
           LABPILOT_CI_IMAGE: labpilot-ci:${{ github.sha }}
         run: |
+          mkdir -p .venv .runtime
+          printf 'HOST_ONLY_VENV_SENTINEL\n' \
+            > .venv/labpilot-docker-context-sentinel
+          printf 'HOST_ONLY_RUNTIME_SENTINEL\n' \
+            > .runtime/labpilot-docker-context-sentinel
           docker build --tag "$LABPILOT_CI_IMAGE" .
+          docker run --rm \
+            --entrypoint /bin/sh \
+            "$LABPILOT_CI_IMAGE" \
+            -ceu '
+              test ! -e /app/.git
+              test ! -e /app/.venv/labpilot-docker-context-sentinel
+              test ! -e /app/.runtime/labpilot-docker-context-sentinel
+            '
           docker run --rm \
             --entrypoint /bin/sh \
             "$LABPILOT_CI_IMAGE" \
