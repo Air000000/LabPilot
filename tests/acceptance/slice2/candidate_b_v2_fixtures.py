@@ -1330,7 +1330,7 @@ def _install_fixed_proof_asset(path: Path, content: bytes) -> None:
     finally:
         os.close(descriptor)
     os.chown(path, 0, 0)
-    os.chmod(path, 0o555)
+    os.chmod(path, 0, 0o555)
 
 
 def _prepare_probe_evidence(path: Path) -> None:
@@ -1395,7 +1395,7 @@ raise SystemExit({exit_status})
     finally:
         os.close(descriptor)
     os.chown(path, 0, 0)
-    os.chmod(path, 0, 0o555)
+    os.chmod(path, 0o555)
 
 
 def _receipt_records(unit: str) -> list[dict[str, object]]:
