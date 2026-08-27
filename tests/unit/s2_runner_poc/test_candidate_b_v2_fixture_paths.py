@@ -1,7 +1,9 @@
+import json
 from pathlib import Path
 
 import pytest
 from tests.acceptance.slice2 import candidate_b_v2_fixtures as fixtures
+from tests.acceptance.slice2 import native_campaign
 
 
 class _DummyTrain:
@@ -136,3 +138,63 @@ def test_v2_a3_scratch_evidence_is_lease_owned(
     assert captured == expected
     configured_evidence_root = Path(str(config["evidence_root"]))
     assert all(not path.is_relative_to(configured_evidence_root) for path in captured)
+
+
+def test_profile_matrix_scenario_evidence_stays_under_configured_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    tested_sha = "a" * 40
+    row = "V2-A2"
+    fingerprint = fixtures.FinalStackFingerprint(
+        tested_sha=tested_sha,
+        reporter_sha256="b" * 64,
+        policy_identity="c" * 64,
+        runner_exec_start="/usr/bin/labpilot-runner",
+        runner_active_state="active",
+        runner_invocation_id="invocation",
+        compose_container_ids=(),
+        compose_image_ids=(),
+    )
+    proof_root = fixtures._PROOF_ROOT / f"candidate-b-v2-a2-{tested_sha[:12]}"
+    scratch_root = proof_root / "evidence"
+    lease = fixtures.V2FixtureLease(row, (), proof_root, None, False)
+
+    monkeypatch.setattr(native_campaign, "select_v2_profile_matrix", lambda _selection: (row,))
+    monkeypatch.setattr(
+        native_campaign,
+        "capture_final_stack_fingerprint",
+        lambda _config: fingerprint,
+    )
+    monkeypatch.setattr(
+        native_campaign,
+        "execute_candidate_b_v2_row",
+        lambda _row, _config, _tested_sha: (
+            {"scratch_root": str(scratch_root)},
+            lease,
+        ),
+    )
+    monkeypatch.setattr(
+        native_campaign,
+        "cleanup_candidate_b_v2_fixture",
+        lambda _config, _lease: None,
+    )
+
+    config = _config(tmp_path)
+    native_campaign.run_profile_matrix("V2-A1-V2-A20", config)
+
+    configured_root = Path(str(config["evidence_root"]))
+    scenario = (
+        configured_root
+        / "candidate-b-v2"
+        / "profile-matrix"
+        / tested_sha
+        / row
+        / "scenario.json"
+    )
+    assert scenario.is_file()
+    assert not scenario.is_relative_to(fixtures._PROOF_ROOT)
+    payload = json.loads(scenario.read_text(encoding="utf-8"))
+    assert payload["row"] == row
+    assert payload["tested_sha"] == tested_sha
+    assert payload["evidence"] == {"scratch_root": str(scratch_root)}
