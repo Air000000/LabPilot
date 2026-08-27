@@ -897,7 +897,7 @@ def _execute_security_row(
     config: Mapping[str, object], tested_sha: str
 ) -> tuple[dict[str, object], V2FixtureLease]:
     root = _PROOF_ROOT / f"candidate-b-v2-a2-{tested_sha[:12]}"
-    evidence_root = _matrix_root(config, tested_sha) / "fixtures/V2-A2"
+    evidence_root = root / "evidence"
     main_evidence = evidence_root / "main.json"
     reporter_evidence = evidence_root / "reporter.json"
     reporter = root / "libexec/security-reporter.py"
@@ -964,7 +964,7 @@ def _execute_failure_neutrality_row(
     config: Mapping[str, object], tested_sha: str
 ) -> tuple[dict[str, object], V2FixtureLease]:
     root = _PROOF_ROOT / f"candidate-b-v2-a3-{tested_sha[:12]}"
-    evidence_root = _matrix_root(config, tested_sha) / "fixtures/V2-A3"
+    evidence_root = root / "evidence"
     controls: dict[str, object] = {}
     units: list[str] = []
     for exit_status in (0, 71):
@@ -1395,7 +1395,7 @@ raise SystemExit({exit_status})
     finally:
         os.close(descriptor)
     os.chown(path, 0, 0)
-    os.chmod(path, 0o555)
+    os.chmod(path, 0, 0o555)
 
 
 def _receipt_records(unit: str) -> list[dict[str, object]]:
