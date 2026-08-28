@@ -75,6 +75,81 @@ def _v2_a15_execution_hash(tested_sha: str) -> str:
     ).hexdigest()
 
 
+def test_v2_a6_expected_exit_seven_continues_to_runner_observation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.acceptance.slice2 import candidate_b_v2_fixtures as fixtures
+    from tests.acceptance.slice2.native_preflight import NativeCommandFailure
+
+    observations: list[tuple[str, str]] = []
+
+    def fail_systemd_run(argv: tuple[str, ...], **_kwargs: object) -> object:
+        assert argv[0] == "systemd-run"
+        raise NativeCommandFailure("systemd-run", "a" * 64, 7, b"", b"")
+
+    def observe(
+        row: str,
+        operation: str,
+        _execution_identity: str,
+        _execution_hash: str,
+    ) -> dict[str, object]:
+        observations.append((row, operation))
+        return {"outcome": "ok", "result": {"kind": "terminal_match", "exit_code": 7}}
+
+    monkeypatch.setattr(fixtures, "_reset_failed_if_loaded", lambda _unit: None)
+    monkeypatch.setattr(fixtures, "run_command", fail_systemd_run)
+    monkeypatch.setattr(fixtures, "_runner_request", observe)
+
+    evidence, lease = fixtures._execute_lifecycle_row(
+        "V2-A6", _native_config(), "a" * 40
+    )
+
+    assert observations == [("V2-A6", "OBSERVE")]
+    assert evidence == {
+        "observation": {
+            "outcome": "ok",
+            "result": {"kind": "terminal_match", "exit_code": 7},
+        }
+    }
+    assert lease.row == "V2-A6"
+
+
+def test_v2_a6_unexpected_nonzero_systemd_run_status_still_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.acceptance.slice2 import candidate_b_v2_fixtures as fixtures
+    from tests.acceptance.slice2.native_preflight import NativeCommandFailure
+
+    def fail_systemd_run(argv: tuple[str, ...], **_kwargs: object) -> object:
+        assert argv[0] == "systemd-run"
+        raise NativeCommandFailure("systemd-run", "a" * 64, 8, b"", b"")
+
+    monkeypatch.setattr(fixtures, "_reset_failed_if_loaded", lambda _unit: None)
+    monkeypatch.setattr(fixtures, "run_command", fail_systemd_run)
+    monkeypatch.setattr(fixtures, "_runner_request", pytest.fail)
+
+    with pytest.raises(NativeCommandFailure, match="status 8"):
+        fixtures._execute_lifecycle_row("V2-A6", _native_config(), "a" * 40)
+
+
+def test_v2_non_a6_nonzero_systemd_run_status_still_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.acceptance.slice2 import candidate_b_v2_fixtures as fixtures
+    from tests.acceptance.slice2.native_preflight import NativeCommandFailure
+
+    def fail_systemd_run(argv: tuple[str, ...], **_kwargs: object) -> object:
+        assert argv[0] == "systemd-run"
+        raise NativeCommandFailure("systemd-run", "a" * 64, 7, b"", b"")
+
+    monkeypatch.setattr(fixtures, "_reset_failed_if_loaded", lambda _unit: None)
+    monkeypatch.setattr(fixtures, "run_command", fail_systemd_run)
+    monkeypatch.setattr(fixtures, "_runner_request", pytest.fail)
+
+    with pytest.raises(NativeCommandFailure, match="status 7"):
+        fixtures._execute_lifecycle_row("V2-A5", _native_config(), "a" * 40)
+
+
 def test_scenario_registry_is_exact_and_unknown_names_fail_closed() -> None:
     from tests.acceptance.slice2.scenarios import (
         SCENARIOS,

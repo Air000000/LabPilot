@@ -19,6 +19,7 @@ from typing import Literal
 
 from tests.acceptance.slice2.native_preflight import (
     CommandResult,
+    NativeCommandFailure,
     NativePreflightError,
     run_command,
 )
@@ -1088,19 +1089,27 @@ def _execute_lifecycle_row(
     workload, reporter = behavior
     extra = ("--property=RuntimeMaxSec=1",) if row == "V2-A9" else ()
     _reset_failed_if_loaded(unit)
-    run_command(
-        _systemd_run_argv(
-            row,
-            execution_identity,
-            execution_hash,
-            workload,
-            reporter=reporter,
-            wait=row not in {"V2-A7", "V2-A8", "V2-A9", "V2-A10", "V2-A17"},
-            extra_properties=extra,
-            collect=row != "V2-A9",
-        ),
-        timeout_seconds=60,
-    )
+    try:
+        run_command(
+            _systemd_run_argv(
+                row,
+                execution_identity,
+                execution_hash,
+                workload,
+                reporter=reporter,
+                wait=row not in {"V2-A7", "V2-A8", "V2-A9", "V2-A10", "V2-A17"},
+                extra_properties=extra,
+                collect=row != "V2-A9",
+            ),
+            timeout_seconds=60,
+        )
+    except NativeCommandFailure as error:
+        if not (
+            row == "V2-A6"
+            and error.operation == "systemd-run"
+            and error.return_code == 7
+        ):
+            raise
     if row in {"V2-A7", "V2-A8"}:
         signal_name = "SIGTERM" if row == "V2-A7" else "SIGKILL"
         run_command(("systemctl", "kill", f"--signal={signal_name}", unit))
