@@ -27,6 +27,7 @@ def test_v2_a2_scratch_evidence_is_lease_owned(
     tmp_path: Path,
 ) -> None:
     tested_sha = "a" * 40
+    monkeypatch.setattr(fixtures, "_PROOF_ROOT", tmp_path / "mechanism-proof")
     root = fixtures._PROOF_ROOT / f"candidate-b-v2-a2-{tested_sha[:12]}"
     expected = [
         root / "evidence/main.json",
