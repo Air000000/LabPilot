@@ -94,7 +94,7 @@ UNIQUE(attempt_id, relative_path)
 
 The uniqueness key intentionally does not contain the digest. If an already registered slot later contains different bytes, processing fails closed with a provenance conflict instead of creating a second formal Artifact.
 
-No managed-copy/CAS requirement in Slice3 MVP. The Artifact points to the controlled Attempt output path and records integrity metadata.
+No managed-copy/CAS requirement exists in Slice3 MVP. The Artifact points to the controlled Attempt output path and records integrity metadata. Registration proves the file was available at registration time. The query/service layer derives current availability as `available`, `missing`, or `corrupted` by checking the controlled path against the registered digest; MVP does not add a mutable ArtifactAvailability projection table.
 
 ### 4.2 MetricObservation
 
@@ -122,8 +122,10 @@ result-json-v1
 Natural uniqueness:
 
 ```text
-UNIQUE(artifact_id, metric_name, split, extractor_version)
+UNIQUE(artifact_id, metric_name, extractor_version)
 ```
+
+Metric names are already unique inside the approved Proposal, so nullable `split` does not need to participate in the database uniqueness key.
 
 ### 4.3 ValidationReport
 
@@ -135,6 +137,7 @@ Minimum fields:
 validation_report_id
 attempt_id
 validation_protocol_hash
+extraction_profile_version
 validator_version
 input_snapshot_json
 verdict
@@ -145,10 +148,17 @@ created_at
 Natural uniqueness:
 
 ```text
-UNIQUE(attempt_id, validation_protocol_hash, validator_version)
+UNIQUE(
+  attempt_id,
+  validation_protocol_hash,
+  extraction_profile_version,
+  validator_version
+)
 ```
 
-`input_snapshot_json` freezes the facts used by validation, including Artifact IDs/digests, MetricObservation IDs/values, and explicit missing markers. A later rerun must compare current observed inputs to the persisted snapshot. A mismatch is a provenance conflict; it does not silently create a new interpretation under the same validator/protocol.
+`input_snapshot_json` freezes the facts used by validation, including Artifact IDs/digests, MetricObservation IDs/values/extractor versions, and explicit missing markers. A later rerun under the same semantic versions must compare current observed inputs to the persisted snapshot. A mismatch is a provenance conflict; it does not silently create a new interpretation.
+
+An intentional future change to extractor or validator semantics must bump its semantic version, allowing a new immutable interpretation rather than overwriting history.
 
 Verdicts:
 
@@ -164,7 +174,7 @@ Semantics:
 - `valid`: all required deterministic rules pass.
 - `invalid`: inputs are known and a scientific/output requirement is violated.
 - `inconclusive`: available deterministic facts are insufficient to decide, without evidence of corruption or validator failure.
-- `error`: provenance conflict, corrupted input, internal validator failure, or inconsistent authoritative state prevents a reliable judgment.
+- `error`: provenance conflict, malformed/corrupted extraction input, extractor/validator failure, or inconsistent authoritative state prevents a reliable judgment.
 
 ### 4.4 TrialResultSelection
 
@@ -209,7 +219,7 @@ Constraints:
 UNIQUE(batch_id, revision_number)
 ```
 
-Idempotent refresh does not require an input hash. The service locks the Batch, derives the current structured summary inputs, compares them with the latest revision, and creates a new revision only when those structured inputs differ.
+Idempotent refresh does not require an input hash. The service locks the Batch, derives the current structured summary inputs in deterministic Trial order, compares those inputs plus `summary_protocol_version` with the latest revision, and creates a new revision only when they differ.
 
 MVP aggregates:
 
@@ -332,7 +342,7 @@ A missing required Artifact becomes a known validation input fact and can produc
 
 `result-json-v1` parses the declared source Artifact and extracts named metrics from `metrics{}` using Decimal-compatible numeric semantics.
 
-Dynamic user code is not supported in Core.
+Dynamic user code is not supported in Core. Malformed result JSON, impossible numeric conversion, or an extractor implementation failure is an extraction/validation `error`, not a scientific `invalid` result.
 
 ### 7.4 Validation
 
@@ -344,7 +354,7 @@ ExperimentVersion.validation_protocol_json/hash
 + MetricObservations
 ```
 
-It produces one immutable ValidationReport per Attempt/protocol/validator semantic version.
+It produces one immutable ValidationReport per Attempt/protocol/extraction-profile/validator semantic version.
 
 Examples:
 
@@ -352,7 +362,9 @@ Examples:
 score=0.82, metric_gte(score,0.80) → valid
 score=0.61, metric_gte(score,0.80) → invalid
 required result Artifact missing → invalid
+optional evidence insufficient to decide → inconclusive
 registered Artifact digest no longer matches bytes → error
+malformed metric_source JSON → error
 ```
 
 ### 7.5 First-eligible selection
@@ -378,6 +390,7 @@ For each Trial:
 - selected valid result → included;
 - scientifically invalid → excluded with reason;
 - inconclusive → excluded with reason;
+- validation/extraction error after processing → excluded with explicit error reason;
 - exhausted execution failure → excluded with reason;
 - unknown / identity-conflict / unresolved reconciliation → block formal summary.
 
@@ -399,9 +412,9 @@ Convergence mechanisms:
 
 - Artifact natural unique slot per Attempt;
 - Metric natural unique extraction identity;
-- Validation natural unique Attempt/protocol/validator identity plus frozen `input_snapshot_json` comparison;
+- Validation natural unique Attempt/protocol/extraction-profile/validator identity plus frozen `input_snapshot_json` comparison;
 - one immutable TrialResultSelection per Trial;
-- Batch row lock plus latest structured-summary comparison before creating a new revision.
+- Batch row lock plus deterministic latest structured-summary comparison before creating a new revision.
 
 Therefore:
 
@@ -412,7 +425,7 @@ Coordinator restart
 process_attempt(A)
 ```
 
-converges to the same authoritative result facts and does not duplicate selection or summary revisions.
+converges to the same authoritative result facts and does not duplicate selection or unchanged summary revisions.
 
 Multi-Coordinator production hardening remains outside Slice3 MVP unless a concrete race blocks the Core demo.
 
@@ -428,7 +441,7 @@ GET /batches/{batch_id}/summary
 
 They must answer:
 
-- which Artifact and digest came from the Attempt;
+- which Artifact and digest came from the Attempt and whether it is currently available/intact;
 - which Metric value and extractor version were used;
 - why Validation was valid/invalid/inconclusive/error;
 - which Attempt became the Trial result;
