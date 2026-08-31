@@ -24,6 +24,9 @@ jobs:
     env:
       LABPILOT_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/labpilot_ci
       LABPILOT_TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/postgres
+      LABPILOT_ENVIRONMENT: test
+      LABPILOT_INSTALLATION_IDENTITY: ci-installation
+      LABPILOT_LOCAL_ACTOR_ID: ci-local-user
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -32,17 +35,35 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Verify frozen dependencies
-        run: ./scripts/verify_architecture_dependencies.sh docs/labpilot/implementation/phase-0-v0.3.3.dependencies.sha256
-      - name: Install
-        run: uv sync --frozen --all-groups
-      - name: Ruff
-        run: uv run ruff check src tests scripts
-      - name: Mypy
-        run: uv run mypy src scripts
-      - name: Unit and architecture tests
-        run: uv run pytest tests/unit tests/architecture -v
-      - name: PostgreSQL integration tests
-        run: uv run pytest tests/integration -v -m integration
-      - name: Dependency guard shell tests
-        run: ./tests/scripts/test_verify_architecture_dependencies.sh
+      - name: Run local-equivalent CI gate
+        run: ./scripts/check_ci.sh
+      - name: Verify production image runtime dependencies and build-context hygiene
+        env:
+          LABPILOT_CI_IMAGE: labpilot-ci:${{ github.sha }}
+        run: |
+          mkdir -p .venv .runtime
+          printf 'HOST_ONLY_VENV_SENTINEL\n' \
+            > .venv/labpilot-docker-context-sentinel
+          printf 'HOST_ONLY_RUNTIME_SENTINEL\n' \
+            > .runtime/labpilot-docker-context-sentinel
+          docker build --tag "$LABPILOT_CI_IMAGE" .
+          docker run --rm \
+            --entrypoint /bin/sh \
+            "$LABPILOT_CI_IMAGE" \
+            -ceu '
+              test ! -e /app/.git
+              test ! -e /app/.venv/labpilot-docker-context-sentinel
+              test ! -e /app/.runtime/labpilot-docker-context-sentinel
+            '
+          docker run --rm \
+            --entrypoint /bin/sh \
+            "$LABPILOT_CI_IMAGE" \
+            -ceu '
+              test -x /usr/bin/git
+              test "$(command -v git)" = /usr/bin/git
+              /usr/bin/git --version
+            '
+          docker run --rm \
+            --entrypoint /app/.venv/bin/python \
+            "$LABPILOT_CI_IMAGE" \
+            -c 'from pathlib import Path; from labpilot.context.git_adapter import GitAdapter; GitAdapter(git_executable=Path("/usr/bin/git"), timeout_seconds=1)'

@@ -98,6 +98,81 @@ def test_allowed_common_import_passes(tmp_path: Path) -> None:
     assert find_dependency_violations(tmp_path / "src" / "labpilot") == []
 
 
+def test_model_registry_allows_approved_composition_imports(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "db/model_registry.py",
+        "import labpilot.context.models\n"
+        "import labpilot.experiments.models\n"
+        "import labpilot.observability.models\n",
+    )
+
+    assert find_dependency_violations(tmp_path / "src" / "labpilot") == []
+
+
+def test_composition_exception_does_not_apply_to_other_db_modules(
+    tmp_path: Path,
+) -> None:
+    write_module(
+        tmp_path,
+        "db/ordinary_repository.py",
+        "import labpilot.context.models\n"
+        "import labpilot.experiments.models\n",
+    )
+
+    assert find_dependency_violations(tmp_path / "src" / "labpilot") == [
+        DependencyViolation(
+            path="db/ordinary_repository.py",
+            source_module="db",
+            target_module="context",
+            line=1,
+        ),
+        DependencyViolation(
+            path="db/ordinary_repository.py",
+            source_module="db",
+            target_module="experiments",
+            line=2,
+        ),
+    ]
+
+
+def test_coordinator_worker_has_only_exact_composition_imports(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "coordinator/worker.py",
+        "import labpilot.context.content_store\n"
+        "import labpilot.context.git_adapter\n"
+        "import labpilot.context.repository_source\n"
+        "import labpilot.context.repository_repository\n",
+    )
+
+    assert find_dependency_violations(tmp_path / "src" / "labpilot") == [
+        DependencyViolation(
+            path="coordinator/worker.py",
+            source_module="coordinator",
+            target_module="context",
+            line=4,
+        )
+    ]
+
+
+def test_model_registry_rejects_unapproved_target_modules(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "db/model_registry.py",
+        "import labpilot.experiments.project_service\n",
+    )
+
+    assert find_dependency_violations(tmp_path / "src" / "labpilot") == [
+        DependencyViolation(
+            path="db/model_registry.py",
+            source_module="db",
+            target_module="experiments",
+            line=1,
+        )
+    ]
+
+
 def test_real_source_tree_respects_the_allowlist() -> None:
     violations = find_dependency_violations(Path("src/labpilot"))
     assert violations == []

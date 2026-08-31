@@ -144,8 +144,111 @@ def _validate_foundation_probe(payload: EventJsonObject) -> None:
         raise CanonicalizationError("foundation probe value must be an integer")
 
 
+def _validate_attempt_restart_reconciliation(payload: EventJsonObject) -> None:
+    required = {
+        "attempt_id",
+        "X",
+        "H",
+        "coordinator_start_id",
+        "pre_reconciliation_status",
+        "physical_observation_kind",
+        "post_reconciliation_status",
+    }
+    allowed = required | {"physical_boot_id", "supervisor_invocation_id"}
+    unexpected = set(payload) - allowed
+    if unexpected:
+        raise CanonicalizationError(
+            f"attempt reconciliation contains unexpected fields: {sorted(unexpected)}"
+        )
+    missing = required - set(payload)
+    if missing:
+        raise CanonicalizationError(
+            f"attempt reconciliation is missing fields: {sorted(missing)}"
+        )
+    if any(type(payload[name]) is not str for name in required):
+        raise CanonicalizationError("attempt reconciliation fields must be strings")
+    for name in ("physical_boot_id", "supervisor_invocation_id"):
+        if name in payload and type(payload[name]) is not str:
+            raise CanonicalizationError(f"attempt reconciliation {name} must be a string")
+
+
+def _validate_exact_attempt_strings(
+    payload: EventJsonObject, required: set[str]
+) -> None:
+    if set(payload) != required:
+        raise CanonicalizationError("attempt audit payload fields are invalid")
+    if any(type(payload[name]) is not str for name in required):
+        raise CanonicalizationError("attempt audit payload fields must be strings")
+
+
+def _validate_attempt_launch(payload: EventJsonObject) -> None:
+    _validate_exact_attempt_strings(payload, {"attempt_id", "X", "H"})
+
+
+def _validate_attempt_conflict(payload: EventJsonObject) -> None:
+    _validate_exact_attempt_strings(payload, {"attempt_id", "X", "H", "observed_H"})
+
+
+def _validate_attempt_terminal(payload: EventJsonObject) -> None:
+    required = {"attempt_id", "X", "H", "terminal_kind"}
+    allowed = required | {"exit_code", "termination_signal", "supervisor_result"}
+    if not required <= set(payload) or set(payload) - allowed:
+        raise CanonicalizationError("attempt terminal payload fields are invalid")
+    if any(type(payload[name]) is not str for name in required):
+        raise CanonicalizationError("attempt terminal identity fields must be strings")
+    for name in ("exit_code", "termination_signal"):
+        if name in payload and type(payload[name]) is not int:
+            raise CanonicalizationError(f"attempt terminal {name} must be an integer")
+    if "supervisor_result" in payload and type(payload["supervisor_result"]) is not str:
+        raise CanonicalizationError("attempt terminal supervisor_result must be a string")
+
+
+def _validate_batch_created(payload: EventJsonObject) -> None:
+    if set(payload) != {
+        "batch_id",
+        "experiment_version_id",
+        "trial_count",
+        "row_version",
+    }:
+        raise CanonicalizationError("batch created payload fields are invalid")
+    if any(
+        type(payload[name]) is not str
+        for name in ("batch_id", "experiment_version_id")
+    ) or any(type(payload[name]) is not int for name in ("trial_count", "row_version")):
+        raise CanonicalizationError("batch created payload field types are invalid")
+
+
+def _validate_batch_control(payload: EventJsonObject) -> None:
+    if set(payload) != {"batch_id", "row_version"}:
+        raise CanonicalizationError("batch control payload fields are invalid")
+    if type(payload["batch_id"]) is not str or type(payload["row_version"]) is not int:
+        raise CanonicalizationError("batch control payload field types are invalid")
+
+
 register_runtime_event_payload_schema(
     "foundation.probe.created",
     1,
     _validate_foundation_probe,
+)
+register_runtime_event_payload_schema(
+    "attempt.reconciled_after_restart",
+    1,
+    _validate_attempt_restart_reconciliation,
+)
+register_runtime_event_payload_schema(
+    "attempt.launch_intent_committed", 1, _validate_attempt_launch
+)
+register_runtime_event_payload_schema(
+    "attempt.physical_started_observed", 1, _validate_attempt_launch
+)
+register_runtime_event_payload_schema(
+    "attempt.identity_conflict_observed", 1, _validate_attempt_conflict
+)
+register_runtime_event_payload_schema(
+    "attempt.terminal_observed", 1, _validate_attempt_terminal
+)
+register_runtime_event_payload_schema("batch.created", 1, _validate_batch_created)
+register_runtime_event_payload_schema("batch.started", 1, _validate_batch_control)
+register_runtime_event_payload_schema(
+    "batch.cancel_requested", 1, _validate_batch_control
 )

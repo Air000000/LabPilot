@@ -2,6 +2,27 @@ import ast
 from dataclasses import dataclass
 from pathlib import Path
 
+MODEL_REGISTRY_PATH = Path("db/model_registry.py")
+MODEL_REGISTRY_ALLOWED_IMPORTS = frozenset(
+    {
+        "labpilot.agent_runtime.models",
+        "labpilot.context.models",
+        "labpilot.experiments.models",
+        "labpilot.experiments.proposal_models",
+        "labpilot.execution.models",
+        "labpilot.observability.models",
+        "labpilot.tools_policy.models",
+    }
+)
+COORDINATOR_COMPOSITION_PATH = Path("coordinator/worker.py")
+COORDINATOR_COMPOSITION_ALLOWED_IMPORTS = frozenset(
+    {
+        "labpilot.context.content_store",
+        "labpilot.context.git_adapter",
+        "labpilot.context.repository_source",
+    }
+)
+
 ALLOWED_INTERNAL_IMPORTS: dict[str, set[str]] = {
     "common": {"common"},
     "db": {"common", "db"},
@@ -81,6 +102,20 @@ def classify_absolute_target(module_name: str) -> str | None:
     return ROOT_MODULE_CLASSIFICATION.get(parts[1], parts[1])
 
 
+def is_path_specific_import_allowed(
+    *,
+    relative_path: Path,
+    target_module_name: str | None,
+) -> bool:
+    return (
+        relative_path == MODEL_REGISTRY_PATH
+        and target_module_name in MODEL_REGISTRY_ALLOWED_IMPORTS
+    ) or (
+        relative_path == COORDINATOR_COMPOSITION_PATH
+        and target_module_name in COORDINATOR_COMPOSITION_ALLOWED_IMPORTS
+    )
+
+
 def resolve_relative_target(
     *,
     relative_path: Path,
@@ -90,9 +125,7 @@ def resolve_relative_target(
     package_parts = list(relative_path.parent.parts)
     ascend = level - 1
     if ascend > len(package_parts):
-        raise AssertionError(
-            f"invalid relative import level={level} in {relative_path.as_posix()}"
-        )
+        raise AssertionError(f"invalid relative import level={level} in {relative_path.as_posix()}")
     base = package_parts[: len(package_parts) - ascend]
     suffix = module_name.split(".") if module_name else []
     resolved = base + suffix
@@ -101,20 +134,21 @@ def resolve_relative_target(
     return ROOT_MODULE_CLASSIFICATION.get(resolved[0], resolved[0])
 
 
-def imported_targets(tree: ast.AST, relative_path: Path) -> list[tuple[str, int]]:
-    targets: list[tuple[str, int]] = []
+def imported_targets(tree: ast.AST, relative_path: Path) -> list[tuple[str, str | None, int]]:
+    targets: list[tuple[str, str | None, int]] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 target = classify_absolute_target(alias.name)
                 if target is not None:
-                    targets.append((target, node.lineno))
+                    targets.append((target, alias.name, node.lineno))
         elif isinstance(node, ast.ImportFrom):
             if node.level == 0 and node.module == "labpilot":
                 for alias in node.names:
-                    target = classify_absolute_target(f"labpilot.{alias.name}")
+                    target_module_name = f"labpilot.{alias.name}"
+                    target = classify_absolute_target(target_module_name)
                     if target is not None:
-                        targets.append((target, node.lineno))
+                        targets.append((target, target_module_name, node.lineno))
                 continue
             if node.level > 0 and node.module is None:
                 root_target = resolve_relative_target(
@@ -127,12 +161,14 @@ def imported_targets(tree: ast.AST, relative_path: Path) -> list[tuple[str, int]
                         targets.append(
                             (
                                 ROOT_MODULE_CLASSIFICATION.get(alias.name, alias.name),
+                                None,
                                 node.lineno,
                             )
                         )
                 else:
-                    targets.append((root_target, node.lineno))
+                    targets.append((root_target, None, node.lineno))
                 continue
+            target_module_name: str | None = None
             if node.level > 0:
                 target = resolve_relative_target(
                     relative_path=relative_path,
@@ -140,9 +176,10 @@ def imported_targets(tree: ast.AST, relative_path: Path) -> list[tuple[str, int]
                     module_name=node.module,
                 )
             else:
-                target = classify_absolute_target(node.module or "")
+                target_module_name = node.module or ""
+                target = classify_absolute_target(target_module_name)
             if target is not None:
-                targets.append((target, node.lineno))
+                targets.append((target, target_module_name, node.lineno))
     return targets
 
 
@@ -153,8 +190,11 @@ def find_dependency_violations(source_root: Path) -> list[DependencyViolation]:
         source_module = classify_source_module(relative_path)
         allowed = ALLOWED_INTERNAL_IMPORTS[source_module]
         tree = ast.parse(path.read_text(), filename=relative_path.as_posix())
-        for target_module, line in imported_targets(tree, relative_path):
-            if target_module not in allowed:
+        for target_module, target_module_name, line in imported_targets(tree, relative_path):
+            if target_module not in allowed and not is_path_specific_import_allowed(
+                relative_path=relative_path,
+                target_module_name=target_module_name,
+            ):
                 violations.append(
                     DependencyViolation(
                         path=relative_path.as_posix(),

@@ -19,6 +19,10 @@ services:
     environment: &app-env
       LABPILOT_DATABASE_URL: postgresql+asyncpg://labpilot:labpilot@postgres:5432/labpilot
       LABPILOT_ENVIRONMENT: development
+      LABPILOT_INSTALLATION_IDENTITY: ${LABPILOT_INSTALLATION_IDENTITY:-local-development}
+      LABPILOT_LOCAL_ACTOR_ID: ${LABPILOT_LOCAL_ACTOR_ID:-local-user}
+      LABPILOT_REPOSITORY_ALLOWED_ROOTS: '${LABPILOT_REPOSITORY_ALLOWED_ROOTS:-["/repositories"]}'
+      LABPILOT_REPOSITORY_CONTENT_STORE_ROOT: /var/lib/labpilot/content
     command: ["sh", "-c", "python scripts/wait_for_postgres.py && python scripts/run_migrations.py"]
     depends_on:
       postgres:
@@ -29,7 +33,10 @@ services:
     environment: *app-env
     command: ["uvicorn", "labpilot.main:app", "--host", "0.0.0.0", "--port", "8000"]
     ports:
-      - "${LABPILOT_API_PORT:-8000}:8000"
+      - "127.0.0.1:${LABPILOT_API_PORT:-8000}:8000"
+    volumes:
+      - ${LABPILOT_REPOSITORY_HOST_ROOT:-.}:/repositories:ro
+      - labpilot_content:/var/lib/labpilot/content
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -41,13 +48,35 @@ services:
 
   coordinator:
     build: .
-    environment: *app-env
+    environment:
+      <<: *app-env
+      LABPILOT_ATTEMPT_WORKSPACE_ROOT: ${LABPILOT_ATTEMPT_WORKSPACE_ROOT:?LABPILOT_ATTEMPT_WORKSPACE_ROOT is required}
+      LABPILOT_RUNNER_SOCKET_PATH: /run/labpilot-runner/control.sock
+      LABPILOT_RUNNER_REQUEST_TIMEOUT_SECONDS: ${LABPILOT_RUNNER_REQUEST_TIMEOUT_SECONDS:-10}
+      LABPILOT_UNKNOWN_ATTENTION_GRACE_SECONDS: ${LABPILOT_UNKNOWN_ATTENTION_GRACE_SECONDS:-60}
+      LABPILOT_CONTROLLER_UID: ${LABPILOT_CONTROLLER_UID:?LABPILOT_CONTROLLER_UID is required}
+      LABPILOT_CONTROLLER_GID: ${LABPILOT_CONTROLLER_GID:?LABPILOT_CONTROLLER_GID is required}
+      LABPILOT_TRAIN_GID: ${LABPILOT_TRAIN_GID:?LABPILOT_TRAIN_GID is required}
+    user: "${LABPILOT_CONTROLLER_UID:?LABPILOT_CONTROLLER_UID is required}:${LABPILOT_CONTROLLER_GID:?LABPILOT_CONTROLLER_GID is required}"
+    group_add:
+      - "${LABPILOT_TRAIN_GID:?LABPILOT_TRAIN_GID is required}"
     command: ["python", "-m", "labpilot.coordinator.worker"]
+    volumes:
+      - ${LABPILOT_REPOSITORY_HOST_ROOT:-.}:/repositories:ro
+      - labpilot_content:/var/lib/labpilot/content
+      - "${LABPILOT_ATTEMPT_WORKSPACE_ROOT:?LABPILOT_ATTEMPT_WORKSPACE_ROOT is required}:${LABPILOT_ATTEMPT_WORKSPACE_ROOT:?LABPILOT_ATTEMPT_WORKSPACE_ROOT is required}"
+      - type: bind
+        source: /run/labpilot-runner
+        target: /run/labpilot-runner
+        read_only: true
+        bind:
+          create_host_path: false
     depends_on:
       migrate:
         condition: service_completed_successfully
 
   projection:
+    profiles: ["advanced-ops"]
     build: .
     environment: *app-env
     command: ["python", "-m", "labpilot.observability.projection_worker"]
@@ -57,3 +86,4 @@ services:
 
 volumes:
   labpilot_pgdata:
+  labpilot_content:

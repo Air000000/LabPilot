@@ -1,0 +1,24 @@
+# Version-control metadata
+.git
+
+# Host-local Python environment and caches
+.venv/
+__pycache__/
+**/__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Local build and runtime state
+dist/
+build/
+.artifacts/
+.runtime/
+
+# Local environment secrets
+.env

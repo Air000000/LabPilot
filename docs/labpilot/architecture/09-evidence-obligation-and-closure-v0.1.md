@@ -1,0 +1,1082 @@
+# LabPilot Evidence Obligation and Closure Protocol
+
+```text
+Document type: Architecture Supplement
+Version: v0.1
+Status: Approved Planning Input
+Date: 2026-08-08
+
+Applies to:
+- WP1-C Proposal materialization
+- WP2 Agent evidence-closure control
+- future WP3/P1 dynamic-verification integration points
+
+Consumes:
+- 02-experiment-domain-v0.2-frozen
+- 03-agent-harness-v0.2-frozen
+- 04-context-and-repository-v0.2-frozen
+- 05-tools-policy-and-workspace-v0.2-frozen
+- 08-agent-abstention-and-progress-control-v0.2
+- WP1 Domain and Context Overall Design v0.5
+
+Does not reopen:
+- WP0
+- WP1-A
+- WP1-A Task 0–8
+- Task 6 canonical identity contract
+- RepositoryRegistration identities
+- RepositorySnapshot identities
+- RepositoryInspection identities
+- RepositoryEvidence identities
+- context -> experiments dependency direction
+- existing AgentDecision top-level decision set
+
+Execution effect:
+- no change to WP1-A implementation plan v0.2
+- no change to WP1-A Task 9 or later WP1-A scopes
+- non-operative for current WP1-A execution
+- becomes an authoritative planning input for future WP1-C/WP2 planning only after independent review and approval
+```
+
+## 0. Purpose, authority, scope, and non-goals
+
+This supplement defines the architecture boundary between candidate Proposal materialization, evidence obligations, deterministic evidence-closure evaluation, and Proposal verification. It exists to prevent a Proposal from becoming authoritative merely because an Agent produced plausible prose or because some evidence happens to be available.
+
+The normative chain is:
+
+```text
+Proposal Draft
+-> normalize Candidate Proposal
+-> generate EvidenceObligationSet
+-> build EvidenceClosureInputManifest
+-> deterministic EvaluateEvidenceClosure
+-> if complete: deterministic Proposal Verifier
+-> if verifier passes: materialize ProposalRevision and formal manifests
+```
+
+The core invariant is:
+
+> A Proposal may be materialized only when the exact candidate payload has a deterministic, replayable, versioned evidence-closure result of `complete`, and the same candidate payload then passes the deterministic Proposal Verifier under the required freshness and CAS checks.
+
+This document is additive. It does not replace the frozen architecture documents or the current WP1-A execution baseline.
+
+### 0.1 In scope
+
+- Candidate Proposal normalization and identity.
+- Bounded change intent and change dimensions.
+- Evidence obligation generation.
+- Candidate bindings and claim-resolution contracts.
+- Evidence Closure input construction.
+- Per-obligation/source-domain universe and SearchCoverage semantics.
+- Deterministic evidence-closure evaluation.
+- Separation between Closure and Proposal Verification.
+- Evaluation-key, result-identity, replay, and determinism rules.
+- CAS, concurrency, and transaction semantics.
+- WP2 Agent consumption of known, unknown, ambiguous, and blocked evidence states.
+- A protocol boundary for future external evidence observations.
+
+### 0.2 New persistence ceiling
+
+This supplement introduces at most four new formal persisted object types for V1 evidence closure:
+
+```text
+1. EvidenceObligationSet
+2. EvidenceClosureInputManifest
+3. EvidenceClosureAssessment
+4. ProposalVerificationAssessment
+```
+
+`ProposalVerificationAssessment` is created only when the Proposal Verifier fully executes but does not pass and therefore no `ProposalRevision` is created.
+
+The following are not introduced as additional aggregates or persistence families by this supplement:
+
+```text
+EvidenceGraph
+ClaimAggregate
+ObligationAggregate
+CandidateBindingAggregate
+EvidenceSelectionAggregate
+ClosureEvaluationRun
+AssessmentUsabilityProjection
+EvidenceUniverseManifest
+ExternalSourceGraph
+```
+
+`ExternalEvidenceObservation` is protocol-only in this version and is deferred for later implementation.
+
+### 0.3 Non-goals
+
+- Reopening accepted WP1-A Task 0–8 implementation.
+- Changing WP1-A Task 9 or later WP1-A scope.
+- Recomputing or redefining RepositoryRegistration, RepositorySnapshot, RepositoryInspection, or RepositoryEvidence identities.
+- Making ContextCompilation authoritative evidence state.
+- Letting an LLM write authoritative evidence relations or closure verdicts directly.
+- Allowing ordinary user approval to override a hard evidence-closure failure.
+- Introducing executable policy scripts, plugins, dynamic imports, or unbounded rule languages.
+- Freezing implementation tables, indexes, or external-observation adapters before their owning work package is planned.
+
+## 1. Terminology and architecture boundaries
+
+### 1.1 Candidate Proposal
+
+`CandidateProposalPayload` is the normalized value object representing exactly what Closure, Verification, and eventual materialization evaluate.
+
+It is not a `ProposalRevision` and is not authoritative domain state.
+
+### 1.2 Evidence Obligation
+
+An evidence obligation describes evidence conditions that must be resolved for a specific candidate Proposal. Obligations are generated by program-owned, versioned profiles from the candidate's primary change intent and bounded change dimensions.
+
+### 1.3 Evidence Closure
+
+Evidence Closure answers whether the required evidence conditions are sufficiently and deterministically resolved for the candidate Proposal to proceed to Proposal Verification.
+
+Closure is not the Proposal Verifier. Closure answers whether required evidence is closed; the Verifier answers whether the candidate Proposal itself satisfies the formal Proposal materialization contract.
+
+### 1.4 ContextCompilation is not authoritative evidence
+
+ContextCompilation remains an Agent consumption view. It may summarize or organize information for model use, but its identity must not determine whether authoritative evidence exists.
+
+Therefore:
+
+```text
+ContextCompilation identity
+MUST NOT enter closure semantic identity.
+```
+
+### 1.5 Existing context and experiment boundaries remain unchanged
+
+This supplement consumes existing Context, Repository, Experiment, Tool Policy, and Agent Harness contracts. It does not reverse the existing `context -> experiments` dependency direction and does not make evidence closure a new general-purpose event-sourced control plane.
+
+## 2. Change intent and bounded change dimensions
+
+Every candidate Proposal must declare exactly one primary change intent:
+
+```text
+primary_change_intent_kind
+```
+
+Allowed primary intent kinds are:
+
+```text
+experiment_variable_change
+default_configuration_change
+parameter_semantics_change
+training_entrypoint_identification
+metric_semantics_change
+dataset_pipeline_change
+bug_investigation
+```
+
+A candidate may additionally declare at most three server-supported change dimensions:
+
+```text
+change_dimensions[]
+```
+
+Allowed change dimensions are:
+
+```text
+parameter_binding
+metric_observation
+dataset_preprocessing
+artifact_contract
+environment_binding
+```
+
+Normative rules:
+
+1. Exactly one `primary_change_intent_kind` is required.
+2. At most three change dimensions are permitted.
+3. The primary intent selects the main Obligation Generation Profile.
+4. Change dimensions may only append bounded obligation modules supported by the server.
+5. Change dimensions must not create a second independent primary research flow.
+6. Two independent research objectives require two Proposals.
+7. Unsupported intent or dimension combinations fail normalization or obligation generation; the Agent cannot extend the registry dynamically.
+
+## 3. Candidate Proposal normalization
+
+### 3.1 CandidateProposalPayload
+
+The normalized candidate value object contains at least:
+
+```text
+CandidateProposalPayload
+- normalized_draft_payload
+- proposal_draft_instance_identity
+- primary_change_intent_kind
+- change_dimensions[]
+- candidate_bindings
+- candidate_requirements
+- candidate_source_selections
+- candidate_semantic_payload
+- candidate_proposal_identity
+```
+
+No additional `candidate_materialization_input_identity` is introduced.
+
+### 3.2 Candidate proposal identity
+
+`candidate_proposal_identity` is a versioned canonical identity over the normalized candidate payload. The exact canonical namespace and field ordering are frozen by the future owning WP1-C implementation contract, but all consumers in this protocol must bind the same identity.
+
+The following invariant is mandatory:
+
+```text
+EvidenceClosureInputManifest
+-> binds candidate_proposal_identity
+
+ProposalVerificationInputManifest
+-> binds the same candidate_proposal_identity
+
+successful ProposalRevision materialization
+-> materializes the same candidate_proposal_identity
+```
+
+This prevents:
+
+```text
+Closure evaluates A
+Verifier evaluates B
+Revision persists C
+```
+
+### 3.3 Candidate identity immutability
+
+Any change to the normalized draft payload, change intent, change dimensions, candidate bindings, candidate requirements, candidate source selections, or candidate semantic payload that participates in the canonical identity yields a different `candidate_proposal_identity` and therefore requires a new Closure input and evaluation.
+
+## 4. Evidence Obligation generation
+
+### 4.1 EvidenceObligationSet
+
+`EvidenceObligationSet` is the formal persisted result of deterministic obligation generation for one candidate Proposal.
+
+It contains value-object entries rather than child aggregates:
+
+```text
+ObligationTemplateEntry
+ObligationInstanceEntry
+ClaimEntry
+ClaimInstanceEntry
+GatePolicyEntry
+```
+
+### 4.2 Identity separation
+
+Template semantics and candidate-specific instances must remain distinguishable:
+
+```text
+obligation_template_identity
+obligation_instance_identity
+
+claim_semantic_identity
+claim_instance_identity
+```
+
+A template identity describes reusable semantics. An instance identity binds those semantics to the specific candidate, source scope, candidate binding, or other bounded input required by the generation profile.
+
+### 4.3 Obligation generation profile
+
+Obligations are generated from:
+
+```text
+candidate_proposal_identity
+primary_change_intent_kind
+change_dimensions[]
+versioned Obligation Generation Profile
+server-supported registries
+```
+
+The Agent may provide structured candidate facts used by the profile, but it does not author executable obligation rules.
+
+### 4.4 Claim resolution model
+
+Each Claim uses orthogonal cardinality and composition policies.
+
+Cardinality policies:
+
+```text
+exactly_one
+at_least_one
+all_required
+zero_or_more
+```
+
+Composition policies:
+
+```text
+scalar
+unordered_set
+precedence_chain
+named_tuple
+```
+
+Additional bounded constraints include:
+
+```text
+mutual_exclusion_groups[]
+required_claim_codes[]
+```
+
+This structure prevents Claim resolution from being encoded as free-form evaluator prose.
+
+### 4.5 Relationship to ProposalRequirementManifest
+
+Successful materialization must preserve the exact evidence-obligation lineage:
+
+```text
+EvidenceObligationSet
+-> successful materialization
+-> ProposalRequirementManifest
+   references the exact obligation_set_identity
+```
+
+`ProposalRequirementManifest` may contain additional non-evidence requirements, but its Evidence Closure portion must not regenerate a different obligation set.
+
+The following is forbidden:
+
+```text
+Closure evaluates ObligationSet A
+-> materialization regenerates Evidence RequirementSet B
+```
+
+## 5. Candidate bindings and claim model
+
+### 5.1 Two-stage candidate binding resolution
+
+Candidate bindings use a bounded two-stage model:
+
+```text
+1. candidate enumeration / proposal
+2. authoritative candidate resolution
+```
+
+The first stage may contain multiple candidate bindings discovered from repository evidence, project state, authenticated user input, or Agent-proposed mappings.
+
+The second stage resolves the binding only through a server-supported deterministic rule, authenticated user selection where the contract permits it, or an already-authoritative domain fact.
+
+If authoritative resolution is not possible, the binding remains unresolved. An LLM preference alone does not convert a candidate into an authoritative binding.
+
+### 5.2 Candidate binding set
+
+The resolved and unresolved candidate bindings consumed by Closure are carried as:
+
+```text
+candidate_binding_set
+```
+
+inside the `EvidenceClosureInputManifest`. Their exact implementation schema is deferred to the owning WP1-C plan, but the manifest must make the selected candidates and unresolved candidates deterministic and replayable.
+
+### 5.3 ClaimEvidenceRelation
+
+Authoritative claim-to-evidence semantics are represented by bounded value objects:
+
+```text
+ClaimEvidenceRelation
+- supports
+- contradicts
+- limits_scope
+- establishes_precondition
+```
+
+### 5.4 EvidenceLineageRelation
+
+Evidence-to-evidence lineage is separate from claim semantics:
+
+```text
+EvidenceLineageRelation
+- derived_from
+- revalidated_from
+- supersedes
+- duplicates
+```
+
+The two relation families must not be conflated.
+
+### 5.5 Relation provenance
+
+Relation provenance must distinguish at least:
+
+```text
+deterministic_extractor
+authenticated_user_statement
+approved_project_policy
+agent_mapping_proposal
+```
+
+An Agent may produce:
+
+```text
+AgentEvidenceMappingProposal
+```
+
+but an Agent-proposed relation is not authoritative merely because it is well-formed. If program code cannot validate it under a supported rule, the corresponding Claim remains `unresolved`.
+
+## 6. Evidence Closure Input Manifest
+
+### 6.1 Purpose
+
+`EvidenceClosureInputManifest` is the immutable, persisted semantic input to deterministic Closure evaluation. `EvidenceUniverseManifest` is not a separate persisted object.
+
+The manifest contains at least:
+
+```text
+candidate_proposal_identity
+obligation_set_identity
+
+repository_snapshot_identity
+inspection_result_identity
+repository_evidence_manifest_identity
+
+research_context_revision_identity
+project_policy_revision_identity
+context_source_revision_set_identity
+
+candidate_binding_set
+universe_scope_assessments[]
+evidence_selection_entries[]
+claim_evidence_relations[]
+evidence_lineage_relations[]
+search_coverage_refs[]
+dynamic_boundary_refs[]
+external_boundary_refs[]
+external_observation_refs[]
+
+gate_policy_identity
+closure_input_manifest_identity
+```
+
+### 6.2 Evidence selection completeness
+
+Evidence selection must be explicit enough for replay to answer:
+
+1. which authoritative evidence items were eligible;
+2. which items were selected for each Claim or Obligation;
+3. which required source scopes were unresolved, unsupported, blocked, or omitted by policy;
+4. whether any selected item was superseded or invalidated by authoritative lineage.
+
+A ranked model context or ContextCompilation cannot substitute for this manifest.
+
+### 6.3 Semantic identity exclusions
+
+The Closure semantic identity must not depend on presentation-only or Agent-consumption-only artifacts. In particular:
+
+```text
+ContextCompilation identity
+MUST NOT be included in closure_input_manifest_identity.
+```
+
+## 7. Search coverage, source domains, and external boundaries
+
+### 7.1 Universe completeness is scoped
+
+Evidence-universe completeness is evaluated per:
+
+```text
+Obligation
+x Source Domain
+x Required Scope
+```
+
+A single global `universe_complete` boolean is insufficient.
+
+Each required scope assessment uses one of:
+
+```text
+complete_within_supported_scope
+incomplete
+heuristic_only
+blocked
+```
+
+### 7.2 SearchCoverage contract
+
+A SearchCoverage record or value object referenced by the manifest contains at least:
+
+```text
+eligible_source_scope_identity
+coverage_domain_identity
+supported_construct_kinds[]
+unsupported_construct_kinds[]
+unknown_scope_identities[]
+
+search_semantics:
+- exhaustive_exact
+- exhaustive_structural
+- bounded_exhaustive
+- heuristic
+- ranked_sampling
+
+coverage_complete
+truncated
+```
+
+### 7.3 Bounded negative conclusions
+
+The following principle is normative:
+
+```text
+absence of evidence
+!= evidence of absence
+```
+
+A bounded negative Claim may be supported only when all of the following hold for every required scope:
+
+```text
+required scope covered
++ search semantics supports the negative conclusion
++ coverage_complete = true
++ truncated = false
++ required unknown scope set is empty
+```
+
+Heuristic or ranked-sampling search cannot establish exhaustive absence.
+
+### 7.4 Dynamic and external boundaries
+
+`dynamic_boundary_refs[]` and `external_boundary_refs[]` explicitly identify evidence requirements that cannot be satisfied from the current immutable repository/context evidence universe alone.
+
+The Closure Evaluator must not perform ad hoc environment, scheduler, checkpoint, or remote-service reads while evaluating. Such evidence must arrive through an immutable, identity-bearing observation contract.
+
+## 8. Deterministic Evidence Closure evaluation
+
+### 8.1 Evaluator boundary
+
+`EvaluateEvidenceClosure` consumes only immutable, identity-bound inputs plus versioned evaluator/gate profiles. It produces a canonical result payload and does not directly materialize a ProposalRevision.
+
+### 8.2 Acceptance Rule DSL
+
+The evaluator supports only a finite rule DSL:
+
+```text
+ALL_OF
+ANY_OF
+NOT
+AT_LEAST_N
+EXACTLY_N
+```
+
+Leaf predicates come from a versioned server registry, including at least:
+
+```text
+REQUIRED_MODE_PRESENT
+REQUIRED_PROVENANCE_PRESENT
+NO_PROHIBITED_SUBSTITUTION
+REQUIRED_SCOPE_COVERED
+NO_BLOCKING_BOUNDARY
+CLAIM_CARDINALITY_SATISFIED
+USER_SELECTION_PRESENT
+```
+
+The DSL must enforce bounded resource and execution limits:
+
+```text
+max depth
+max node count
+max parameter bytes
+no cycles
+no Python
+no plugins
+no script paths
+no dynamic import
+```
+
+### 8.3 Obligation verdicts
+
+Each Obligation resolves to exactly one of:
+
+```text
+satisfied
+partial
+contradicted
+unresolved
+blocked
+```
+
+### 8.4 Global Closure verdict
+
+The complete Closure evaluation resolves to exactly one of:
+
+```text
+complete
+incomplete
+ambiguous
+blocked
+```
+
+Only:
+
+```text
+complete
+```
+
+may proceed to the Proposal Verifier.
+
+### 8.5 Human authority boundary
+
+Ordinary user approval must not transform a hard non-complete Closure verdict into `complete`.
+
+The user may instead provide an authoritative input that changes the next evaluation input, for example by:
+
+```text
+supplying missing information
+selecting a permitted candidate
+narrowing scope
+modifying the Proposal Draft or change intent
+changing an approved policy through its own authority workflow
+```
+
+That produces a new candidate/input identity and a new deterministic evaluation.
+
+## 9. Proposal Verification boundary
+
+### 9.1 Evaluation order
+
+The normative order is:
+
+```text
+Proposal Draft
+-> normalize CandidateProposalPayload
+-> generate EvidenceObligationSet
+-> build EvidenceClosureInputManifest
+-> EvaluateEvidenceClosure
+```
+
+If Closure is not `complete`:
+
+```text
+basic CAS
+-> persist EvidenceClosureAssessment
+-> Event / Outbox / Receipt as required by owning command contract
+-> no ProposalRevision
+```
+
+If Closure is `complete`:
+
+```text
+build ProposalVerificationInputManifest
+-> deterministic Proposal Verifier
+```
+
+### 9.2 Verifier completed but failed
+
+When the Verifier fully executes and produces a canonical result that does not pass:
+
+```text
+basic CAS
+-> atomically persist:
+   EvidenceClosureAssessment
+   ProposalVerificationAssessment
+   Event
+   Outbox
+   Receipt
+-> no ProposalRevision
+```
+
+This is the only case in which the new `ProposalVerificationAssessment` persisted object is created.
+
+### 9.3 Verifier did not complete
+
+A Verifier attempt is non-completed when no canonical verification result is produced. Examples include a verifier execution exception, runtime cancellation, or a verifier-input decoding/availability failure discovered after pre-execution validation but before a canonical result exists.
+
+These are technical/execution outcomes, not formal Proposal-verification verdicts. The failed attempt must:
+
+```text
+abort the command attempt
+-> persist no new EvidenceClosureAssessment
+-> persist no ProposalVerificationAssessment
+-> persist no ProposalRevision
+-> persist no formal materialization manifests
+-> persist no VerifierResult
+-> emit no success domain Event
+-> emit no success Outbox entry
+-> create no successful command Receipt
+```
+
+A previously committed, semantically reusable `EvidenceClosureAssessment` may be referenced read-only by its exact identity on a later valid attempt. The non-completed attempt must not create a replacement assessment merely to record that the Verifier failed to complete.
+
+This supplement defines and requires no new technical-audit persistence. If a pre-existing generic Runtime or technical-failure/audit mechanism is already defined elsewhere in LabPilot and is applicable under its own existing contract, that mechanism may record the failure using only its existing persisted object/event family and authority rules.
+
+This supplement MUST NOT introduce an Evidence Closure-specific aggregate, persisted object type, table, technical-failure record family, RuntimeEvent/event family, Outbox path, or Receipt for this purpose. If no applicable pre-existing generic mechanism exists, the non-completed Verifier attempt writes no technical audit record. Any such generic technical record is not a successful command Receipt and must not imply Proposal verification or materialization success.
+
+Retry semantics are:
+
+1. `verification_execution_failed`: bounded retry is permitted only when the Verifier is side-effect-free, the immutable verification inputs and `verification_evaluation_key` are unchanged, and the existing Runtime retry policy permits the retry.
+2. `verification_cancelled`: no automatic retry; a later caller may submit a new attempt if the same immutable inputs remain valid.
+3. `verification_input_unavailable` or `verification_input_corrupt`: non-retriable for the same evaluation input. The authoritative input must be repaired/replaced and the resulting identity/CAS state re-evaluated before another attempt.
+4. If unavailable/corrupt authoritative input is detected by basic CAS rather than during Verifier execution, the basic-CAS conflict rule in Section 11 applies instead.
+
+### 9.4 Verifier passed
+
+When the Verifier produces a canonical passing result:
+
+```text
+formal CAS / freshness validation
+-> atomically create or persist:
+   EvidenceClosureAssessment
+   ProposalRevision
+   ProposalRequirementManifest
+   SemanticBindingManifest
+   SourceSelectionManifest
+   VerifierResult
+   Event
+   Outbox
+   Receipt
+```
+
+Every artifact in the successful transaction must correspond to the same `candidate_proposal_identity` and `obligation_set_identity` where applicable. Nothing from this successful-materialization write set is committed before formal CAS passes.
+
+### 9.5 Closure and Verification are not interchangeable
+
+Closure may be `complete` while the Proposal Verifier fails for a Proposal-specific formal reason. Conversely, a candidate must not invoke the Verifier as a shortcut around incomplete, ambiguous, or blocked evidence closure.
+
+## 10. Canonical identities and deterministic replay
+
+### 10.1 Closure identity classes
+
+The Closure path distinguishes at least:
+
+```text
+command_identity
+closure_evaluation_key
+closure_assessment_identity
+proposal_materialization_identity
+```
+
+### 10.2 Verification identity classes
+
+The Verification path symmetrically distinguishes:
+
+```text
+verification_evaluation_key
+verification_result_identity
+```
+
+### 10.3 Evaluation key versus result identity
+
+The distinction is normative:
+
+```text
+evaluation_key
+= immutable evaluator inputs + evaluator profile
+
+assessment/result identity
+= evaluation_key + canonical result payload
+```
+
+An evaluation key identifies the deterministic computation request. An assessment/result identity identifies the canonical result of that computation.
+
+### 10.4 Semantic reuse and determinism violation
+
+For the same evaluation key:
+
+```text
+same canonical result payload
+-> semantic reuse
+
+different canonical result payload
+-> DeterminismViolation
+```
+
+A concurrency loser must:
+
+```text
+rollback
+-> reload winner
+-> compare canonical payload
+```
+
+If the payload differs, the original command fails. A `DeterminismViolation` does not authorize any new Evidence Closure-specific audit persistence. If an already-existing generic Runtime/technical-audit mechanism applies under its own existing contract, it may record the technical failure using only that mechanism's existing schema/event family. Otherwise no technical audit record is written. In all cases, no successful command Receipt is created for the failed deterministic comparison.
+
+### 10.5 Materialization identity
+
+`proposal_materialization_identity` must bind the exact candidate Proposal, accepted Closure result, Verification result, and required authoritative input identities needed by the owning WP1-C materialization contract. It must not be derived from free-form model explanation text.
+
+## 11. CAS, concurrency, and transaction semantics
+
+### 11.1 Basic CAS applies to every verdict
+
+Before persisting any candidate Closure or Verification assessment, the owning command must verify at least:
+
+```text
+expected_draft_version
+proposal_draft_instance_identity
+current source pointer identities
+obligation_set_identity
+closure_input_manifest_identity
+generation/evaluator profile still supported
+inputs still resolvable and not corrupt
+```
+
+If any check fails:
+
+```text
+-> conflict
+-> do not persist the candidate Assessment
+```
+
+A basic-CAS conflict also produces no success domain Event, no success Outbox entry, and no successful command Receipt for that failed attempt. Existing committed reusable artifacts may be referenced read-only by exact identity but are not rewritten by the conflicting attempt.
+
+### 11.2 Formal CAS applies only to materialization
+
+Successful Proposal materialization performs the basic CAS plus formal freshness and binding checks, including as applicable:
+
+```text
+RepositoryRegistration active
+Snapshot clean
+Snapshot current
+required Inspector profile allowed
+Evidence binding valid
+Research Context active/current
+Project Policy approved/current
+Dataset bindings valid
+Environment bindings valid
+Execution bindings valid
+Budget bindings valid
+```
+
+The formal CAS is the final commit gate for the materialization path. Candidate `EvidenceClosureAssessment`, `VerifierResult`, `ProposalRevision`, formal manifests, Event, Outbox, and successful Receipt for that attempt remain uncommitted until the formal CAS passes.
+
+The owning WP1-C plan freezes the exact check set and typed conflict taxonomy before implementation, but it may not change the zero-new-domain-write rule for formal-CAS failure.
+
+### 11.3 External work stays outside the write transaction
+
+Git, filesystem reads, external observations, scheduler reads, checkpoint inspection, and remote-service access must occur outside the authoritative write UoW.
+
+The write transaction consumes immutable identities/results and performs only short authoritative validation, CAS, and persistence.
+
+### 11.4 Result matrix
+
+The architecture-level result matrix is exact at the persistence boundary:
+
+| Closure | Verifier | CAS result | Persisted by this attempt | Command result | ProposalRevision |
+|---|---|---|---|---|---|
+| `incomplete` / `ambiguous` / `blocked` | not run | basic CAS pass | `EvidenceClosureAssessment` + success domain Event + Outbox + successful Receipt | committed non-materialization result | no |
+| any | not run / completed / passed | basic CAS conflict | no new candidate assessment, verification assessment, domain Event, Outbox, or successful Receipt | typed conflict | no |
+| `complete` | did not complete; no canonical result | persistence CAS not reached | no new `EvidenceClosureAssessment`, `ProposalVerificationAssessment`, `VerifierResult`, domain Event, Outbox, or successful Receipt | typed verifier non-completion error | no |
+| `complete` | completed, failed | basic CAS pass | `EvidenceClosureAssessment` + `ProposalVerificationAssessment` + success domain Event + Outbox + successful Receipt | committed verification-failed result | no |
+| `complete` | passed | formal CAS pass | `EvidenceClosureAssessment` + ProposalRevision + formal manifests + VerifierResult + success domain Event + Outbox + successful Receipt | committed materialization result | yes |
+| `complete` | passed | formal CAS conflict / freshness failure | no new `EvidenceClosureAssessment`, `ProposalVerificationAssessment`, ProposalRevision, formal manifests, VerifierResult, domain Event, Outbox, or successful Receipt | typed formal-CAS/freshness conflict | no |
+
+For the two zero-write conflict rows and the non-completed-Verifier row, an already committed semantically reusable assessment/result may be loaded or referenced read-only by exact identity. The failed attempt must not rewrite it, emit a new success event, or create a successful Receipt merely to record the failure.
+
+Technical failure/audit recording is outside the Evidence Closure persistence model defined by this supplement. This supplement neither defines nor requires a new technical-audit record.
+
+For verifier non-completion, `DeterminismViolation`, or CAS conflict:
+
+- an already-existing generic Runtime/technical-audit mechanism MAY be reused only when it is applicable under its own existing contract;
+- it MUST use only that mechanism's already-defined persisted object/event family and authority semantics;
+- this supplement MUST NOT introduce an Evidence Closure-specific aggregate, object type, table, event family, Outbox path, or command Receipt for technical audit;
+- if no applicable pre-existing mechanism exists, no technical audit record is written.
+
+Any such generic technical record remains outside the successful domain-command write set and cannot be interpreted as a successful Receipt or formal Closure/Verification result.
+
+### 11.5 Concurrency and deterministic winner comparison
+
+When two callers race to persist the same semantic evaluation:
+
+1. uniqueness/CAS chooses at most one winner;
+2. loser mutation is rolled back;
+3. loser reloads the committed winner;
+4. canonical result payloads are compared;
+5. identical results are semantically reused;
+6. different results raise `DeterminismViolation`;
+7. a failed loser never receives a successful command Receipt.
+
+## 12. WP2 Agent consumption and known-unknown handling
+
+### 12.1 Agent role
+
+The Agent may:
+
+```text
+propose Candidate Proposal content
+propose candidate bindings
+request supported searches
+propose evidence mappings
+request authenticated user resolution
+explain persisted Closure/Verification assessments
+```
+
+The Agent may not:
+
+```text
+declare formal Closure complete
+write authoritative ClaimEvidenceRelation without validation
+invent unsupported SearchCoverage
+turn a heuristic absence into exhaustive absence
+override a hard incomplete/ambiguous/blocked result
+materialize a ProposalRevision directly
+```
+
+### 12.2 Known-unknown states are first-class
+
+Unknown or unsupported scopes must remain explicit through:
+
+```text
+unknown_scope_identities[]
+incomplete
+heuristic_only
+blocked
+unresolved
+ambiguous
+```
+
+They must not be silently dropped from Agent context or collapsed into false negatives.
+
+### 12.3 Human-input path
+
+When a Closure gap is user-resolvable, WP2 may use the existing typed `REQUEST_HUMAN_INPUT` continuation contract. The user response becomes an authoritative input only according to its owning domain contract; it does not directly rewrite a persisted Closure verdict.
+
+### 12.4 Abstention and evidence closure
+
+A required-evidence gap that cannot be resolved within the authorized scope may support the existing structured abstention path defined by Architecture Supplement 08. Evidence Closure therefore provides authoritative structured facts that WP2 may consume when deciding whether to ask, continue, or abstain; it does not add a new top-level Agent decision.
+
+## 13. Deferred decisions and stop conditions
+
+### 13.1 ExternalEvidenceObservation protocol
+
+This version freezes only the conceptual protocol:
+
+```text
+ExternalEvidenceObservation
+- source_domain
+- observation_specification_identity
+- normalized_result_identity
+- availability_status
+- captured_at
+- observation_profile_identity
+- observation_identity
+```
+
+Raw Secrets must never be persisted in the observation.
+
+The Closure Evaluator may consume only immutable observation identities/results already materialized by an authorized component. It must not perform ad hoc reads from environment variables, Slurm, checkpoints, remote services, or similar dynamic sources during evaluation.
+
+Concrete persistence, adapters, freshness windows, and authorization for `ExternalEvidenceObservation` are deferred.
+
+### 13.2 Deferred implementation details
+
+The following remain for the owning future plans:
+
+- concrete SQL tables and indexes for the four new persisted objects;
+- exact Canonical JSON namespaces and field ordering for new identities;
+- concrete registry versions and compatibility policy for obligation-generation profiles;
+- concrete SearchCoverage extractor/profile ownership;
+- exact external-observation persistence and refresh contracts;
+- exact WP1-C Proposal materialization command/API shapes;
+- exact UI and AgentOps projections.
+
+### 13.3 Stop conditions for future detailed planning
+
+A future implementation plan must stop and reopen architecture review if it requires any of the following:
+
+```text
+more than the four new persisted object types without a new supplement revision
+an unbounded or executable acceptance-rule language
+Agent-authored authoritative evidence relations without deterministic validation
+Closure semantic identity derived from ContextCompilation
+ordinary human override of hard non-complete Closure
+Proposal materialization from a different candidate_proposal_identity than Closure/Verification evaluated
+external dynamic reads inside the Closure Evaluator write transaction
+redefinition of accepted WP1-A Repository identities
+```
+
+### 13.4 Overall Design v0.6 timing
+
+This supplement does not supersede WP1 Domain and Context Overall Design v0.5 for WP1-A.
+
+Do not publish an Overall Design v0.6 merely to start WP1-A Task 9. The intended governance sequence is:
+
+```text
+complete WP1-A
+-> approve this supplement
+-> prepare WP1-C detailed planning
+-> publish Overall Design v0.6 that consumes this supplement
+-> generate WP1-C detailed plan
+-> generate WP1-C dependency manifest
+```
+
+The existing `wp1-a-v0.2.dependencies.sha256` remains unchanged.
+
+## 14. Acceptance and traceability
+
+### 14.1 Architecture acceptance criteria
+
+Before this document may be promoted from `Review Candidate` to `Approved Planning Input`, independent review must confirm that it freezes all of the following without reopening WP1-A:
+
+```text
+[ ] four-object persistence ceiling
+[ ] exactly one primary_change_intent_kind
+[ ] at most three server-supported change_dimensions
+[ ] CandidateProposalPayload and candidate_proposal_identity
+[ ] EvidenceObligationSet
+[ ] obligation/claim template and instance identity separation
+[ ] bounded candidate-binding resolution
+[ ] EvidenceClosureInputManifest
+[ ] no separate EvidenceUniverseManifest persistence object
+[ ] per-obligation/source-domain/required-scope coverage
+[ ] explicit evidence-selection completeness
+[ ] ClaimEvidenceRelation / EvidenceLineageRelation separation
+[ ] SearchCoverage semantics and supported-domain rules
+[ ] bounded negative-claim requirements
+[ ] finite Acceptance Rule DSL
+[ ] obligation and global Closure verdict registries
+[ ] deterministic Closure Evaluator
+[ ] Closure / Proposal Verifier separation
+[ ] ProposalVerificationAssessment only for completed-but-failed verification
+[ ] explicit zero-write semantics for non-completed Verifier attempts
+[ ] technical audit may only reuse an applicable pre-existing generic Runtime mechanism; otherwise no audit record is written
+[ ] evaluation-key / result-identity separation
+[ ] semantic reuse and DeterminismViolation behavior
+[ ] basic CAS for every persisted verdict
+[ ] formal CAS as the final successful-materialization commit gate
+[ ] zero-new-domain-write semantics for formal-CAS/freshness conflict
+[ ] loser rollback / reload / canonical comparison
+[ ] ExternalEvidenceObservation protocol only
+[ ] no ordinary-human override of hard Closure failure
+[ ] exact architecture-level transaction result matrix
+[ ] ProposalRequirementManifest references exact obligation_set_identity
+[ ] deferred decisions and architecture stop conditions
+```
+
+### 14.2 WP1-A governance conclusion
+
+The following conclusion is normative:
+
+```text
+WP1-A Task 0–8:
+accepted and unaffected
+
+WP1-A Task 9+:
+continue under:
+- WP1 Domain and Context Overall Design v0.5
+- WP1-A Project / Repository Implementation Plan v0.2
+- existing WP1-A dependency manifest
+
+this Architecture Supplement:
+non-operative for WP1-A execution
+```
+
+Task 9 therefore remains:
+
+```text
+Task 9: Add Snapshot, InspectionBundle, BundleEntry, and Freshness Persistence
+```
+
+with its existing WP1-A v0.2 scope.
+
+### 14.3 Approval effect
+
+If independent review approves this candidate, a separate docs-only approval commit must:
+
+1. change this document's status from `Review Candidate` to `Approved Planning Input`;
+2. update `DOCUMENT-STATUS.md` to record that this supplement applies to future WP1-C/WP2 planning and does not alter the WP1-A v0.2 execution baseline;
+3. leave Overall Design v0.5, WP1-A plan v0.2, Task 6 identity contract, and WP1-A dependency manifest unchanged.
+
+The resulting approval commit becomes the actual future Task 9 start baseline. The accepted Task 8 implementation commit remains:
+
+```text
+ab3e773ee957b02f257df3f60f3ea3492626bcfa
+```
+
+and is not redefined by this planning checkpoint.
