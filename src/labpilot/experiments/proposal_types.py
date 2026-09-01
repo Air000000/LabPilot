@@ -19,7 +19,12 @@ type ExperimentType = Literal[
 ]
 type ReproducibilityLevel = Literal["strict", "best_effort"]
 type DatasetReferenceType = Literal["local_path", "uri"]
-type ValidationRuleKind = Literal["artifact_exists", "metric_finite"]
+type ValidationRuleKind = Literal[
+    "artifact_exists",
+    "metric_finite",
+    "metric_gte",
+    "metric_lte",
+]
 
 _PROPOSAL_PAYLOAD_NAMESPACE = "labpilot-proposal-payload:v1"
 _DATASET_REFERENCE_NAMESPACE = "labpilot-dataset-reference:v1"
@@ -87,6 +92,17 @@ class MetricDeclaration:
 class ValidationRule:
     kind: ValidationRuleKind
     subject: str
+    threshold: Decimal | None = None
+
+    def __post_init__(self) -> None:
+        if self.kind in {"artifact_exists", "metric_finite"}:
+            if self.threshold is not None:
+                raise ValueError("threshold is only valid for metric_gte and metric_lte")
+        elif self.kind in {"metric_gte", "metric_lte"}:
+            if type(self.threshold) is not Decimal or not self.threshold.is_finite():
+                raise ValueError("threshold must be a finite Decimal")
+        else:
+            raise ValueError("unknown validation rule kind")
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,7 +167,13 @@ def _environment_expectation_value(
 def _validation_protocol_value(
     rules: tuple[ValidationRule, ...],
 ) -> list[CanonicalValue]:
-    return [{"kind": rule.kind, "subject": rule.subject} for rule in rules]
+    values: list[CanonicalValue] = []
+    for rule in rules:
+        value: dict[str, CanonicalValue] = {"kind": rule.kind, "subject": rule.subject}
+        if rule.threshold is not None:
+            value["threshold"] = rule.threshold
+        values.append(value)
+    return values
 
 
 def _proposal_payload_value(payload: ProposalPayload) -> dict[str, CanonicalValue]:

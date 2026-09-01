@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from decimal import Decimal
 from math import isfinite, prod
 from typing import Literal
 from uuid import UUID
@@ -9,7 +10,7 @@ from labpilot.experiments.proposal_types import ProposalPayload
 
 type VerificationSeverity = Literal["blocking", "warning"]
 
-VERIFIER_PROFILE = "slice1-v1"
+VERIFIER_PROFILE = "slice1-v2"
 _RESULT_HASH_NAMESPACE = "labpilot-proposal-verification-result:v1"
 
 
@@ -480,6 +481,15 @@ class ProposalVerifier:
                     message="Artifact names must be unique.",
                 )
             )
+        artifact_paths = [artifact.relative_path for artifact in payload.artifacts]
+        if len(set(artifact_paths)) != len(artifact_paths):
+            findings.append(
+                _finding(
+                    "artifact_path_duplicate",
+                    field="artifacts",
+                    message="Artifact relative paths must be unique.",
+                )
+            )
         for artifact in payload.artifacts:
             if artifact.required and not _is_safe_relative_path(
                 artifact.relative_path,
@@ -510,6 +520,32 @@ class ProposalVerifier:
                         "metric_artifact_missing",
                         field="metrics",
                         message="Every Metric must reference a declared Artifact.",
+                    )
+                )
+
+        declared_metrics = set(metric_names)
+        for rule in payload.validation_rules:
+            threshold = getattr(rule, "threshold", None)
+            if rule.kind in {"artifact_exists", "metric_finite"}:
+                valid = threshold is None
+            elif rule.kind in {"metric_gte", "metric_lte"}:
+                valid = type(threshold) is Decimal and threshold.is_finite()
+                if valid and rule.subject not in declared_metrics:
+                    findings.append(
+                        _finding(
+                            "metric_validation_subject_missing",
+                            field="validation_rules",
+                            message="Threshold validation must reference a declared Metric.",
+                        )
+                    )
+            else:
+                valid = False
+            if not valid:
+                findings.append(
+                    _finding(
+                        "validation_threshold_invalid",
+                        field="validation_rules",
+                        message="Validation rule threshold is invalid.",
                     )
                 )
 

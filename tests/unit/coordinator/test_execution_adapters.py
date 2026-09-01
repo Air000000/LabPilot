@@ -1,6 +1,7 @@
 import importlib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -24,6 +25,7 @@ from labpilot.experiments.proposal_types import (
     DatasetReference,
     EnvironmentExpectation,
     ProposalPayload,
+    ValidationRule,
     dataset_reference_hash,
     environment_expectation_hash,
     proposal_payload_hash,
@@ -252,3 +254,26 @@ async def test_snapshot_adapter_rejects_returned_identity_mismatch(
         )
 
     assert captured.value.reason_code == "REPOSITORY_SNAPSHOT_BINDING_MISMATCH"
+
+
+async def test_version_adapter_loads_pre_slice3_validation_rules() -> None:
+    adapters = importlib.import_module("labpilot.coordinator.execution_adapters")
+    rows, payload = _authority_rows()
+    legacy_payload = replace(
+        payload,
+        validation_rules=(
+            ValidationRule("artifact_exists", "model"),
+            ValidationRule("metric_finite", "accuracy"),
+        ),
+    )
+    revision = cast(ProposalRevisionRow, rows[(ProposalRevisionRow, REVISION_ID)])
+    version = cast(ExperimentVersionRow, rows[(ExperimentVersionRow, VERSION_ID)])
+    revision.payload_json = _payload_to_json(legacy_payload)
+    revision.payload_hash = proposal_payload_hash(legacy_payload)
+    version.proposal_payload_hash = revision.payload_hash
+
+    semantics = await adapters.VersionExecutionSemanticsAdapter(
+        _session_factory(rows)
+    ).load(VERSION_ID)
+
+    assert semantics.proposal_revision_id == REVISION_ID

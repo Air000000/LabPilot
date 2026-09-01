@@ -1,4 +1,5 @@
 from datetime import datetime
+from decimal import Decimal
 from math import isfinite
 from typing import Literal
 from uuid import UUID
@@ -59,8 +60,9 @@ class ArtifactDeclarationRequest(BaseModel):
 class ValidationRuleRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    kind: Literal["artifact_exists", "metric_finite"]
+    kind: Literal["artifact_exists", "metric_finite", "metric_gte", "metric_lte"]
     subject: str
+    threshold: Decimal | None = None
 
 
 class ProposalPayloadRequest(BaseModel):
@@ -136,7 +138,8 @@ class ProposalPayloadRequest(BaseModel):
                 for item in self.artifacts
             ),
             validation_rules=tuple(
-                ValidationRule(item.kind, item.subject) for item in self.validation_rules
+                ValidationRule(item.kind, item.subject, item.threshold)
+                for item in self.validation_rules
             ),
             timeout_seconds=self.timeout_seconds,
             max_retries=self.max_retries,

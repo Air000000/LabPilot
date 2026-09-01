@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
@@ -819,3 +820,30 @@ async def test_version_insert_failure_rolls_back_staged_decision(
 
         assert await _table_count(system.database, "experiment_design_decisions") == 0
         assert await _table_count(system.database, "experiment_versions") == 0
+
+
+
+@pytest.mark.integration
+async def test_threshold_validation_rule_persists_and_reloads_canonically(
+    isolated_database_url: str, tmp_path: Path
+) -> None:
+    from labpilot.experiments.proposal_models import ProposalRevisionRow
+
+    async with _proposal_system(isolated_database_url, tmp_path) as system:
+        payload = _payload(
+            system,
+            validation_rules=(
+                ValidationRule("artifact_exists", "model"),
+                ValidationRule("metric_finite", "accuracy"),
+                ValidationRule("metric_gte", "accuracy", Decimal("0.80")),
+            ),
+        )
+        revision = await _agent_revision(system, payload=payload)
+        reloaded = await system.service.get_revision(revision.proposal_revision_id)
+        async with system.database.session() as session:
+            row = await session.get(ProposalRevisionRow, revision.proposal_revision_id)
+
+    assert row is not None
+    assert row.payload_json["validation_rules"][-1]["threshold"] == "0.8"
+    assert "threshold" not in row.payload_json["validation_rules"][0]
+    assert reloaded.payload.validation_rules[-1].threshold == Decimal("0.8")

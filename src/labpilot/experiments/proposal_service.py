@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 from typing import cast
 from uuid import UUID, uuid4
 
@@ -9,6 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from labpilot.common.canonical_json import canonical_json_bytes
 from labpilot.common.commands import CommandContext
 from labpilot.common.errors import LabPilotError
 from labpilot.db.uow import SessionContextFactory, UnitOfWork
@@ -834,7 +836,13 @@ def _environment_from_json(value: dict[str, object]) -> EnvironmentExpectation:
 def _validation_to_json(
     values: tuple[ValidationRule, ...],
 ) -> list[dict[str, object]]:
-    return [{"kind": value.kind, "subject": value.subject} for value in values]
+    result: list[dict[str, object]] = []
+    for value in values:
+        item: dict[str, object] = {"kind": value.kind, "subject": value.subject}
+        if value.threshold is not None:
+            item["threshold"] = canonical_json_bytes(value.threshold).decode("utf-8")
+        result.append(item)
+    return result
 
 
 def _validation_from_json(
@@ -844,6 +852,11 @@ def _validation_from_json(
         ValidationRule(
             kind=cast(ValidationRuleKind, value["kind"]),
             subject=cast(str, value["subject"]),
+            threshold=(
+                Decimal(str(value["threshold"]))
+                if value.get("threshold") is not None
+                else None
+            ),
         )
         for value in values
     )

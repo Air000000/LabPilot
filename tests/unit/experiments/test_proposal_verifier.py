@@ -1,4 +1,5 @@
 from dataclasses import fields, replace
+from decimal import Decimal
 from types import SimpleNamespace
 from typing import cast
 from uuid import UUID
@@ -539,3 +540,46 @@ async def test_findings_and_result_hash_are_deterministic_for_mapping_order() ->
             ),
         )
     )
+
+
+async def test_artifact_relative_paths_must_be_unique() -> None:
+    result = await _verify(
+        _payload(
+            artifacts=(
+                ArtifactDeclaration("model", "out/model.pt", True),
+                ArtifactDeclaration("metadata", "out/model.pt", False),
+            )
+        )
+    )
+
+    assert "artifact_path_duplicate" in _codes(result)
+
+
+async def test_threshold_rule_subject_must_name_a_declared_metric() -> None:
+    threshold_rule = ValidationRule("metric_gte", "missing", Decimal("0.8"))
+    result = await _verify(
+        _payload(validation_rules=(
+            ValidationRule("artifact_exists", "model"),
+            ValidationRule("metric_finite", "accuracy"),
+            threshold_rule,
+        ))
+    )
+
+    assert "metric_validation_subject_missing" in _codes(result)
+
+
+async def test_threshold_rule_does_not_replace_metric_finite_coverage() -> None:
+    result = await _verify(
+        _payload(validation_rules=(
+            ValidationRule("artifact_exists", "model"),
+            ValidationRule("metric_gte", "accuracy", Decimal("0.8")),
+        ))
+    )
+
+    assert "metric_validation_missing" in _codes(result)
+
+
+async def test_verifier_profile_is_slice1_v2() -> None:
+    result = await _verify(_payload())
+
+    assert result.profile == "slice1-v2"

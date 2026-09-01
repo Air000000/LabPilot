@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator
+from decimal import Decimal
 from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import UUID
@@ -361,3 +362,21 @@ async def test_slice1_api_concurrent_advance_and_remote_policy(
             )
             assert blocked.status_code == 403
             assert remote.calls == []
+
+
+
+def test_threshold_rule_request_reaches_domain() -> None:
+    from labpilot.api.schemas.experiments import ProposalPayloadRequest
+
+    payload = _payload(UUID("10000000-0000-4000-8000-000000000001"), "a" * 64)
+    payload["validation_rules"] = [
+        {"kind": "artifact_exists", "subject": "model"},
+        {"kind": "metric_finite", "subject": "accuracy"},
+        {"kind": "metric_gte", "subject": "accuracy", "threshold": "0.80"},
+        {"kind": "metric_lte", "subject": "accuracy", "threshold": "1.0"},
+    ]
+
+    domain = ProposalPayloadRequest.model_validate(payload).to_domain()
+
+    assert domain.validation_rules[-2].threshold == Decimal("0.80")
+    assert domain.validation_rules[-1].threshold == Decimal("1.0")

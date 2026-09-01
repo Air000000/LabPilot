@@ -1,4 +1,5 @@
 from dataclasses import replace
+from decimal import Decimal
 from inspect import signature
 from uuid import UUID
 
@@ -126,6 +127,10 @@ def test_legacy_absent_train_argv_key_keeps_historical_hash() -> None:
     stored_json = proposal_service._payload_to_json(payload)
 
     assert "train_argv_template" not in stored_json
+    assert stored_json["validation_rules"] == [
+        {"kind": "artifact_exists", "subject": "model"},
+        {"kind": "metric_finite", "subject": "accuracy"},
+    ]
     assert proposal_payload_hash(payload) == (
         "de7b31452c083fa70fc986fc05938dd16f6595ae0427aa3f14f8f5a56d6d3ba1"
     )
@@ -257,3 +262,32 @@ def test_best_effort_dataset_reference_accepts_missing_stable_identity() -> None
     )
 
     assert value.stable_identity is None
+
+
+def test_threshold_validation_rule_has_decimal_hash_semantics() -> None:
+    rule = ValidationRule("metric_gte", "accuracy", Decimal("0.8"))
+
+    assert validation_protocol_hash((rule,)) != validation_protocol_hash(
+        (ValidationRule("metric_lte", "accuracy", Decimal("0.8")),)
+    )
+
+
+@pytest.mark.parametrize(
+    ("kind", "threshold"),
+    [
+        ("artifact_exists", Decimal("0.8")),
+        ("metric_finite", Decimal("0.8")),
+        ("metric_gte", None),
+        ("metric_lte", None),
+        ("metric_gte", Decimal("NaN")),
+        ("metric_lte", Decimal("Infinity")),
+        ("metric_gte", 0.8),
+        ("metric_lte", True),
+    ],
+)
+def test_validation_rule_rejects_invalid_threshold_combinations(
+    kind: str,
+    threshold: Decimal | float | bool | None,
+) -> None:
+    with pytest.raises(ValueError, match="threshold"):
+        ValidationRule(kind, "accuracy", threshold)  # type: ignore[arg-type]
