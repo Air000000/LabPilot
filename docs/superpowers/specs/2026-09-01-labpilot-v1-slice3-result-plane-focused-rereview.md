@@ -5,6 +5,8 @@ Date: 2026-09-01
 Reviewed branch baseline: a777377db2d4baa08575366c05e67ab245f0a769
 Reviewed design:
   docs/superpowers/specs/2026-08-31-labpilot-v1-slice3-result-plane-design.md
+Sequencing authority:
+  docs/labpilot/implementation/01a-slice2-to-slice3-sequencing-amendment-v0.3.1.md
 Verdict: APPROVE FOR DETAILED IMPLEMENTATION PLANNING
 Critical: 0
 Blocking: 0
@@ -14,9 +16,11 @@ Blocking: 0
 
 This is the single focused re-review requested after the prior `CHANGES REQUIRED` result. It does not reopen historical Architecture 07 and does not authorize production code by itself.
 
-The review checks the revised design against current V1 Scope v0.3, Architecture 10 v0.3, Master Roadmap v0.3, current Slice1/Slice2 contracts, and the actual dependency/runtime boundaries on `main`.
+The review checks the revised design against current V1 Scope v0.3, Architecture 10 v0.3, Master Roadmap v0.3, the narrow S2→S3 Sequencing Amendment v0.3.1, current Slice1/Slice2 contracts, and the actual dependency/runtime boundaries on `main`.
 
-The revised design now closes the previously identified blockers:
+The sequencing amendment resolves the original Roadmap §7.1 mismatch without claiming Slice2 production acceptance: the bounded Slice2 MVP closeout is sufficient for Slice3 JIT planning, while Slice2 production hardening remains deferred.
+
+The revised design closes the previously identified blockers:
 
 ```text
 B1 Dataset / Environment validation semantics       PASS
@@ -34,7 +38,7 @@ strict result-json-v1 grammar                       PASS
 results_validation namespace                        PASS
 minimal SSE retained without Projection Worker      PASS
 Core acceptance gate alignment                      PASS
-minimal hash budget                                  PASS
+minimal hash budget                                 PASS
 ```
 
 ## 2. Normative clarifications from focused re-review
@@ -128,10 +132,13 @@ with these fixed boundaries:
 Focused re-review result:
 
 ```text
+Slice2 bounded MVP planning dependency: SATISFIED
+Slice2 production acceptance: NO
+Slice2 production hardening: DEFERRED
 Design direction: APPROVED
 Design blockers: NONE
 Detailed implementation planning: AUTHORIZED
 Slice3 implementation code: NOT YET AUTHORIZED
 ```
 
-The next step is to write the Slice3 Detailed Implementation Plan against a planning baseline that contains this review and the aligned `DOCUMENT-STATUS.md`. The plan must receive its focused review/approval before an implementation worktree is created.
+The next step is to write the Slice3 Detailed Implementation Plan against a planning baseline that contains this review, the S2→S3 Sequencing Amendment v0.3.1, and the aligned `DOCUMENT-STATUS.md`. The plan must receive its focused review/approval before an implementation worktree is created.
