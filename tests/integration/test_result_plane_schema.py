@@ -121,7 +121,7 @@ async def test_result_plane_schema_enforces_authoritative_constraints(
                     "validation_protocol_hash, extraction_profile_version, validator_version, "
                     "input_snapshot_json, verdict, reason_json, warning_json) VALUES "
                     "(:id, :attempt, :protocol, 'extract-v1', 'validator-v1', '{}'::jsonb, "
-                    "'valid', '{}'::jsonb, '[]'::jsonb)"
+                    "'valid', '{}'::jsonb, '{\"warnings\":[]}'::jsonb)"
                 ),
                 {"id": report_id, "attempt": attempt_id, "protocol": "b" * 64},
             )
@@ -139,7 +139,7 @@ async def test_result_plane_schema_enforces_authoritative_constraints(
                     "revision_number, summary_protocol_version, included_result_refs_json, "
                     "excluded_reasons_json, warning_json, aggregates_json) VALUES "
                     "(:id, :batch, 1, 'summary-v1', '[]'::jsonb, '[]'::jsonb, "
-                    "'[]'::jsonb, '{}'::jsonb)"
+                    "'{\"warnings\":[]}'::jsonb, '{}'::jsonb)"
                 ),
                 {"id": str(uuid4()), "batch": batch_id},
             )
@@ -175,7 +175,7 @@ async def test_result_plane_schema_enforces_authoritative_constraints(
                     "validation_protocol_hash, extraction_profile_version, validator_version, "
                     "input_snapshot_json, verdict, reason_json, warning_json) VALUES "
                     "(:id, :attempt, :protocol, 'extract-v1', 'validator-v1', '{}'::jsonb, "
-                    "'valid', '{}'::jsonb, '[]'::jsonb)",
+                    "'valid', '{}'::jsonb, '{\"warnings\":[]}'::jsonb)",
                     {"id": str(uuid4()), "attempt": attempt_id, "protocol": "b" * 64},
                 ),
                 (
@@ -183,7 +183,7 @@ async def test_result_plane_schema_enforces_authoritative_constraints(
                     "validation_protocol_hash, extraction_profile_version, validator_version, "
                     "input_snapshot_json, verdict, reason_json, warning_json) VALUES "
                     "(:id, :attempt, :protocol, 'extract-v2', 'validator-v1', '{}'::jsonb, "
-                    "'other', '{}'::jsonb, '[]'::jsonb)",
+                    "'other', '{}'::jsonb, '{\"warnings\":[]}'::jsonb)",
                     {"id": str(uuid4()), "attempt": attempt_id, "protocol": "f" * 64},
                 ),
                 (
@@ -207,7 +207,7 @@ async def test_result_plane_schema_enforces_authoritative_constraints(
                     "revision_number, summary_protocol_version, included_result_refs_json, "
                     "excluded_reasons_json, warning_json, aggregates_json) VALUES "
                     "(:id, :batch, 1, 'summary-v1', '[]'::jsonb, '[]'::jsonb, "
-                    "'[]'::jsonb, '{}'::jsonb)",
+                    "'{\"warnings\":[]}'::jsonb, '{}'::jsonb)",
                     {"id": str(uuid4()), "batch": batch_id},
                 ),
                 (
@@ -215,7 +215,7 @@ async def test_result_plane_schema_enforces_authoritative_constraints(
                     "revision_number, summary_protocol_version, included_result_refs_json, "
                     "excluded_reasons_json, warning_json, aggregates_json) VALUES "
                     "(:id, :batch, 0, 'summary-v1', '[]'::jsonb, '[]'::jsonb, "
-                    "'[]'::jsonb, '{}'::jsonb)",
+                    "'{\"warnings\":[]}'::jsonb, '{}'::jsonb)",
                     {"id": str(uuid4()), "batch": batch_id},
                 ),
             )
