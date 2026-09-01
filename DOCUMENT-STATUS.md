@@ -1,6 +1,6 @@
 # LabPilot 文档状态
 
-> 当前状态：R0 仍为 V1 rebaseline authority root；Slice 1 已 Accepted；Slice 2 MVP 已验证并集成到 `main`，production hardening deferred；Slice 3 已进入 JIT design/planning，但 implementation 尚未授权。
+> 当前状态：R0 仍为 V1 rebaseline authority root；Slice 1 已 Accepted；Slice 2 MVP 已验证并集成到 `main`，production hardening deferred；Slice 3 Result Plane design 已通过 focused re-review，Detailed Implementation Plan drafting 已授权，但 implementation 尚未授权。
 
 | 文档 | 状态 | 用途 |
 |---|---|---|
@@ -67,9 +67,10 @@ Slice-specific detailed plans must record their exact planning baseline commit a
 - Slice 2 MVP: Validated and integrated into `main`
 - Slice 2 integration commit: `3e3cebf32877cfe8d65f76a393eefb20ac41d798`
 - Slice 2 production hardening: Deferred; no production-acceptance claim
-- Slice 3 Design: JIT drafting/review in progress
-- Slice 3 Detailed Implementation Plan: Not yet approved
-- Slice 3 implementation: **NOT authorized** until design focused re-review passes and the detailed implementation plan is approved
+- Slice 3 Result Plane Design: **Approved after focused re-review**
+- Slice 3 focused re-review record: `docs/superpowers/specs/2026-09-01-labpilot-v1-slice3-result-plane-focused-rereview.md`
+- Slice 3 Detailed Implementation Plan: Drafting authorized; not yet approved
+- Slice 3 implementation: **NOT authorized** until the detailed implementation plan passes focused review and is approved
 - Task 8 accepted implementation commit: `ab3e773ee957b02f257df3f60f3ea3492626bcfa`
 - Task 9 accepted implementation commit: `949d22a676141cc279086775135610726b518c31`
 - Task 10 accepted implementation commit: `6d85b88c238714ebbd1fb1d7b90b0f93308f5006`
@@ -82,11 +83,11 @@ The Slice 2 MVP closeout is sufficient to unlock Slice 3 JIT planning. It does n
 Next authorized action:
 
 ```text
-Finish focused re-review of the revised Slice 3 Result Plane design.
-If no blockers remain:
-→ write the Slice 3 Detailed Implementation Plan JIT
-→ review and approve that plan
-→ only then authorize Slice 3 production code
+Write the Slice 3 Detailed Implementation Plan JIT
+→ bind the exact approved planning baseline
+→ run one focused plan review
+→ approve the plan if no blockers remain
+→ only then create the Slice 3 implementation worktree and start production code
 ```
 
 Slice 3 planning must remain subordinate to:
@@ -95,7 +96,8 @@ Slice 3 planning must remain subordinate to:
 V1 Scope v0.3
 > Architecture 10 v0.3
 > Master Roadmap v0.3
-> approved Slice 3 detailed plan / ADR once approved
+> approved Slice 3 design + focused re-review
+> approved Slice 3 detailed plan once approved
 ```
 
 Do not reopen historical Architecture 07 as a full processing-platform requirement. Do not treat deferred Slice 2 production hardening as a prerequisite for the Slice 3 MVP unless a concrete dependency is found.
