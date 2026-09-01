@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -297,5 +298,139 @@ async def test_internal_attempt_creation_revalidates_authority_and_retries_with_
         query = ExecutionQueryService(system.database.session)
         conflict_view = await query.get_attempt(conflict.attempt_id)
         batch_view = await query.get_batch(batch_id)
+        async with system.database.session() as session:
+            stored_attempts = tuple(
+                (
+                    await session.scalars(
+                        select(AttemptRow).where(
+                            AttemptRow.trial_id.in_([trial.trial_id for trial in trials])
+                        )
+                    )
+                ).all()
+            )
         assert conflict_view.status == "identity_conflict"
         assert batch_view.presentation_status == "failed_to_coordinate"
+        assert len(stored_attempts) == 6
+        assert tuple(
+            tuple(
+                sorted(
+                    attempt.attempt_number
+                    for attempt in stored_attempts
+                    if attempt.trial_id == trial.trial_id
+                )
+            )
+            for trial in trials
+        ) == ((1,), (1, 2), (1,), (1,), (1,), (), (), ())
+
+
+@pytest.mark.integration
+async def test_trial_outcome_snapshot_returns_ordered_attempts_and_outcomes(
+    isolated_database_url: str, tmp_path: Path
+) -> None:
+    from labpilot.execution.batch_service import (
+        AttemptCreationService,
+        BatchApplicationService,
+        CancelBatch,
+        StartBatch,
+    )
+
+    async with _approved_version(isolated_database_url, tmp_path) as (system, version):
+        commands = BatchApplicationService(
+            system.database.session,
+            version_semantics=VersionExecutionSemanticsAdapter(system.database.session),
+        )
+        created = await _create(commands, version.experiment_version_id)
+        batch_id = UUID(created.envelope.primary_result_id)
+        await commands.start_batch(
+            context=_context(),
+            idempotency_key="start-for-outcomes",
+            command=StartBatch(batch_id, expected_row_version=1),
+        )
+        async with system.database.session() as session:
+            trials = tuple(
+                (
+                    await session.scalars(
+                        select(TrialRow)
+                        .where(TrialRow.batch_id == batch_id)
+                        .order_by(TrialRow.trial_ordinal)
+                    )
+                ).all()
+            )
+
+        workspace_root = tmp_path / "outcome-attempts"
+        workspace_root.mkdir()
+        creator = AttemptCreationService(
+            system.database.session,
+            version_semantics=VersionExecutionSemanticsAdapter(system.database.session),
+            installation_identity="installation-1",
+            attempt_workspace_root=workspace_root,
+        )
+        successful = await creator.create_attempt_for_trial(trials[0].trial_id)
+        retryable = await creator.create_attempt_for_trial(trials[1].trial_id)
+        exhausted_first = await creator.create_attempt_for_trial(trials[2].trial_id)
+        non_retryable = await creator.create_attempt_for_trial(trials[3].trial_id)
+        assert successful and retryable and exhausted_first and non_retryable
+
+        now = datetime.now(UTC)
+        async with system.database.session() as session:
+            async with session.begin():
+                successful.status = AttemptStatus.TERMINAL.value
+                successful.terminal_kind = TerminalKind.PROCESS_EXITED.value
+                successful.exit_code = 0
+                successful.terminal_at = now
+                for row in (retryable, exhausted_first):
+                    row.status = AttemptStatus.PREPARATION_FAILED.value
+                    row.preparation_failure_code = "PREPARATION_TEMPORARY_IO"
+                    row.terminal_at = now
+                non_retryable.status = AttemptStatus.TERMINAL.value
+                non_retryable.terminal_kind = TerminalKind.PROCESS_TERMINAL_UNCLASSIFIED.value
+                non_retryable.terminal_at = now
+                session.add_all((successful, retryable, exhausted_first, non_retryable))
+
+        exhausted_second = await creator.create_attempt_for_trial(trials[2].trial_id)
+        assert exhausted_second is not None and exhausted_second.attempt_number == 2
+        async with system.database.session() as session:
+            async with session.begin():
+                exhausted_second.status = AttemptStatus.PREPARATION_FAILED.value
+                exhausted_second.preparation_failure_code = "PREPARATION_TEMPORARY_IO"
+                exhausted_second.terminal_at = now
+                session.add(exhausted_second)
+
+        outcome_module = importlib.import_module("labpilot.execution.trial_outcome")
+        outcomes = outcome_module.TrialExecutionOutcomeService(
+            system.database.session,
+            version_semantics=VersionExecutionSemanticsAdapter(system.database.session),
+        )
+        assert (await outcomes.get(trials[4].trial_id)).state.value == "unresolved"
+        await commands.cancel_batch(
+            context=_context(),
+            idempotency_key="cancel-for-outcomes",
+            command=CancelBatch(batch_id, expected_row_version=2),
+        )
+        snapshot = await outcomes.snapshot_batch(batch_id)
+        async with system.database.session() as session:
+            batch = await session.get(BatchRow, batch_id)
+            stored_attempts = tuple(
+                (
+                    await session.scalars(
+                        select(AttemptRow)
+                        .where(AttemptRow.trial_id.in_([trial.trial_id for trial in trials]))
+                        .order_by(AttemptRow.trial_id, AttemptRow.attempt_number)
+                    )
+                ).all()
+            )
+
+    assert batch is not None
+    assert snapshot.batch_id == batch_id
+    assert snapshot.batch_row_version == batch.row_version
+    assert snapshot.attempt_ids == tuple(row.attempt_id for row in stored_attempts)
+    assert tuple(outcome.trial_id for outcome in snapshot.outcomes) == tuple(
+        trial.trial_id for trial in trials
+    )
+    by_trial = {outcome.trial_id: outcome for outcome in snapshot.outcomes}
+    assert by_trial[trials[0].trial_id].state.value == "successful"
+    assert by_trial[trials[0].trial_id].successful_attempt_id == successful.attempt_id
+    assert by_trial[trials[1].trial_id].state.value == "cancelled"
+    assert by_trial[trials[2].trial_id].state.value == "cancelled"
+    assert by_trial[trials[3].trial_id].state.value == "cancelled"
+    assert by_trial[trials[4].trial_id].state.value == "cancelled"

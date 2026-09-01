@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from itertools import product
@@ -70,6 +71,26 @@ def is_retryable_infrastructure_failure(attempt: _AttemptFailure) -> bool:
         attempt.preparation_failure_code in _RETRYABLE_INFRASTRUCTURE_CODES
         or attempt.execution_issue_code in _RETRYABLE_INFRASTRUCTURE_CODES
     )
+
+
+def can_create_next_attempt(
+    attempts: Sequence[AttemptRow],
+    *,
+    max_retries: int,
+) -> bool:
+    if any(attempt.terminal_at is None for attempt in attempts):
+        return False
+    if any(
+        attempt.terminal_kind == TerminalKind.PROCESS_EXITED.value
+        and attempt.exit_code == 0
+        for attempt in attempts
+    ):
+        return False
+    if not attempts:
+        return True
+    if len(attempts) >= 1 + max_retries:
+        return False
+    return is_retryable_infrastructure_failure(attempts[-1])
 
 
 @dataclass(frozen=True, slots=True)
@@ -446,23 +467,13 @@ class AttemptCreationService:
                     )
                 ).all()
             )
-            if any(attempt.terminal_at is None for attempt in existing):
-                await uow.commit()
-                return None
-            if any(
-                attempt.terminal_kind == TerminalKind.PROCESS_EXITED.value
-                and attempt.exit_code == 0
-                for attempt in existing
+            if not can_create_next_attempt(
+                existing,
+                max_retries=semantics.max_retries,
             ):
                 await uow.commit()
                 return None
             next_number = len(existing) + 1
-            if next_number > 1 + semantics.max_retries:
-                await uow.commit()
-                return None
-            if next_number > 1 and not is_retryable_infrastructure_failure(existing[-1]):
-                await uow.commit()
-                return None
             now = await _db_now(uow)
             attempt = build_preparing_attempt(
                 attempt_id=uuid4(),
