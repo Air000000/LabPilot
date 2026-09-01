@@ -161,4 +161,3 @@ class TrialExecutionOutcomeService:
                 for trial in trials
             ),
         )
-
