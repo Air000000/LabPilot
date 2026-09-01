@@ -63,7 +63,7 @@ def _read_artifact(
         leaf = _open_child(
             components[-1],
             descriptor,
-            os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK,
             leaf=True,
         )
         if leaf is None:
@@ -108,6 +108,8 @@ def _open_child(
     except OSError as error:
         if leaf and error.errno == errno.ENOENT:
             return None
+        if leaf and error.errno == errno.ENXIO:
+            raise ValueError("artifact_not_regular_file") from error
         _raise_for_oserror(error)
         raise AssertionError("unreachable") from error
 

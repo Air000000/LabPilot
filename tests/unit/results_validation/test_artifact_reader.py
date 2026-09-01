@@ -1,6 +1,7 @@
 import errno
 import importlib
 import os
+import socket
 from hashlib import sha256
 from pathlib import Path
 
@@ -162,6 +163,25 @@ def test_only_explicit_transient_errno_is_deferred(
         reader.read_artifact_identity(root, "metrics.json", "application/json")
 
 
+def test_fifo_leaf_is_opened_nonblocking_then_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _output_root(tmp_path)
+    os.mkfifo(root / "pipe")
+    reader = _reader()
+    original_open = reader.os.open
+
+    def nonblocking_leaf_open(path, flags, *args, **kwargs):
+        if path == "pipe":
+            assert flags & os.O_NONBLOCK
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(reader.os, "open", nonblocking_leaf_open)
+
+    with pytest.raises(ValueError):
+        reader.read_artifact_identity(root, "pipe", "application/octet-stream")
+
+
 def test_unexpected_oserror_propagates(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = _output_root(tmp_path)
     reader = _reader()
@@ -174,3 +194,13 @@ def test_unexpected_oserror_propagates(tmp_path: Path, monkeypatch: pytest.Monke
     with pytest.raises(OSError) as error:
         reader.read_artifact_identity(root, "metrics.json", "application/json")
     assert not isinstance(error.value, _types().ResultProcessingDeferred)
+
+
+def test_unix_socket_leaf_is_rejected_as_nonregular_file(tmp_path: Path) -> None:
+    root = _output_root(tmp_path)
+
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+        listener.bind(str(root / "socket"))
+
+        with pytest.raises(ValueError, match="artifact_not_regular_file"):
+            _reader().read_artifact_identity(root, "socket", "application/octet-stream")
