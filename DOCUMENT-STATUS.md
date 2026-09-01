@@ -1,6 +1,6 @@
 # LabPilot 文档状态
 
-> 当前状态：R0 仍为 V1 rebaseline authority root；Slice 1 已 Accepted；Slice 2 Detailed Plan 已授权 JIT drafting，但 Slice 2 implementation 尚未授权。
+> 当前状态：R0 仍为 V1 rebaseline authority root；Slice 1 已 Accepted；Slice 2 MVP 已验证并集成到 `main`，production hardening deferred；Slice 3 已进入 JIT design/planning，但 implementation 尚未授权。
 
 | 文档 | 状态 | 用途 |
 |---|---|---|
@@ -51,13 +51,7 @@ R0 status: APPROVED / CURRENT
 
 完成本状态转换的 Git commit 本身是 **R0 authority root**。本文件不写入同一 commit 的自身 SHA；Git commit identity 提供机器可验证基线。
 
-Slice 1 Detailed Implementation Plan 在批准与执行时必须记录：
-
-```text
-Planning baseline: <exact R0 authority commit SHA>
-```
-
-该要求已由已批准并执行完成的 Slice 1 Detailed Implementation Plan 满足。
+Slice-specific detailed plans must record their exact planning baseline commit and remain subordinate to the authority rule above.
 
 旧 `*.dependencies.sha256` / `FINAL-DOCUMENTS.sha256` 继续作为其历史 tranche / release bundle 的完整性证据，不自动成为 remaining-V1 的语义 authority，也不建立新的级联 architecture hash graph。
 
@@ -69,36 +63,42 @@ Planning baseline: <exact R0 authority commit SHA>
 - Slice 1 Detailed Implementation Plan: Approved / Executed
 - Slice 1: Accepted
 - Slice 1 acceptance commit: `ff7909503c3b755bffb564423de3a56ce5bb9b4a`
-- Slice 2 Detailed Plan: Authorized for JIT drafting
-- Slice 2 implementation: Not authorized until its detailed plan is approved
-- Slice 3: Not started; JIT planning only after Slice 2 acceptance
-- Current branch: `feature/v1-slice1-proposal-loop`
+- Slice 2 Detailed Plan: Approved / Executed for the implemented MVP path
+- Slice 2 MVP: Validated and integrated into `main`
+- Slice 2 integration commit: `3e3cebf32877cfe8d65f76a393eefb20ac41d798`
+- Slice 2 production hardening: Deferred; no production-acceptance claim
+- Slice 3 Design: JIT drafting/review in progress
+- Slice 3 Detailed Implementation Plan: Not yet approved
+- Slice 3 implementation: **NOT authorized** until design focused re-review passes and the detailed implementation plan is approved
 - Task 8 accepted implementation commit: `ab3e773ee957b02f257df3f60f3ea3492626bcfa`
 - Task 9 accepted implementation commit: `949d22a676141cc279086775135610726b518c31`
 - Task 10 accepted implementation commit: `6d85b88c238714ebbd1fb1d7b90b0f93308f5006`
 - Task 10 governance/status closure commit: `b0c4e89dc2f4c9d680b0a491bdd0815eff869a2d`
 
+The Slice 2 MVP closeout is sufficient to unlock Slice 3 JIT planning. It does not retroactively complete the deferred Slice 2 production-hardening campaign.
+
 ## 4. Next authorized action
 
 Next authorized action:
 
-Draft the Slice 2 Detailed Implementation Plan JIT.
+```text
+Finish focused re-review of the revised Slice 3 Result Plane design.
+If no blockers remain:
+→ write the Slice 3 Detailed Implementation Plan JIT
+→ review and approve that plan
+→ only then authorize Slice 3 production code
+```
 
-The Slice 2 plan must remain subordinate to:
+Slice 3 planning must remain subordinate to:
 
 ```text
 V1 Scope v0.3
 > Architecture 10 v0.3
 > Master Roadmap v0.3
-> approved Slice 2 detailed plan / ADR once approved
+> approved Slice 3 detailed plan / ADR once approved
 ```
 
-It may use the accepted Slice 1 implementation as foundation.
-
-Slice 2 implementation is **NOT authorized** until the Slice 2 Detailed
-Implementation Plan passes its required review and is approved.
-
-Do not start Slice 2 implementation in this operation. Do not draft Slice 3.
+Do not reopen historical Architecture 07 as a full processing-platform requirement. Do not treat deferred Slice 2 production hardening as a prerequisite for the Slice 3 MVP unless a concrete dependency is found.
 
 ## 5. Historical Slice 1 foundation alignment
 
