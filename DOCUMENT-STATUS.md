@@ -1,6 +1,6 @@
 # LabPilot 文档状态
 
-> 当前状态：R0 仍为 V1 rebaseline authority root；Slice 1 已 Accepted；Slice 2 MVP 已验证并集成到 `main`，production hardening deferred；Slice 3 Result Plane design 已通过 focused re-review，Detailed Implementation Plan drafting 已授权，但 implementation 尚未授权。
+> 当前状态：R0 仍为 V1 rebaseline authority root；Slice 1 已 Accepted；Slice 2 bounded MVP 已验证并集成到 `main`，production hardening deferred；S2→S3 sequencing amendment 已对齐当前 MVP-first planning gate；Slice 3 Result Plane design 已通过 focused re-review，Detailed Implementation Plan drafting 已授权，但 implementation 尚未授权。
 
 | 文档 | 状态 | 用途 |
 |---|---|---|
@@ -14,6 +14,7 @@
 | Architecture Index v0.2 | Historical dependency/index input | 继续服务历史冻结依赖，不决定 remaining-V1 authority |
 | Master Roadmap v0.2.3 | Historical authority for accepted work only | 保留历史工作包与已接受工作的上下文；不再决定剩余 V1 执行顺序 |
 | Master Roadmap v0.3 | Approved / Current | 以 R0 + Slice 1/2/3 管理剩余 V1 |
+| S2→S3 Sequencing Amendment v0.3.1 | Approved / Current narrow sequencing amendment | 仅覆盖 Master Roadmap v0.3 的 S2→S3 planning gate；bounded Slice2 MVP closeout 可解锁 Slice3 JIT planning，不构成 Slice2 production acceptance |
 | Master Roadmap v0.2.1 | Historical frozen dependency | 仅用于历史 WP0 dependency verification |
 | WP0 Foundation v0.3.1 | Completed / Historical Accepted Execution Plan | WP0 已完成；不再标记 Ready for Execution |
 
@@ -25,10 +26,11 @@
 V1 Scope v0.3
 > Architecture 10 v0.3
 > Master Roadmap v0.3
+> S2→S3 Sequencing Amendment v0.3.1 where applicable
 > current approved Slice-specific detailed plan / ADR
 ```
 
-下位 Slice plan / ADR 只能细化当前 Slice，不能扩大 Scope、削弱 Core invariant 或改变上位 Roadmap acceptance。
+下位 Slice plan / ADR 只能细化当前 Slice，不能扩大 Scope、削弱 Core invariant 或改变上位 Roadmap acceptance。Sequencing Amendment v0.3.1 只覆盖 S2→S3 planning gate，不改变其他 Roadmap requirement。
 
 更早的 v0.2 architecture、roadmap、implementation plans 与 Architecture 08/09 对 remaining V1 默认只具有 historical / informative 价值。只有当前 v0.3 authority 或已批准 Slice authority **显式按名称引用具体 invariant** 时，该 invariant 才重新进入当前实施 tranche。
 
@@ -63,10 +65,12 @@ Slice-specific detailed plans must record their exact planning baseline commit a
 - Slice 1 Detailed Implementation Plan: Approved / Executed
 - Slice 1: Accepted
 - Slice 1 acceptance commit: `ff7909503c3b755bffb564423de3a56ce5bb9b4a`
-- Slice 2 Detailed Plan: Approved / Executed for the implemented MVP path
-- Slice 2 MVP: Validated and integrated into `main`
+- Slice 2 Detailed Plan: Approved
+- Slice 2 bounded MVP implementation path: Validated / Integrated
 - Slice 2 integration commit: `3e3cebf32877cfe8d65f76a393eefb20ac41d798`
-- Slice 2 production hardening: Deferred; no production-acceptance claim
+- Slice 2 production acceptance: **NO**
+- Slice 2 production hardening: Deferred
+- S2→S3 Sequencing Amendment: Approved / Current for the planning gate only
 - Slice 3 Result Plane Design: **Approved after focused re-review**
 - Slice 3 focused re-review record: `docs/superpowers/specs/2026-09-01-labpilot-v1-slice3-result-plane-focused-rereview.md`
 - Slice 3 Detailed Implementation Plan: Drafting authorized; not yet approved
@@ -76,7 +80,7 @@ Slice-specific detailed plans must record their exact planning baseline commit a
 - Task 10 accepted implementation commit: `6d85b88c238714ebbd1fb1d7b90b0f93308f5006`
 - Task 10 governance/status closure commit: `b0c4e89dc2f4c9d680b0a491bdd0815eff869a2d`
 
-The Slice 2 MVP closeout is sufficient to unlock Slice 3 JIT planning. It does not retroactively complete the deferred Slice 2 production-hardening campaign.
+Under Sequencing Amendment v0.3.1, the bounded Slice 2 MVP closeout is sufficient to unlock Slice 3 JIT planning. It does not retroactively complete the deferred Slice 2 production-hardening campaign or establish Slice 2 production acceptance.
 
 ## 4. Next authorized action
 
@@ -96,6 +100,7 @@ Slice 3 planning must remain subordinate to:
 V1 Scope v0.3
 > Architecture 10 v0.3
 > Master Roadmap v0.3
+> S2→S3 Sequencing Amendment v0.3.1
 > approved Slice 3 design + focused re-review
 > approved Slice 3 detailed plan once approved
 ```
