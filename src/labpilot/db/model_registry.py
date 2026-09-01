@@ -5,4 +5,5 @@ import labpilot.execution.models
 import labpilot.experiments.models
 import labpilot.experiments.proposal_models
 import labpilot.observability.models
+import labpilot.results_validation.models
 import labpilot.tools_policy.models  # noqa: F401

@@ -27,3 +27,13 @@ def test_model_registry_registers_tool_and_agent_runtime_tables() -> None:
 
 def test_model_registry_registers_execution_preparation_tables() -> None:
     assert {"batches", "trials", "attempts"} <= set(Base.metadata.tables)
+
+
+def test_model_registry_registers_result_plane_tables() -> None:
+    assert {
+        "artifacts",
+        "metric_observations",
+        "validation_reports",
+        "trial_result_selections",
+        "batch_summary_revisions",
+    } <= set(Base.metadata.tables)

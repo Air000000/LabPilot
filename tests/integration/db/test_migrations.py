@@ -29,7 +29,7 @@ async def test_upgrade_head_succeeds_on_an_isolated_empty_database(
     try:
         with engine.connect() as connection:
             version = connection.scalar(text("SELECT version_num FROM alembic_version"))
-        assert version == "0010_attempt_physical_execution"
+        assert version == "0011_result_plane"
     finally:
         engine.dispose()
 
@@ -42,6 +42,8 @@ async def test_upgrade_head_succeeds_on_an_isolated_empty_database(
     assert Path("migrations/versions/0007_experiment_proposals.py").exists()
     assert Path("migrations/versions/0008_agent_tool_runtime.py").exists()
     assert Path("migrations/versions/0009_execution_preparation.py").exists()
+    assert Path("migrations/versions/0010_attempt_physical_execution.py").exists()
+    assert Path("migrations/versions/0011_result_plane.py").exists()
 
 
 @pytest.mark.integration
@@ -149,7 +151,7 @@ async def test_task3_migration_upgrade_downgrade_upgrade_round_trip(
         with engine.connect() as connection:
             assert (
                 connection.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0010_attempt_physical_execution"
+                == "0011_result_plane"
             )
             assert connection.scalar(text("SELECT to_regclass('public.projects')")) == "projects"
 
@@ -165,7 +167,7 @@ async def test_task3_migration_upgrade_downgrade_upgrade_round_trip(
         with engine.connect() as connection:
             assert (
                 connection.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0010_attempt_physical_execution"
+                == "0011_result_plane"
             )
             assert connection.scalar(text("SELECT to_regclass('public.projects')")) == "projects"
     finally:
@@ -185,7 +187,7 @@ async def test_task4_migration_upgrade_downgrade_upgrade_round_trip(
         with engine.connect() as connection:
             assert (
                 connection.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0010_attempt_physical_execution"
+                == "0011_result_plane"
             )
             assert (
                 connection.scalar(text("SELECT to_regclass('public.agent_steps')")) == "agent_steps"
@@ -204,7 +206,7 @@ async def test_task4_migration_upgrade_downgrade_upgrade_round_trip(
         with engine.connect() as connection:
             assert (
                 connection.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0010_attempt_physical_execution"
+                == "0011_result_plane"
             )
             assert (
                 connection.scalar(text("SELECT to_regclass('public.agent_steps')")) == "agent_steps"
@@ -509,5 +511,48 @@ async def test_task9_migration_upgrade_downgrade_upgrade_round_trip(
                     )
                     == table
                 )
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.integration
+@pytest.mark.destructive
+async def test_result_plane_migration_upgrade_downgrade_upgrade_round_trip(
+    isolated_database_url: str,
+) -> None:
+    sync_url = isolated_database_url.replace("+asyncpg", "+psycopg")
+    config = _alembic_config(isolated_database_url)
+    tables = {
+        "artifacts",
+        "metric_observations",
+        "validation_reports",
+        "trial_result_selections",
+        "batch_summary_revisions",
+    }
+    engine = create_engine(sync_url)
+    try:
+        command.upgrade(config, "head")
+        with engine.connect() as connection:
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0011_result_plane"
+            assert {
+                connection.scalar(text("SELECT to_regclass(:name)"), {"name": f"public.{table}"})
+                for table in tables
+            } == tables
+
+        command.downgrade(config, "0010_attempt_physical_execution")
+        with engine.connect() as connection:
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0010_attempt_physical_execution"
+            assert all(
+                connection.scalar(text("SELECT to_regclass(:name)"), {"name": f"public.{table}"}) is None
+                for table in tables
+            )
+
+        command.upgrade(config, "head")
+        with engine.connect() as connection:
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0011_result_plane"
+            assert {
+                connection.scalar(text("SELECT to_regclass(:name)"), {"name": f"public.{table}"})
+                for table in tables
+            } == tables
     finally:
         engine.dispose()

@@ -104,7 +104,8 @@ def test_model_registry_allows_approved_composition_imports(tmp_path: Path) -> N
         "db/model_registry.py",
         "import labpilot.context.models\n"
         "import labpilot.experiments.models\n"
-        "import labpilot.observability.models\n",
+        "import labpilot.observability.models\n"
+        "import labpilot.results_validation.models\n",
     )
 
     assert find_dependency_violations(tmp_path / "src" / "labpilot") == []
