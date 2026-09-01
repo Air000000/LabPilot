@@ -1,6 +1,6 @@
 # LabPilot 文档状态
 
-> 当前状态：R0 仍为 V1 rebaseline authority root；Slice 1 已 Accepted；Slice 2 Detailed Plan 已授权 JIT drafting，但 Slice 2 implementation 尚未授权。
+> 当前状态：R0 仍为 V1 rebaseline authority root；Slice 1 已 Accepted；Slice 2 bounded MVP 已验证并集成到 `main`，production hardening deferred；S2→S3 sequencing amendment 已对齐当前 MVP-first planning gate；Slice 3 Result Plane design 与 Detailed Implementation Plan 均已通过 focused review，Slice 3 implementation 已授权在独立 worktree/branch 中开始。
 
 | 文档 | 状态 | 用途 |
 |---|---|---|
@@ -14,6 +14,9 @@
 | Architecture Index v0.2 | Historical dependency/index input | 继续服务历史冻结依赖，不决定 remaining-V1 authority |
 | Master Roadmap v0.2.3 | Historical authority for accepted work only | 保留历史工作包与已接受工作的上下文；不再决定剩余 V1 执行顺序 |
 | Master Roadmap v0.3 | Approved / Current | 以 R0 + Slice 1/2/3 管理剩余 V1 |
+| S2→S3 Sequencing Amendment v0.3.1 | Approved / Current narrow sequencing amendment | 仅覆盖 Master Roadmap v0.3 的 S2→S3 planning gate；bounded Slice2 MVP closeout 可解锁 Slice3 JIT planning，不构成 Slice2 production acceptance |
+| Slice3 Result Plane Design | Approved after focused re-review | 冻结 Slice3 Core Result Plane 的对象、边界、验证、恢复、API/SSE 与验收语义 |
+| Slice3 Detailed Implementation Plan | Approved after focused plan review | 冻结 Slice3 implementation 的 task/file/interface/TDD/acceptance 执行顺序；focused review C1–C5 为后续窄 authority |
 | Master Roadmap v0.2.1 | Historical frozen dependency | 仅用于历史 WP0 dependency verification |
 | WP0 Foundation v0.3.1 | Completed / Historical Accepted Execution Plan | WP0 已完成；不再标记 Ready for Execution |
 
@@ -25,10 +28,13 @@
 V1 Scope v0.3
 > Architecture 10 v0.3
 > Master Roadmap v0.3
-> current approved Slice-specific detailed plan / ADR
+> S2→S3 Sequencing Amendment v0.3.1 where applicable
+> approved Slice3 Result Plane design
+> approved Slice3 Detailed Implementation Plan
+> focused plan review clarifications C1-C5
 ```
 
-下位 Slice plan / ADR 只能细化当前 Slice，不能扩大 Scope、削弱 Core invariant 或改变上位 Roadmap acceptance。
+下位 Slice plan / review 只能细化当前 Slice，不能扩大 Scope、削弱 Core invariant 或改变上位 Roadmap acceptance。Sequencing Amendment v0.3.1 只覆盖 S2→S3 planning gate，不改变其他 Roadmap requirement。
 
 更早的 v0.2 architecture、roadmap、implementation plans 与 Architecture 08/09 对 remaining V1 默认只具有 historical / informative 价值。只有当前 v0.3 authority 或已批准 Slice authority **显式按名称引用具体 invariant** 时，该 invariant 才重新进入当前实施 tranche。
 
@@ -51,13 +57,7 @@ R0 status: APPROVED / CURRENT
 
 完成本状态转换的 Git commit 本身是 **R0 authority root**。本文件不写入同一 commit 的自身 SHA；Git commit identity 提供机器可验证基线。
 
-Slice 1 Detailed Implementation Plan 在批准与执行时必须记录：
-
-```text
-Planning baseline: <exact R0 authority commit SHA>
-```
-
-该要求已由已批准并执行完成的 Slice 1 Detailed Implementation Plan 满足。
+Slice-specific detailed plans must record their exact planning baseline commit and remain subordinate to the authority rule above.
 
 旧 `*.dependencies.sha256` / `FINAL-DOCUMENTS.sha256` 继续作为其历史 tranche / release bundle 的完整性证据，不自动成为 remaining-V1 的语义 authority，也不建立新的级联 architecture hash graph。
 
@@ -69,42 +69,59 @@ Planning baseline: <exact R0 authority commit SHA>
 - Slice 1 Detailed Implementation Plan: Approved / Executed
 - Slice 1: Accepted
 - Slice 1 acceptance commit: `ff7909503c3b755bffb564423de3a56ce5bb9b4a`
-- Slice 2 Detailed Plan: Authorized for JIT drafting
-- Slice 2 implementation: Not authorized until its detailed plan is approved
-- Slice 3: Not started; JIT planning only after Slice 2 acceptance
-- Current branch: `feature/v1-slice1-proposal-loop`
+- Slice 2 Detailed Plan: Approved
+- Slice 2 bounded MVP implementation path: Validated / Integrated
+- Slice 2 integration commit: `3e3cebf32877cfe8d65f76a393eefb20ac41d798`
+- Slice 2 production acceptance: **NO**
+- Slice 2 production hardening: Deferred
+- S2→S3 Sequencing Amendment: Approved / Current for the planning gate only
+- Slice 3 Result Plane Design: **Approved after focused re-review**
+- Slice 3 focused design re-review: `docs/superpowers/specs/2026-09-01-labpilot-v1-slice3-result-plane-focused-rereview.md`
+- Slice 3 Detailed Implementation Plan: **Approved after focused plan review**
+- Slice 3 plan: `docs/superpowers/plans/2026-09-01-labpilot-v1-slice3-result-plane.md`
+- Slice 3 focused plan review: `docs/superpowers/plans/2026-09-01-labpilot-v1-slice3-result-plane-plan-review.md`
+- Slice 3 implementation: **AUTHORIZED** in a new isolated implementation worktree/branch; not on this docs branch
 - Task 8 accepted implementation commit: `ab3e773ee957b02f257df3f60f3ea3492626bcfa`
 - Task 9 accepted implementation commit: `949d22a676141cc279086775135610726b518c31`
 - Task 10 accepted implementation commit: `6d85b88c238714ebbd1fb1d7b90b0f93308f5006`
 - Task 10 governance/status closure commit: `b0c4e89dc2f4c9d680b0a491bdd0815eff869a2d`
 
+Under Sequencing Amendment v0.3.1, the bounded Slice 2 MVP closeout is sufficient to unlock Slice 3. It does not retroactively complete the deferred Slice 2 production-hardening campaign or establish Slice 2 production acceptance.
+
+The Git commit containing this status transition is the exact Slice3 implementation authority baseline. This file does not self-reference that commit SHA; Git history provides it. An implementation worktree must start from or contain that commit as an ancestor.
+
 ## 4. Next authorized action
 
 Next authorized action:
 
-Draft the Slice 2 Detailed Implementation Plan JIT.
+```text
+create an isolated Slice3 implementation branch/worktree
+from the exact status/plan-review closure commit
+→ read the approved Detailed Implementation Plan
+→ read the focused plan review C1-C5
+→ execute Task 1 with TDD
+→ stop/review at the task boundary before proceeding
+```
 
-The Slice 2 plan must remain subordinate to:
+Implementation remains subordinate to:
 
 ```text
 V1 Scope v0.3
 > Architecture 10 v0.3
 > Master Roadmap v0.3
-> approved Slice 2 detailed plan / ADR once approved
+> S2→S3 Sequencing Amendment v0.3.1
+> approved Slice3 design + focused design re-review
+> approved Slice3 Detailed Implementation Plan
+> focused plan review C1-C5
 ```
 
-It may use the accepted Slice 1 implementation as foundation.
-
-Slice 2 implementation is **NOT authorized** until the Slice 2 Detailed
-Implementation Plan passes its required review and is approved.
-
-Do not start Slice 2 implementation in this operation. Do not draft Slice 3.
+Do not reopen historical Architecture 07 as a full processing-platform requirement. Do not treat deferred Slice 2 production hardening as a prerequisite for Slice3 MVP unless a concrete dependency is found. Do not implement on `docs/slice3-result-plane-design` itself.
 
 ## 5. Historical Slice 1 foundation alignment
 
 以下 alignment 项是 Slice 1 implementation 前/期间的有限对齐要求，现保留为已完成 Slice 1 的历史 planning context，不构成新的 global architecture work：
 
-- 默认本地 API 绑定 loopback（目标 Compose publish 为 `127.0.0.1:${LABPILOT_API_PORT:-8000}:8000`）或明确受控接口；
+- 默认本地 API exposure 绑定 loopback（目标 Compose publish 为 `127.0.0.1:${LABPILOT_API_PORT:-8000}:8000`）或明确受控接口；
 - Projection Worker 移出 Core default runtime topology；
 - dependency CI 验证 `uv.lock` 与 `pyproject.toml` 一致；
 - 实现 SSE 前刷新到经过测试、支持目标 SSE 路径的 FastAPI baseline；
