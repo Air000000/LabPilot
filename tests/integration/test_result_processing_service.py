@@ -463,7 +463,13 @@ async def test_malformed_result_json_is_error_not_missing_metric(
     assert report.verdict == "error"
     assert report.reason_json["reasons"][0]["code"] == "VALIDATION_INPUT_INVALID"
     assert "METRIC_MISSING" not in str(report.reason_json)
-    assert report.input_snapshot_json["processing_errors"] == ["result_json_invalid"]
+    assert report.input_snapshot_json["processing_errors"] == [
+        {
+            "code": "VALIDATION_INPUT_INVALID",
+            "subject": "result",
+            "details": {"failure": "result_json_invalid"},
+        }
+    ]
 
 
 @pytest.mark.integration
@@ -489,11 +495,40 @@ async def test_oversize_result_json_is_deterministic_error(
     assert state["reports"][0].verdict == "error"
     assert state["reports"][0].reason_json["reasons"][0]["code"] == "VALIDATION_INPUT_INVALID"
     assert state["reports"][0].input_snapshot_json["processing_errors"] == [
-        "result_json_oversize"
+        {
+            "code": "VALIDATION_INPUT_INVALID",
+            "subject": "result",
+            "details": {"failure": "result_json_oversize"},
+        }
     ]
 
 
 @pytest.mark.integration
+async def test_best_effort_warning_is_preserved_on_processing_error(
+    isolated_database_url: str, tmp_path: Path
+) -> None:
+    service_module = _service_module()
+    async with _seed_result_attempt(
+        isolated_database_url,
+        tmp_path,
+        best_effort_dataset=True,
+        output=b'{"schema_version":"v1","metrics":{"score":0.82,"score":0.61}}',
+    ) as (system, batch_id, _trial_id, attempt_id, _workspace):
+        result = await _application(service_module, system.database.session).process_attempt(
+            attempt_id
+        )
+        state = await _state(system.database, batch_id, attempt_id)
+
+    report = state["reports"][0]
+    assert result is not None and result.selected is False
+    assert report.verdict == "error"
+    assert report.reason_json["reasons"][0]["code"] == "VALIDATION_INPUT_INVALID"
+    assert report.warning_json == {
+        "warnings": [
+            {"code": "DATASET_BEST_EFFORT_REPRODUCIBILITY", "subject": "dataset", "details": {}}
+        ]
+    }
+
 async def test_transient_reader_error_rolls_back_and_retry_succeeds(
     isolated_database_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -634,6 +669,119 @@ async def test_metric_slot_mismatch_creates_provenance_error_without_mutation(
 
 
 @pytest.mark.integration
+async def test_artifact_provenance_error_is_idempotent_for_same_observation(
+    isolated_database_url: str, tmp_path: Path
+) -> None:
+    service_module = _service_module()
+    source = b'{"schema_version":"v1","metrics":{"score":0.82}}'
+    async with _seed_result_attempt(isolated_database_url, tmp_path, output=source) as (
+        system,
+        batch_id,
+        _trial_id,
+        attempt_id,
+        workspace,
+    ):
+        artifact_id = uuid4()
+        async with system.database.session() as session:
+            session.add(
+                ArtifactRow(
+                    artifact_id=artifact_id,
+                    attempt_id=attempt_id,
+                    artifact_name="result",
+                    relative_path="result.json",
+                    content_sha256="0" * 64,
+                    byte_size=1,
+                    media_type="application/json",
+                )
+            )
+            await session.commit()
+        service = _application(service_module, system.database.session)
+        first = await service.process_attempt(attempt_id)
+        second = await service.process_attempt(attempt_id)
+        (workspace / "runtime" / "output" / "result.json").write_bytes(
+            b'{"schema_version":"v1","metrics":{"score":0.83}}'
+        )
+        with pytest.raises(service_module.ResultStateConflict):
+            await service.process_attempt(attempt_id)
+        state = await _state(system.database, batch_id, attempt_id)
+
+    report = state["reports"][0]
+    details = report.input_snapshot_json["processing_errors"][0]["details"]
+    assert first is not None and second is not None
+    assert first.verdict.value == second.verdict.value == "error"
+    assert first.validation_report_id == second.validation_report_id
+    assert len(state["reports"]) == 1
+    assert len(state["artifacts"]) == 1
+    assert state["artifacts"][0].artifact_id == artifact_id
+    assert state["artifacts"][0].content_sha256 == "0" * 64
+    assert state["selection"] is None
+    assert len(state["events"]) == 1
+    assert details["persisted_artifact_id"] == str(artifact_id)
+    assert details["expected_content_sha256"] == "0" * 64
+    assert details["observed_content_sha256"] == hashlib.sha256(source).hexdigest()
+    assert details["expected_byte_size"] == "1"
+    assert details["observed_byte_size"] == str(len(source))
+
+
+@pytest.mark.integration
+async def test_metric_provenance_error_is_idempotent_for_same_observation(
+    isolated_database_url: str, tmp_path: Path
+) -> None:
+    service_module = _service_module()
+    source = b'{"schema_version":"v1","metrics":{"score":0.82}}'
+    async with _seed_result_attempt(isolated_database_url, tmp_path, output=source) as (
+        system,
+        batch_id,
+        _trial_id,
+        attempt_id,
+        _workspace,
+    ):
+        artifact_id = uuid4()
+        metric_observation_id = uuid4()
+        async with system.database.session() as session:
+            session.add(
+                ArtifactRow(
+                    artifact_id=artifact_id,
+                    attempt_id=attempt_id,
+                    artifact_name="result",
+                    relative_path="result.json",
+                    content_sha256=hashlib.sha256(source).hexdigest(),
+                    byte_size=len(source),
+                    media_type="application/json",
+                )
+            )
+            session.add(
+                MetricObservationRow(
+                    metric_observation_id=metric_observation_id,
+                    artifact_id=artifact_id,
+                    metric_name="score",
+                    split="test",
+                    numeric_value=Decimal("0.61"),
+                    extractor_version="result-json-v1",
+                )
+            )
+            await session.commit()
+        service = _application(service_module, system.database.session)
+        first = await service.process_attempt(attempt_id)
+        second = await service.process_attempt(attempt_id)
+        state = await _state(system.database, batch_id, attempt_id)
+
+    report = state["reports"][0]
+    details = report.input_snapshot_json["processing_errors"][0]["details"]
+    assert first is not None and second is not None
+    assert first.verdict.value == second.verdict.value == "error"
+    assert first.validation_report_id == second.validation_report_id
+    assert len(state["reports"]) == 1
+    assert len(state["metrics"]) == 1
+    assert state["metrics"][0].metric_observation_id == metric_observation_id
+    assert state["metrics"][0].numeric_value == Decimal("0.61")
+    assert state["selection"] is None
+    assert len(state["events"]) == 1
+    assert details["persisted_metric_observation_id"] == str(metric_observation_id)
+    assert details["expected_numeric_value"] == "0.61"
+    assert details["observed_numeric_value"] == "0.82"
+
+
 async def test_changed_input_after_report_fails_closed(
     isolated_database_url: str, tmp_path: Path
 ) -> None:

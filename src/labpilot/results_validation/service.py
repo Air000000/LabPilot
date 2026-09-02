@@ -218,28 +218,25 @@ class ResultApplicationService:
                 uow.session,
                 contract,
                 observations,
-                report_exists=report is not None,
             )
             metric_rows, metric_errors = await _reconcile_metrics(
                 uow.session,
                 observations,
                 artifact_rows,
-                report_exists=report is not None,
             )
             errors.extend(metric_errors)
+            base_evaluation = validate(
+                validation_rules=contract.validation_rules,
+                dataset_reference=contract.dataset_reference,
+                environment_expectation=contract.environment_expectation,
+                observed_environment=_observed_environment(contract.observed_environment_json),
+                available_artifact_names=frozenset(artifact_rows),
+                metric_values={row.metric_name: row.numeric_value for row in metric_rows},
+            )
             evaluation = (
-                _processing_evaluation(errors)
+                _processing_evaluation(errors, base_evaluation.warnings)
                 if errors
-                else validate(
-                    validation_rules=contract.validation_rules,
-                    dataset_reference=contract.dataset_reference,
-                    environment_expectation=contract.environment_expectation,
-                    observed_environment=_observed_environment(
-                        contract.observed_environment_json
-                    ),
-                    available_artifact_names=frozenset(artifact_rows),
-                    metric_values={row.metric_name: row.numeric_value for row in metric_rows},
-                )
+                else base_evaluation
             )
             snapshot = _input_snapshot(
                 contract,
@@ -478,8 +475,6 @@ async def _reconcile_artifacts(
     session: AsyncSession,
     contract: _Contract,
     observations: tuple[_ObservedArtifact, ...],
-    *,
-    report_exists: bool,
 ) -> tuple[dict[str, ArtifactRow], list[ArtifactRow], list[_ProcessingError]]:
     persisted = tuple(
         await session.scalars(
@@ -519,20 +514,31 @@ async def _reconcile_artifacts(
                 )
             )
         if mismatch:
-            if report_exists:
-                raise ResultStateConflict("artifact_provenance_conflict")
             assert row is not None
+            details: list[tuple[str, str]] = [
+                ("persisted_artifact_id", str(row.artifact_id)),
+                ("expected_content_sha256", row.content_sha256),
+                ("observed_content_sha256", identity.content_sha256),
+                ("expected_byte_size", str(row.byte_size)),
+                ("observed_byte_size", str(identity.byte_size)),
+            ]
+            if (
+                named is not None
+                and pathed is not None
+                and named.artifact_id != pathed.artifact_id
+            ):
+                details.extend(
+                    (
+                        ("name_slot_artifact_id", str(named.artifact_id)),
+                        ("path_slot_artifact_id", str(pathed.artifact_id)),
+                    )
+                )
             errors.append(
                 _ProcessingError(
                     "RESULT_PROVENANCE_CONFLICT",
                     observation.declaration.name,
                     "artifact_identity_conflict",
-                    (
-                        ("expected_content_sha256", row.content_sha256),
-                        ("observed_content_sha256", identity.content_sha256),
-                        ("expected_byte_size", str(row.byte_size)),
-                        ("observed_byte_size", str(identity.byte_size)),
-                    ),
+                    tuple(details),
                 )
             )
             continue
@@ -559,8 +565,6 @@ async def _reconcile_metrics(
     session: AsyncSession,
     observations: tuple[_ObservedArtifact, ...],
     artifacts: dict[str, ArtifactRow],
-    *,
-    report_exists: bool,
 ) -> tuple[list[MetricObservationRow], list[_ProcessingError]]:
     reconciled: list[MetricObservationRow] = []
     errors: list[_ProcessingError] = []
@@ -583,14 +587,16 @@ async def _reconcile_metrics(
                 or row.numeric_value != value
                 or row.extractor_version != EXTRACTOR_VERSION
             ):
-                if report_exists:
-                    raise ResultStateConflict("metric_provenance_conflict")
                 errors.append(
                     _ProcessingError(
                         "RESULT_PROVENANCE_CONFLICT",
                         declaration.name,
                         "metric_observation_conflict",
                         (
+                            (
+                                "persisted_metric_observation_id",
+                                str(row.metric_observation_id),
+                            ),
                             (
                                 "expected_numeric_value",
                                 canonical_decimal_text(row.numeric_value),
@@ -615,7 +621,10 @@ async def _reconcile_metrics(
     return reconciled, errors
 
 
-def _processing_evaluation(errors: list[_ProcessingError]) -> ValidationEvaluation:
+def _processing_evaluation(
+    errors: list[_ProcessingError],
+    warnings: tuple[ValidationFinding, ...],
+) -> ValidationEvaluation:
     findings = tuple(
         sorted(
             (
@@ -631,7 +640,7 @@ def _processing_evaluation(errors: list[_ProcessingError]) -> ValidationEvaluati
             key=lambda finding: (finding.code, finding.subject),
         )
     )
-    return ValidationEvaluation(ValidationVerdict.ERROR, findings, ())
+    return ValidationEvaluation(ValidationVerdict.ERROR, findings, warnings)
 
 
 def _observed_environment(value: dict[str, object] | None) -> ObservedEnvironment | None:
@@ -747,8 +756,6 @@ def _validation_rule_value(rule: ValidationRule) -> dict[str, object]:
 
 
 def _processing_error_value(error: _ProcessingError) -> object:
-    if error.code == "VALIDATION_INPUT_INVALID" and not error.details:
-        return error.failure
     return {
         "code": error.code,
         "subject": error.subject,
