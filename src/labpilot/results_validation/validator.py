@@ -223,19 +223,23 @@ def _validate_frameworks(
             continue
 
         name = canonicalize_name(requirement.name)
-        installed = frameworks.get(name)
-        if installed is None:
-            if _FRAMEWORK_PROBE_ISSUES.intersection(probe_issue_codes) or name not in frameworks:
+        if _FRAMEWORK_PROBE_ISSUES.intersection(probe_issue_codes):
+            if name not in frameworks or frameworks[name] is None:
                 inconclusive.append(_finding("ENVIRONMENT_OBSERVATION_INSUFFICIENT", name))
-            else:
-                invalid.append(_finding("FRAMEWORK_MISSING", name))
+                continue
+        if name not in frameworks:
+            errors.append(_finding("VALIDATION_INPUT_INVALID", name))
+            continue
+        installed = frameworks[name]
+        if installed is None:
+            invalid.append(_finding("FRAMEWORK_MISSING", name))
             continue
         try:
             version = Version(installed)
         except InvalidVersion:
             errors.append(_finding("VALIDATION_INPUT_INVALID", name))
             continue
-        if not requirement.specifier.contains(version, prereleases=True):
+        if not requirement.specifier.contains(version):
             invalid.append(_finding("FRAMEWORK_VERSION_MISMATCH", name))
 
 

@@ -265,6 +265,41 @@ def test_framework_requirement_uses_packaging_versions(
 
 
 @pytest.mark.parametrize(
+    ("requirement", "observed_version", "verdict", "reason_code"),
+    (
+        ("torch>=1,<3", "2.0rc1", "invalid", "FRAMEWORK_VERSION_MISMATCH"),
+        ("torch>=2.0rc1,<3", "2.0rc2", "valid", None),
+    ),
+)
+def test_framework_requirement_preserves_standard_prerelease_semantics(
+    requirement: str,
+    observed_version: str,
+    verdict: str,
+    reason_code: str | None,
+) -> None:
+    expectation = _expectation(frameworks=(requirement,))
+    observation = _observation(
+        expectation,
+        frameworks=(ObservedFrameworkVersion("torch", observed_version),),
+    )
+
+    evaluation = _evaluate(expectation=expectation, observation=observation)
+
+    assert evaluation.verdict.value == verdict
+    assert _codes(evaluation.reasons) == (() if reason_code is None else (reason_code,))
+
+
+def test_normal_observation_without_required_framework_entry_is_invalid_input() -> None:
+    expectation = _expectation(frameworks=("torch>=2",))
+    observation = _observation(expectation)
+
+    evaluation = _evaluate(expectation=expectation, observation=observation)
+
+    assert evaluation.verdict.value == "error"
+    assert _codes(evaluation.reasons) == ("VALIDATION_INPUT_INVALID",)
+
+
+@pytest.mark.parametrize(
     "requirement",
     (
         "torch @ https://example.invalid/torch.whl",
