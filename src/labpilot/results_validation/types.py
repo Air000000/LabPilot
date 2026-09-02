@@ -33,3 +33,17 @@ class MissingArtifact:
 
 class ResultProcessingDeferred(RuntimeError):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class ValidationFinding:
+    code: str
+    subject: str
+    details: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ValidationEvaluation:
+    verdict: ValidationVerdict
+    reasons: tuple[ValidationFinding, ...]
+    warnings: tuple[ValidationFinding, ...]
