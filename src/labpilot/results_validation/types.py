@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from enum import StrEnum
+from uuid import UUID
 
 
 class ValidationVerdict(StrEnum):
@@ -33,6 +34,18 @@ class MissingArtifact:
 
 class ResultProcessingDeferred(RuntimeError):
     pass
+
+
+class ResultStateConflict(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessAttemptResult:
+    attempt_id: UUID
+    validation_report_id: UUID
+    verdict: ValidationVerdict
+    selected: bool
 
 
 @dataclass(frozen=True, slots=True)
