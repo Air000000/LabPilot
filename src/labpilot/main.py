@@ -25,6 +25,7 @@ from labpilot.execution.query_service import ExecutionQueryService
 from labpilot.experiments.project_service import ProjectApplicationService
 from labpilot.experiments.proposal_service import ProposalApplicationService
 from labpilot.experiments.proposal_verifier import ProposalVerifier
+from labpilot.results_validation.query_service import ResultQueryService
 from labpilot.settings import get_settings
 from labpilot.tools_policy.repository import SqlToolRepository
 from labpilot.tools_policy.repository_tools import repository_tool_definitions
@@ -89,6 +90,7 @@ services = ApplicationServices(
         version_semantics=VersionExecutionSemanticsAdapter(database.session),
     ),
     execution_queries=ExecutionQueryService(database.session),
+    result_queries=ResultQueryService(database.session),
 )
 actor_provider = ServerConfiguredActorProvider(
     installation_identity=settings.installation_identity,

@@ -31,6 +31,7 @@ from labpilot.experiments.proposal_service import (
     ProposalNotFound,
     ProposalVerificationConflict,
 )
+from labpilot.results_validation.types import ResultProcessingDeferred
 
 
 class ErrorResponse(BaseModel):
@@ -318,6 +319,19 @@ async def _service_unavailable_handler(
     )
 
 
+async def _result_processing_deferred_handler(
+    _: Request,
+    exc: Exception,
+) -> JSONResponse:
+    assert isinstance(exc, ResultProcessingDeferred)
+    return _response(
+        status_code=503,
+        error_code="service_unavailable",
+        human_message="application service is unavailable",
+        retryable=True,
+    )
+
+
 async def _internal_invariant_handler(
     _: Request,
     exc: Exception,
@@ -402,6 +416,10 @@ def register_error_handlers(app: FastAPI) -> None:
     app.add_exception_handler(
         ServiceUnavailableError,
         _service_unavailable_handler,
+    )
+    app.add_exception_handler(
+        ResultProcessingDeferred,
+        _result_processing_deferred_handler,
     )
     app.add_exception_handler(
         UnexpectedApplicationInvariant,

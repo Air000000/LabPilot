@@ -12,6 +12,7 @@ from labpilot.execution.batch_service import BatchApplicationService
 from labpilot.execution.query_service import ExecutionQueryService
 from labpilot.experiments.project_service import ProjectApplicationService
 from labpilot.experiments.proposal_service import ProposalApplicationService
+from labpilot.results_validation.query_service import ResultQueryService
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +23,7 @@ class ApplicationServices:
     agent_runs: AgentApplicationService | None = None
     batches: BatchApplicationService | None = None
     execution_queries: ExecutionQueryService | None = None
+    result_queries: ResultQueryService | None = None
 
 
 def get_application_services(request: Request) -> ApplicationServices:
@@ -67,6 +69,14 @@ def get_execution_query_service(
     if services.execution_queries is None:
         raise ServiceUnavailableError("execution query service is not configured")
     return services.execution_queries
+
+
+def get_result_query_service(
+    services: Annotated[ApplicationServices, Depends(get_application_services)],
+) -> ResultQueryService:
+    if services.result_queries is None:
+        raise ServiceUnavailableError("result query service is not configured")
+    return services.result_queries
 
 
 def get_actor_provider(request: Request) -> ActorProvider:
