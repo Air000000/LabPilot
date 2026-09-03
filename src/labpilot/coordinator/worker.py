@@ -19,6 +19,9 @@ from labpilot.execution.batch_service import AttemptCreationService
 from labpilot.execution.execution_service import AttemptExecutionService
 from labpilot.execution.preparation_service import AttemptPreparationService
 from labpilot.execution.runner_client import RunnerClient
+from labpilot.execution.trial_outcome import TrialExecutionOutcomeService
+from labpilot.results_validation.service import ResultApplicationService
+from labpilot.results_validation.summary_service import BatchSummaryService
 from labpilot.settings import Settings, get_settings
 
 
@@ -45,6 +48,15 @@ def build_coordinator(settings: Settings, database: Database) -> CoordinatorServ
         content_store=ContentAddressedStore(settings.repository_content_store_root),
     )
     semantics = VersionExecutionSemanticsAdapter(database.session)
+    outcomes = TrialExecutionOutcomeService(
+        database.session,
+        version_semantics=semantics,
+    )
+    result_processing = ResultApplicationService(database.session)
+    summary = BatchSummaryService(
+        database.session,
+        trial_execution_outcome_service=outcomes,
+    )
     return CoordinatorService(
         database.session,
         attempt_creation=AttemptCreationService(
@@ -72,6 +84,8 @@ def build_coordinator(settings: Settings, database: Database) -> CoordinatorServ
                 settings.unknown_attention_grace_seconds
             ),
         ),
+        result_processing=result_processing,
+        summary=summary,
     )
 
 

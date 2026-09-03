@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import cast
 from uuid import UUID
 
-from sqlalchemy import exists, func, select
+from sqlalchemy import exists, func, or_, select
 from sqlalchemy.sql.elements import ColumnElement
 
 from labpilot.db.uow import SessionContextFactory, UnitOfWork
@@ -17,7 +18,16 @@ from labpilot.execution.execution_service import (
 from labpilot.execution.models import AttemptRow, BatchRow, TrialRow
 from labpilot.execution.ports import ExecutionInputError
 from labpilot.execution.preparation_service import AttemptPreparationService
-from labpilot.execution.types import AttemptStatus
+from labpilot.execution.types import AttemptStatus, TerminalKind
+from labpilot.experiments.proposal_models import ExperimentVersionRow
+from labpilot.results_validation.models import ValidationReportRow
+from labpilot.results_validation.service import ResultApplicationService
+from labpilot.results_validation.summary_service import BatchSummaryService
+from labpilot.results_validation.types import ResultProcessingDeferred
+from labpilot.results_validation.validator import (
+    EXTRACTION_PROFILE_VERSION,
+    VALIDATOR_VERSION,
+)
 
 _PHYSICAL_STATUSES = (
     AttemptStatus.LAUNCH_PENDING.value,
@@ -25,6 +35,8 @@ _PHYSICAL_STATUSES = (
     AttemptStatus.UNKNOWN.value,
     AttemptStatus.IDENTITY_CONFLICT.value,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,11 +54,15 @@ class CoordinatorService:
         attempt_creation: AttemptCreationService,
         preparation: AttemptPreparationService,
         execution: AttemptExecutionService,
+        result_processing: ResultApplicationService | None = None,
+        summary: BatchSummaryService | None = None,
     ) -> None:
         self._session_context_factory = session_context_factory
         self._attempt_creation = attempt_creation
         self._preparation = preparation
         self._execution = execution
+        self._result_processing = result_processing
+        self._summary = summary
 
     async def run_startup_barrier(self, *, coordinator_start_id: UUID) -> None:
         for candidate in await self._startup_candidates():
@@ -66,8 +82,10 @@ class CoordinatorService:
     async def run_scan(self) -> None:
         await self._control_existing_work()
         await self._reconcile_physical_work()
+        await self._process_successful_results()
         await self._prepare_eligible_work()
         await self._admit_launch_ready()
+        await self._refresh_candidate_summaries()
 
     async def _control_existing_work(self) -> None:
         async with self._session_context_factory() as session:
@@ -150,6 +168,53 @@ class CoordinatorService:
                 attempt_id, reason=ReconciliationReason.PERIODIC
             )
 
+    async def _process_successful_results(self) -> None:
+        if self._result_processing is None:
+            return
+        for attempt_id in await self._result_candidate_attempts():
+            try:
+                await self._result_processing.process_attempt(attempt_id)
+            except ResultProcessingDeferred:
+                logger.info("result_processing_deferred attempt_id=%s", attempt_id)
+
+    async def _result_candidate_attempts(self) -> tuple[UUID, ...]:
+        active_report = exists(
+            select(ValidationReportRow.validation_report_id).where(
+                ValidationReportRow.attempt_id == AttemptRow.attempt_id,
+                ValidationReportRow.validation_protocol_hash
+                == ExperimentVersionRow.validation_protocol_hash,
+                ValidationReportRow.extraction_profile_version
+                == EXTRACTION_PROFILE_VERSION,
+                ValidationReportRow.validator_version == VALIDATOR_VERSION,
+            )
+        )
+        async with self._session_context_factory() as session:
+            return tuple(
+                await session.scalars(
+                    select(AttemptRow.attempt_id)
+                    .join(TrialRow, TrialRow.trial_id == AttemptRow.trial_id)
+                    .join(BatchRow, BatchRow.batch_id == TrialRow.batch_id)
+                    .join(
+                        ExperimentVersionRow,
+                        ExperimentVersionRow.experiment_version_id
+                        == BatchRow.experiment_version_id,
+                    )
+                    .where(
+                        AttemptRow.status == AttemptStatus.TERMINAL.value,
+                        AttemptRow.terminal_kind == TerminalKind.PROCESS_EXITED.value,
+                        AttemptRow.exit_code == 0,
+                        ~active_report,
+                    )
+                    .order_by(
+                        BatchRow.created_at,
+                        BatchRow.batch_id,
+                        TrialRow.trial_ordinal,
+                        AttemptRow.attempt_number,
+                        AttemptRow.attempt_id,
+                    )
+                )
+            )
+
     async def _prepare_eligible_work(self) -> None:
         for attempt_id in await self._preparing_attempts():
             await self._preparation.prepare_attempt(attempt_id)
@@ -228,6 +293,27 @@ class CoordinatorService:
                 break
             if await self._attempt_status(attempt_id) == AttemptStatus.LAUNCH_READY.value:
                 break
+
+    async def _refresh_candidate_summaries(self) -> None:
+        if self._summary is None:
+            return
+        for batch_id in await self._summary_candidate_batches():
+            await self._summary.refresh_summary(batch_id)
+
+    async def _summary_candidate_batches(self) -> tuple[UUID, ...]:
+        async with self._session_context_factory() as session:
+            return tuple(
+                await session.scalars(
+                    select(BatchRow.batch_id)
+                    .where(
+                        or_(
+                            BatchRow.start_requested_at.is_not(None),
+                            BatchRow.cancel_requested_at.is_not(None),
+                        )
+                    )
+                    .order_by(BatchRow.created_at, BatchRow.batch_id)
+                )
+            )
 
     async def _launch_ready_attempts(self) -> tuple[UUID, ...]:
         async with self._session_context_factory() as session:
