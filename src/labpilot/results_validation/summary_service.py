@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
+from decimal import ROUND_HALF_EVEN, Context, Decimal, DecimalException, localcontext
 from typing import Literal, cast
 from uuid import UUID, uuid4
 
@@ -129,16 +129,6 @@ class BatchSummaryService:
             version = await uow.session.get(ExperimentVersionRow, batch.experiment_version_id)
             if version is None:
                 raise ResultStateConflict("experiment_version_not_found")
-            selections = {
-                item.trial_id: item
-                for item in (
-                    await uow.session.scalars(
-                        select(TrialResultSelectionRow).where(
-                            TrialResultSelectionRow.trial_id.in_(trial_ids)
-                        )
-                    )
-                ).all()
-            }
             reports = (
                 {
                     item.validation_report_id: item
@@ -159,11 +149,26 @@ class BatchSummaryService:
             for report in reports.values():
                 by_attempt[report.attempt_id].append(report)
 
+            attempts_by_id = {
+                attempt.attempt_id: attempt
+                for attempt in attempts
+            }
+            selections = {
+                item.trial_id: item
+                for item in (
+                    await uow.session.scalars(
+                        select(TrialResultSelectionRow).where(
+                            TrialResultSelectionRow.trial_id.in_(trial_ids)
+                        )
+                    )
+                ).all()
+            }
             state = await _build_state(
                 uow,
                 trials=trials,
                 outcomes=snapshot.outcomes,
                 reports_by_attempt=by_attempt,
+                attempts_by_id=attempts_by_id,
                 reports_by_id=reports,
                 selections=selections,
                 validation_protocol_hash=version.validation_protocol_hash,
@@ -253,6 +258,7 @@ async def _build_state(
     trials: tuple[TrialRow, ...],
     outcomes: tuple[TrialExecutionOutcome, ...],
     reports_by_attempt: dict[UUID, list[ValidationReportRow]],
+    attempts_by_id: dict[UUID, AttemptRow],
     reports_by_id: dict[UUID, ValidationReportRow],
     selections: dict[UUID, TrialResultSelectionRow],
     validation_protocol_hash: str,
@@ -269,6 +275,12 @@ async def _build_state(
         if outcome.state is TrialExecutionState.SUCCESSFUL:
             if outcome.successful_attempt_id is None:
                 raise ResultStateConflict("successful_attempt_missing")
+            successful_attempt = attempts_by_id.get(outcome.successful_attempt_id)
+            if (
+                successful_attempt is None
+                or successful_attempt.trial_id != trial.trial_id
+            ):
+                raise ResultStateConflict("successful_attempt_trial_mismatch")
             candidates = [
                 report
                 for report in reports_by_attempt.get(outcome.successful_attempt_id, [])
@@ -284,7 +296,7 @@ async def _build_state(
             warnings.extend(_warnings(trial, outcome.successful_attempt_id, report))
             if report.verdict == "valid":
                 if selection is None or not _valid_selection(
-                    selection, trial, outcome.successful_attempt_id, report
+                    selection, trial, outcome.successful_attempt_id, report, attempts_by_id
                 ):
                     raise ResultStateConflict("valid_result_selection_missing_or_invalid")
                 metrics = await _included_metrics(uow, report, outcome.successful_attempt_id)
@@ -300,7 +312,12 @@ async def _build_state(
             elif report.verdict in {"invalid", "inconclusive", "error"}:
                 if selection is not None:
                     _validate_historical_selection(
-                        selection, trial, outcome.successful_attempt_id, report, reports_by_id
+                        selection,
+                        trial,
+                        outcome.successful_attempt_id,
+                        report,
+                        reports_by_id,
+                        attempts_by_id,
                     )
                 excluded.append(_validation_exclusion(trial, report))
             else:
@@ -334,13 +351,17 @@ def _valid_selection(
     trial: TrialRow,
     successful_attempt_id: UUID,
     report: ValidationReportRow,
+    attempts_by_id: dict[UUID, AttemptRow],
 ) -> bool:
+    selected_attempt = attempts_by_id.get(selection.attempt_id)
     return (
         selection.trial_id == trial.trial_id
         and selection.attempt_id == successful_attempt_id
         and selection.validation_report_id == report.validation_report_id
         and report.attempt_id == selection.attempt_id
         and report.verdict == "valid"
+        and selected_attempt is not None
+        and selected_attempt.trial_id == trial.trial_id
     )
 
 
@@ -350,12 +371,19 @@ def _validate_historical_selection(
     successful_attempt_id: UUID,
     current_report: ValidationReportRow,
     reports_by_id: dict[UUID, ValidationReportRow],
+    attempts_by_id: dict[UUID, AttemptRow],
 ) -> None:
     if selection.validation_report_id == current_report.validation_report_id:
         raise ResultStateConflict("nonvalid_current_report_selected")
     report = reports_by_id.get(selection.validation_report_id)
     if (
-        not _valid_selection(selection, trial, successful_attempt_id, report)
+        not _valid_selection(
+            selection,
+            trial,
+            successful_attempt_id,
+            report,
+            attempts_by_id,
+        )
         if report is not None
         else True
     ):
@@ -446,20 +474,33 @@ async def _included_metrics(
         if type(item) is not dict:
             raise ResultStateConflict("validation_metric_snapshot_invalid")
         try:
-            metric_id = UUID(cast(str, item["metric_observation_id"]))
-            artifact_id = UUID(cast(str, item["artifact_id"]))
+            raw_metric_id = item["metric_observation_id"]
+            raw_artifact_id = item["artifact_id"]
             metric_name = item["metric_name"]
             split = item["split"]
-            value = Decimal(cast(str, item["numeric_value"]))
+            raw_numeric_value = item["numeric_value"]
             extractor_version = item["extractor_version"]
-        except (KeyError, TypeError, ValueError) as error:
+        except KeyError as error:
+            raise ResultStateConflict("validation_metric_snapshot_invalid") from error
+        if (
+            type(raw_metric_id) is not str
+            or type(raw_artifact_id) is not str
+            or type(metric_name) is not str
+            or (split is not None and type(split) is not str)
+            or type(raw_numeric_value) is not str
+            or type(extractor_version) is not str
+        ):
+            raise ResultStateConflict("validation_metric_snapshot_invalid")
+        try:
+            metric_id = UUID(raw_metric_id)
+            artifact_id = UUID(raw_artifact_id)
+            value = Decimal(raw_numeric_value)
+        except (DecimalException, TypeError, ValueError) as error:
             raise ResultStateConflict("validation_metric_snapshot_invalid") from error
         if (
             metric_id in seen
-            or type(metric_name) is not str
-            or (split is not None and type(split) is not str)
-            or type(extractor_version) is not str
             or not value.is_finite()
+            or raw_numeric_value != canonical_decimal_text(value)
         ):
             raise ResultStateConflict("validation_metric_snapshot_invalid")
         seen.add(metric_id)

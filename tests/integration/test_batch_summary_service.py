@@ -12,7 +12,7 @@ import pytest
 from sqlalchemy import select
 
 from labpilot.coordinator.execution_adapters import VersionExecutionSemanticsAdapter
-from labpilot.execution.models import AttemptRow, BatchRow
+from labpilot.execution.models import AttemptRow, BatchRow, TrialRow
 from labpilot.execution.trial_outcome import TrialExecutionOutcomeService
 from labpilot.observability.models import OutboxRecordRow, RuntimeEventRow
 from labpilot.results_validation.models import (
@@ -989,3 +989,191 @@ async def test_unselected_current_inconclusive_report_is_a_settled_exclusion(
     assert result.presentation_status == "complete_with_invalid_results"
     assert exclusion["exclusion_code"] == "VALIDATION_INCONCLUSIVE"
     assert exclusion["validation_reason_codes"] == ["ENVIRONMENT_OBSERVATION_INSUFFICIENT"]
+
+
+@pytest.mark.integration
+async def test_report_selection_publication_is_not_torn_under_read_committed(
+    isolated_database_url: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    summary = _summary_module()
+    selection_observed = asyncio.Event()
+    resume_summary = asyncio.Event()
+    original_uow = summary.UnitOfWork
+
+    class PausingUnitOfWork:
+        def __init__(self, session_context_factory: object) -> None:
+            self._inner = original_uow(session_context_factory)
+
+        async def __aenter__(self):
+            inner = await self._inner.__aenter__()
+            original_scalars = inner.session.scalars
+
+            async def pause_after_selection(statement: object, *args: object, **kwargs: object):
+                result = await original_scalars(statement, *args, **kwargs)
+                if "trial_result_selections" in str(statement):
+                    selection_observed.set()
+                    await resume_summary.wait()
+                return result
+
+            monkeypatch.setattr(inner.session, "scalars", pause_after_selection)
+            return inner
+
+        async def __aexit__(self, *args: object) -> bool:
+            return await self._inner.__aexit__(*args)
+
+    monkeypatch.setattr(summary, "UnitOfWork", PausingUnitOfWork)
+    async with _seed_result_attempt(isolated_database_url, tmp_path) as (
+        system,
+        batch_id,
+        _trial_id,
+        attempt_id,
+        _workspace,
+    ):
+        service = _summary_service(
+            summary,
+            system.database.session,
+            _outcomes(system.database.session),
+        )
+        refresh = asyncio.create_task(service.refresh_summary(batch_id))
+        await selection_observed.wait()
+        await _process(system.database, attempt_id)
+        resume_summary.set()
+        result = await refresh
+        state = await _state(system.database, batch_id)
+
+    assert result.presentation_status in {"not_ready", "complete"}
+    assert len(state["revisions"]) <= 1
+
+
+@pytest.mark.integration
+async def test_successful_snapshot_attempt_must_belong_to_its_trial(
+    isolated_database_url: str, tmp_path: Path
+) -> None:
+    summary = _summary_module()
+    async with _seed_result_attempt(isolated_database_url, tmp_path) as (
+        system,
+        batch_id,
+        trial_id,
+        attempt_id,
+        _workspace,
+    ):
+        async with system.database.session() as session:
+            source_trial = await session.get(TrialRow, trial_id)
+            source_attempt = await session.get(AttemptRow, attempt_id)
+            assert source_trial is not None and source_attempt is not None
+            second_trial_id = UUID(int=(1 << 128) - 1)
+            second_attempt_id = uuid4()
+            session.add(
+                TrialRow(
+                    trial_id=second_trial_id,
+                    batch_id=batch_id,
+                    trial_ordinal=2,
+                    trial_identity="summary-cross-trial",
+                    resolved_parameters_json=deepcopy(source_trial.resolved_parameters_json),
+                    seed=source_trial.seed + 1,
+                )
+            )
+            await session.flush()
+            session.add(
+                AttemptRow(
+                    attempt_id=second_attempt_id,
+                    trial_id=second_trial_id,
+                    attempt_number=2,
+                    status=source_attempt.status,
+                    supervisor_execution_identity=f"summary-cross-{second_attempt_id}",
+                    workspace_path=source_attempt.workspace_path,
+                    frozen_execution_spec_json=deepcopy(
+                        source_attempt.frozen_execution_spec_json
+                    ),
+                    frozen_execution_spec_hash=source_attempt.frozen_execution_spec_hash,
+                    frozen_launch_spec_json=deepcopy(source_attempt.frozen_launch_spec_json),
+                    execution_spec_hash=source_attempt.execution_spec_hash,
+                    launch_intent_committed_at=source_attempt.launch_intent_committed_at,
+                    observed_environment_json=deepcopy(source_attempt.observed_environment_json),
+                    observed_environment_recorded_at=source_attempt.observed_environment_recorded_at,
+                    physical_started_at=source_attempt.physical_started_at,
+                    physical_ended_at=source_attempt.physical_ended_at,
+                    terminal_kind="process_exited",
+                    exit_code=0,
+                    terminal_at=source_attempt.terminal_at,
+                )
+            )
+            await session.commit()
+        await _process(system.database, attempt_id)
+        await _process(system.database, second_attempt_id)
+        snapshot = await _outcomes(system.database.session).snapshot_batch(batch_id)
+        async with system.database.session() as session:
+            attempt = await session.get(AttemptRow, attempt_id)
+            assert attempt is not None
+            attempt.trial_id = second_trial_id
+            await session.commit()
+        class FrozenOutcomes:
+            async def snapshot_batch(self, observed_batch_id: UUID):
+                assert observed_batch_id == batch_id
+                return snapshot
+
+        with pytest.raises(ResultStateConflict):
+            await _summary_service(
+                summary,
+                system.database.session,
+                FrozenOutcomes(),
+            ).refresh_summary(batch_id)
+        state = await _state(system.database, batch_id)
+
+    assert snapshot.attempt_ids == (attempt_id, second_attempt_id)
+    assert state["revisions"] == state["events"] == ()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("numeric_value", "not-a-decimal"),
+        ("metric_observation_id", 123),
+        ("numeric_value", 123),
+    ),
+)
+async def test_malformed_metric_snapshot_scalars_fail_closed(
+    isolated_database_url: str,
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    summary = _summary_module()
+    async with _seed_result_attempt(isolated_database_url, tmp_path) as (
+        system,
+        batch_id,
+        _trial_id,
+        attempt_id,
+        _workspace,
+    ):
+        await _process(system.database, attempt_id)
+        async with system.database.session() as session:
+            report = await session.scalar(
+                select(ValidationReportRow).where(
+                    ValidationReportRow.attempt_id == attempt_id
+                )
+            )
+            assert report is not None
+            snapshot = deepcopy(report.input_snapshot_json)
+            snapshot["metrics"][0][field] = value
+            if field == "numeric_value" and value == 123:
+                metric = await session.get(
+                    MetricObservationRow,
+                    UUID(snapshot["metrics"][0]["metric_observation_id"]),
+                )
+                assert metric is not None
+                metric.numeric_value = Decimal("123")
+            report.input_snapshot_json = snapshot
+            await session.commit()
+        with pytest.raises(ResultStateConflict):
+            await _summary_service(
+                summary,
+                system.database.session,
+                _outcomes(system.database.session),
+            ).refresh_summary(batch_id)
+        state = await _state(system.database, batch_id)
+
+    assert state["revisions"] == state["events"] == ()
