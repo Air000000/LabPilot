@@ -8,9 +8,12 @@ import os
 import subprocess
 import sys
 import time
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 _MAX_STARTS = 100
+_MAX_DECIMAL_DIGITS = 1_000
+_MAX_DECIMAL_ABSOLUTE_EXPONENT = 10_000
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -22,7 +25,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--duration", type=float, required=True)
     parser.add_argument("--exit-code", type=int, required=True)
     parser.add_argument("--spawn-child", action="store_true")
+    parser.add_argument("--score")
     args = parser.parse_args(argv)
+    score = _parse_score(parser, args.score)
     if not 0 <= args.duration <= 86_400 or not 0 <= args.exit_code <= 255:
         parser.error("duration or exit code is outside the bounded fixture contract")
     if any(len(value.encode("utf-8", "strict")) > 1024 for value in (args.value, args.dataset)):
@@ -56,7 +61,53 @@ def main(argv: list[str] | None = None) -> int:
     record["natural_exit"] = True
     record["exit_code"] = args.exit_code
     _write_locked(oracle, record)
+    if score is not None:
+        _write_result(output / "result.json", score)
     return int(args.exit_code)
+
+
+def _parse_score(parser: argparse.ArgumentParser, value: str | None) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        score = Decimal(value)
+    except InvalidOperation:
+        parser.error("score is outside the canonical decimal contract")
+    try:
+        _canonical_decimal_text(score)
+    except ValueError:
+        parser.error("score is outside the canonical decimal contract")
+    return score
+
+
+def _canonical_decimal_text(value: Decimal) -> str:
+    if not value.is_finite():
+        raise ValueError("score must be finite")
+    if value.is_zero():
+        return "0"
+    _, digits, exponent = value.as_tuple()
+    assert isinstance(exponent, int)
+    if len(digits) > _MAX_DECIMAL_DIGITS:
+        raise ValueError("score has too many decimal digits")
+    if abs(exponent) > _MAX_DECIMAL_ABSOLUTE_EXPONENT:
+        raise ValueError("score has an unsupported exponent")
+    rendered = format(value, "f")
+    return rendered.rstrip("0").rstrip(".") if "." in rendered else rendered
+
+
+def _write_result(path: Path, score: Decimal) -> None:
+    payload = (
+        '{"schema_version":"v1","metrics":{"score":' + _canonical_decimal_text(score) + "}}\n"
+    ).encode("utf-8")
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        with temporary.open("wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _record_start(
