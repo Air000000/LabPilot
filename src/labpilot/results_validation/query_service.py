@@ -12,6 +12,7 @@ from labpilot.execution.query_service import (
     BatchQueryNotFound,
     TrialQueryNotFound,
 )
+from labpilot.observability.models import RuntimeEventRow
 from labpilot.results_validation.artifact_reader import read_artifact_identity
 from labpilot.results_validation.models import (
     ArtifactRow,
@@ -94,6 +95,13 @@ class BatchSummaryRevision:
 class BatchSummary:
     batch_id: UUID
     latest_summary: BatchSummaryRevision | None
+
+
+@dataclass(frozen=True, slots=True)
+class BatchRuntimeEvent:
+    aggregate_sequence: int
+    event_type: str
+    payload_json: dict[str, object]
 
 
 class ResultQueryService:
@@ -226,6 +234,39 @@ class ResultQueryService:
                 warnings=list(cast(list[object], revision.warning_json.get("warnings", []))),
                 aggregates=dict(revision.aggregates_json),
             ),
+        )
+
+    async def ensure_batch_exists(self, batch_id: UUID) -> None:
+        async with self._session_context_factory() as session:
+            if await session.get(BatchRow, batch_id) is None:
+                raise BatchQueryNotFound(batch_id)
+
+
+    async def list_batch_events_after(
+        self, batch_id: UUID, *, after_sequence: int
+    ) -> tuple[BatchRuntimeEvent, ...]:
+        async with self._session_context_factory() as session:
+            events = tuple(
+                (
+                    await session.scalars(
+                        select(RuntimeEventRow)
+                        .where(
+                            RuntimeEventRow.aggregate_type == "batch",
+                            RuntimeEventRow.aggregate_id == str(batch_id),
+                            RuntimeEventRow.aggregate_sequence > after_sequence,
+                        )
+                        .order_by(RuntimeEventRow.aggregate_sequence)
+                        .limit(100)
+                    )
+                ).all()
+            )
+        return tuple(
+            BatchRuntimeEvent(
+                aggregate_sequence=event.aggregate_sequence,
+                event_type=event.event_type,
+                payload_json=dict(event.payload_json),
+            )
+            for event in events
         )
 
 
