@@ -50,7 +50,7 @@ async def test_migration_0010_adds_exact_attempt_physical_columns(
             "physical_boot_id",
         }
     }
-    assert revision == "0010_attempt_physical_execution"
+    assert revision == "0011_result_plane"
     assert physical == {
         "frozen_launch_spec_json": ("jsonb", None, "YES"),
         "execution_spec_hash": ("character", 64, "YES"),
