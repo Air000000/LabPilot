@@ -336,7 +336,7 @@ class GitAdapter:
         if not validated_oids:
             return ()
         arguments = _safe_git_arguments(
-            root.fd_path,
+            root,
             ("cat-file", "--batch"),
         )
         process = await asyncio.create_subprocess_exec(
@@ -509,7 +509,7 @@ class GitAdapter:
                 os.close(root.descriptor)
         root = repository_root
         command_name = arguments[0]
-        safe_arguments = _safe_git_arguments(root.fd_path, arguments)
+        safe_arguments = _safe_git_arguments(root, arguments)
         process = await asyncio.create_subprocess_exec(
             str(self._git_executable),
             *safe_arguments,
@@ -927,16 +927,18 @@ def _git_metadata_path_exists(
 
 
 def _safe_git_arguments(
-    repository_root: Path,
+    repository_root: _AnchoredRepositoryRoot,
     arguments: tuple[str, ...],
 ) -> tuple[str, ...]:
     return (
+        "-c",
+        f"safe.directory={repository_root.canonical_path}",
         "-c",
         "core.fsmonitor=false",
         "-c",
         "core.untrackedCache=false",
         "-c",
-        f"core.worktree={repository_root}",
+        f"core.worktree={repository_root.fd_path}",
         "-c",
         "core.excludesFile=/dev/null",
         "-c",

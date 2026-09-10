@@ -113,6 +113,11 @@ async def test_git_runner_uses_argv_fixed_environment_and_no_shell(
     arguments = captured["args"]
     assert isinstance(arguments, tuple)
     assert arguments[0] == str(GIT)
+    safe_directory_argument = f"safe.directory={repository.resolve()}"
+    safe_directory_index = arguments.index(safe_directory_argument)
+    assert arguments[safe_directory_index - 1] == "-c"
+    assert arguments.count(safe_directory_argument) == 1
+    assert "safe.directory=*" not in arguments
     assert f"core.worktree={fd_path}" in arguments
     assert arguments[-2:] == ("rev-parse", "--show-toplevel")
     environment = kwargs["env"]
@@ -889,6 +894,8 @@ async def test_cat_file_batch_reads_exact_blob_bytes_in_request_order(
     safe_prefix = (
         str(GIT),
         "-c",
+        f"safe.directory={repository.resolve()}",
+        "-c",
         "core.fsmonitor=false",
         "-c",
         "core.untrackedCache=false",
@@ -903,7 +910,48 @@ async def test_cat_file_batch_reads_exact_blob_bytes_in_request_order(
     )
     assert captured
     assert all(arguments[: len(safe_prefix)] == safe_prefix for arguments in captured)
+    assert all("safe.directory=*" not in arguments for arguments in captured)
     assert captured[-1] == (*safe_prefix, "cat-file", "--batch")
+
+
+@pytest.mark.asyncio
+async def test_cat_file_batch_trusts_the_canonical_anchored_repository_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = _init_repository(tmp_path / "repository")
+    payload = b"canonical-safe-directory\x00blob"
+    (repository / "blob.bin").write_bytes(payload)
+    _commit_all(repository)
+    blob_oid = _git(repository, "rev-parse", "HEAD:blob.bin").stdout.strip().decode("ascii")
+
+    original = asyncio.create_subprocess_exec
+    captured: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    async def capture(*args: object, **kwargs: object) -> asyncio.subprocess.Process:
+        captured.append((args, kwargs))
+        return await original(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", capture)
+    objects = await GitAdapter(git_executable=GIT, timeout_seconds=2).cat_file_batch(
+        repository,
+        (blob_oid,),
+        max_object_bytes=64,
+        max_total_bytes=64,
+    )
+
+    assert tuple(value.content for value in objects) == (payload,)
+    arguments, kwargs = captured[-1]
+    safe_directory_argument = f"safe.directory={repository.resolve()}"
+    safe_directory_index = arguments.index(safe_directory_argument)
+    assert arguments[safe_directory_index - 1] == "-c"
+    assert arguments.count(safe_directory_argument) == 1
+    assert "safe.directory=*" not in arguments
+    root_fd = kwargs["pass_fds"]
+    assert isinstance(root_fd, tuple) and len(root_fd) == 1
+    fd_path = f"/proc/self/fd/{root_fd[0]}"
+    assert kwargs["cwd"] == fd_path
+    assert f"core.worktree={fd_path}" in arguments
 
 
 @pytest.mark.asyncio
