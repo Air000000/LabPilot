@@ -3,8 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator
-from decimal import Decimal
 from contextlib import asynccontextmanager
+from decimal import Decimal
 from pathlib import Path
 from uuid import UUID
 

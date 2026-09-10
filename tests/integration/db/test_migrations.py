@@ -533,7 +533,10 @@ async def test_result_plane_migration_upgrade_downgrade_upgrade_round_trip(
     try:
         command.upgrade(config, "head")
         with engine.connect() as connection:
-            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0011_result_plane"
+            assert (
+                connection.scalar(text("SELECT version_num FROM alembic_version"))
+                == "0011_result_plane"
+            )
             assert {
                 connection.scalar(text("SELECT to_regclass(:name)"), {"name": f"public.{table}"})
                 for table in tables
@@ -541,15 +544,24 @@ async def test_result_plane_migration_upgrade_downgrade_upgrade_round_trip(
 
         command.downgrade(config, "0010_attempt_physical_execution")
         with engine.connect() as connection:
-            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0010_attempt_physical_execution"
+            assert (
+                connection.scalar(text("SELECT version_num FROM alembic_version"))
+                == "0010_attempt_physical_execution"
+            )
             assert all(
-                connection.scalar(text("SELECT to_regclass(:name)"), {"name": f"public.{table}"}) is None
+                connection.scalar(
+                    text("SELECT to_regclass(:name)"), {"name": f"public.{table}"}
+                )
+                is None
                 for table in tables
             )
 
         command.upgrade(config, "head")
         with engine.connect() as connection:
-            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0011_result_plane"
+            assert (
+                connection.scalar(text("SELECT version_num FROM alembic_version"))
+                == "0011_result_plane"
+            )
             assert {
                 connection.scalar(text("SELECT to_regclass(:name)"), {"name": f"public.{table}"})
                 for table in tables
