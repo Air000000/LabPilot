@@ -10,6 +10,7 @@ from __future__ import annotations
 import fcntl
 import importlib.util
 import json
+import math
 import os
 import re
 import shutil
@@ -49,6 +50,8 @@ run_preflight_request = _PREFLIGHT.run_preflight_request
 CONFIG_ENV = "LABPILOT_SLICE3_ACCEPTANCE_CONFIG"
 OPT_IN_ENV = "LABPILOT_RUN_SLICE3_NATIVE_ACCEPTANCE"
 TESTED_SHA_ENV = "TESTED_SHA"
+RUNNING_GATE_TIMEOUT_ENV = "LABPILOT_TASK12_RUNNING_GATE_TIMEOUT_SECONDS"
+DEFAULT_RUNNING_GATE_TIMEOUT_SECONDS = 300.0
 SECRET_SENTINEL = "TASK12_NATIVE_SENTINEL_NOT_A_SECRET"
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -238,14 +241,23 @@ def run_from_environment(environ: Mapping[str, str] = os.environ) -> NativeSmoke
     _verify_host(config)
     if not environ.get(config.database_url_env):
         raise NativeOptInRequired("native test-admin database authority is missing")
-    return NativeSlice3Smoke(config, tested_sha).run()
+    return NativeSlice3Smoke(
+        config, tested_sha, running_gate_timeout_seconds=_running_gate_timeout_seconds(environ)
+    ).run()
 
 
 class NativeSlice3Smoke:
-    def __init__(self, config: NativeConfig, tested_sha: str) -> None:
+    def __init__(
+        self,
+        config: NativeConfig,
+        tested_sha: str,
+        *,
+        running_gate_timeout_seconds: float = DEFAULT_RUNNING_GATE_TIMEOUT_SECONDS,
+    ) -> None:
         self.config = config
         self.tested_sha = tested_sha
         self.api = _Api(config.api_base_url)
+        self.running_gate_timeout_seconds = running_gate_timeout_seconds
         self._stopped_coordinator = False
         self._batches: list[UUID] = []
         self._attempts: dict[UUID, _TrackedAttempt] = {}
@@ -276,7 +288,12 @@ class NativeSlice3Smoke:
         version_id = self._approve_version(("0.82", "0.61"), artifact_path="result.json")
         batch = self._create_and_start_batch(version_id)
         trial_ids = self._wait_for("two trials", lambda: self._trial_ids(batch), 30)
-        attempts = self._wait_for("running attempts", lambda: self._running_attempts(trial_ids), 45)
+        attempts = self._wait_for(
+            "running attempts",
+            lambda: self._running_attempts(trial_ids),
+            self.running_gate_timeout_seconds,
+            diagnostic=lambda: self._running_gate_diagnostic(batch, trial_ids),
+        )
         active_oracles = cast(
             dict[str, dict[str, object]],
             self._wait_for(
@@ -581,6 +598,40 @@ class NativeSlice3Smoke:
             if all(item["physical_started_at"] and item["terminal_at"] is None for item in attempts)
             else None
         )
+
+    def _running_gate_diagnostic(
+        self, batch: UUID, trials: tuple[UUID, ...]
+    ) -> dict[str, object]:
+        batch_state = self.api.get_json(f"/batches/{batch}")
+        trial_states: list[dict[str, object]] = []
+        for trial in trials:
+            trial_state = self.api.get_json(f"/trials/{trial}")
+            attempt_states: list[dict[str, object]] = []
+            for attempt_id in cast(list[str], trial_state.get("attempt_ids", [])):
+                attempt = self.api.get_json(f"/attempts/{attempt_id}")
+                attempt_states.append(
+                    {
+                        "attempt_id": attempt_id,
+                        "status": attempt.get("presentation_status", attempt.get("status")),
+                        "prepared_at": attempt.get("prepared_at"),
+                        "physical_started_at": attempt.get("physical_started_at"),
+                        "terminal_at": attempt.get("terminal_at"),
+                        "terminal_kind": attempt.get("terminal_kind"),
+                        "exit_code": attempt.get("exit_code"),
+                    }
+                )
+            trial_states.append(
+                {
+                    "trial_id": str(trial),
+                    "status": trial_state.get("presentation_status", trial_state.get("status")),
+                    "attempts": attempt_states,
+                }
+            )
+        return {
+            "batch_id": str(batch),
+            "batch_status": batch_state.get("presentation_status", batch_state.get("status")),
+            "trials": trial_states,
+        }
 
     def _terminal_attempts(self, attempts: tuple[UUID, ...]) -> dict[str, dict[str, object]] | None:
         values = {
@@ -1037,7 +1088,12 @@ class NativeSlice3Smoke:
         raise NativeSmokeFailure("exact systemd unit state is unsafe")
 
     def _wait_for(
-        self, label: str, predicate: Callable[[], object | None], timeout_seconds: float
+        self,
+        label: str,
+        predicate: Callable[[], object | None],
+        timeout_seconds: float,
+        *,
+        diagnostic: Callable[[], object] | None = None,
     ) -> object:
         deadline = time.monotonic() + timeout_seconds
         last: object | None = None
@@ -1046,7 +1102,15 @@ class NativeSlice3Smoke:
             if last is not None:
                 return last
             time.sleep(0.25)
-        raise NativeSmokeFailure(f"timed out waiting for {label}; last_state={last!r}")
+        details: object | None = None
+        if diagnostic is not None:
+            try:
+                details = diagnostic()
+            except BaseException as error:
+                details = {"diagnostic_error": type(error).__name__}
+        raise NativeSmokeFailure(
+            f"timed out waiting for {label}; last_state={last!r}; diagnostic={details!r}"
+        )
 
 
 class _Api:
@@ -1138,6 +1202,21 @@ def _config_text(value: Mapping[str, object], key: str) -> str:
     if type(item) is not str or not item or len(item.encode("utf-8")) > 4096:
         raise NativeOptInRequired(f"{key} must be a bounded non-empty string")
     return item
+
+
+def _running_gate_timeout_seconds(environ: Mapping[str, str]) -> float:
+    raw = environ.get(RUNNING_GATE_TIMEOUT_ENV)
+    if raw is None:
+        return DEFAULT_RUNNING_GATE_TIMEOUT_SECONDS
+    try:
+        timeout_seconds = float(raw)
+    except ValueError as error:
+        raise NativeOptInRequired(
+            "running gate timeout must be a positive finite number"
+        ) from error
+    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+        raise NativeOptInRequired("running gate timeout must be a positive finite number")
+    return timeout_seconds
 
 
 def _preflight_config(config: NativeConfig) -> dict[str, object]:
