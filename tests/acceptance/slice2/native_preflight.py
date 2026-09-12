@@ -253,8 +253,12 @@ def run_preflight_request(request: Mapping[str, object]) -> dict[str, object]:
     workspace_root = _config_path(config, "workspace_root")
     compose_project = _config_text(config, "compose_project")
 
-    actual_sha = _text(run_command(("git", "-C", repository_root, "rev-parse", "HEAD")))
-    clean = not _text(run_command(("git", "-C", repository_root, "status", "--short")))
+    actual_sha = _text(
+        run_command(_native_repository_git_command(repository_root, "rev-parse", "HEAD"))
+    )
+    clean = not _text(
+        run_command(_native_repository_git_command(repository_root, "status", "--short"))
+    )
     require_tested_sha(tested_sha, actual_sha, clean=clean)
 
     controller = pwd.getpwnam("labpilot-controller")
@@ -421,6 +425,26 @@ def require_identities(identities: Mapping[str, Mapping[str, object]]) -> None:
         for field, value in expected.items():
             if actual.get(field) != value:
                 raise NativePreflightError(f"identity mismatch for {name} {field}")
+
+
+def _native_repository_git_command(
+    repository_root: str | Path, *arguments: str
+) -> tuple[str, ...]:
+    """Build a root-safe, exact-path Git inspection command for native preflight."""
+    try:
+        canonical = Path(repository_root).expanduser().resolve()
+    except OSError as error:
+        raise NativePreflightError("native repository root cannot be canonicalized") from error
+    if not canonical.is_absolute():
+        raise NativePreflightError("native repository root is not absolute")
+    return (
+        "git",
+        "-c",
+        f"safe.directory={canonical}",
+        "-C",
+        str(canonical),
+        *arguments,
+    )
 
 
 def require_tested_sha(expected: str, actual: str, *, clean: bool) -> None:

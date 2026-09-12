@@ -31,9 +31,9 @@ def _run_fake_native_preflight(
     def fake_run_command(argv: tuple[str, ...], **_kwargs: object) -> object:
         command = tuple(argv)
         calls.append(command)
-        if command[:4] == ("git", "-C", "/repo", "rev-parse"):
+        if command[:6] == ("git", "-c", "safe.directory=/repo", "-C", "/repo", "rev-parse"):
             stdout = "a" * 40
-        elif command[:4] == ("git", "-C", "/repo", "status"):
+        elif command[:6] == ("git", "-c", "safe.directory=/repo", "-C", "/repo", "status"):
             stdout = ""
         elif command[:3] == ("systemctl", "show", "labpilot-runner.service"):
             stdout = "\n".join(f"{name}={value}" for name, value in service.items())
@@ -494,6 +494,35 @@ def test_exact_native_identities_and_tested_sha_are_required() -> None:
         require_identities(identities)
     with pytest.raises(NativePreflightError, match="tested SHA"):
         require_tested_sha("a" * 40, "b" * 40, clean=True)
+
+
+def test_native_preflight_git_uses_exact_command_local_trust(tmp_path: Path) -> None:
+    from tests.acceptance.slice2 import native_preflight
+
+    repository = tmp_path / "candidate"
+    repository.mkdir()
+    canonical = str(repository.resolve())
+    command = native_preflight._native_repository_git_command(
+        repository / ".", "status", "--short"
+    )
+
+    assert command == (
+        "git",
+        "-c",
+        f"safe.directory={canonical}",
+        "-C",
+        canonical,
+        "status",
+        "--short",
+    )
+    assert "safe.directory=*" not in command
+    assert "config" not in command
+
+    missing = native_preflight._native_repository_git_command(
+        tmp_path / "missing", "rev-parse", "HEAD"
+    )
+    with pytest.raises(native_preflight.NativeCommandFailure):
+        native_preflight.run_command(missing)
 
 
 def test_effective_runner_service_contract_is_exact() -> None:
