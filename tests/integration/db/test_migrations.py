@@ -29,7 +29,7 @@ async def test_upgrade_head_succeeds_on_an_isolated_empty_database(
     try:
         with engine.connect() as connection:
             version = connection.scalar(text("SELECT version_num FROM alembic_version"))
-        assert version == "0011_result_plane"
+        assert version == "0012_version_identity_nonunique"
     finally:
         engine.dispose()
 
@@ -44,6 +44,32 @@ async def test_upgrade_head_succeeds_on_an_isolated_empty_database(
     assert Path("migrations/versions/0009_execution_preparation.py").exists()
     assert Path("migrations/versions/0010_attempt_physical_execution.py").exists()
     assert Path("migrations/versions/0011_result_plane.py").exists()
+    assert Path("migrations/versions/0012_version_identity_nonunique.py").exists()
+
+
+@pytest.mark.integration
+@pytest.mark.destructive
+async def test_experiment_version_identity_is_not_unique_after_head(
+    isolated_database_url: str,
+) -> None:
+    sync_url = isolated_database_url.replace("+asyncpg", "+psycopg")
+    upgrade_database_to_head(isolated_database_url)
+
+    engine = create_engine(sync_url)
+    try:
+        with engine.connect() as connection:
+            constraints = set(
+                connection.scalars(
+                    text(
+                        "SELECT constraint_name FROM information_schema.table_constraints "
+                        "WHERE table_schema = 'public' "
+                        "AND table_name = 'experiment_versions'"
+                    )
+                )
+            )
+        assert "uq_experiment_versions_identity" not in constraints
+    finally:
+        engine.dispose()
 
 
 @pytest.mark.integration
@@ -151,7 +177,7 @@ async def test_task3_migration_upgrade_downgrade_upgrade_round_trip(
         with engine.connect() as connection:
             assert (
                 connection.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0011_result_plane"
+                == "0012_version_identity_nonunique"
             )
             assert connection.scalar(text("SELECT to_regclass('public.projects')")) == "projects"
 
@@ -167,7 +193,7 @@ async def test_task3_migration_upgrade_downgrade_upgrade_round_trip(
         with engine.connect() as connection:
             assert (
                 connection.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0011_result_plane"
+                == "0012_version_identity_nonunique"
             )
             assert connection.scalar(text("SELECT to_regclass('public.projects')")) == "projects"
     finally:
@@ -187,7 +213,7 @@ async def test_task4_migration_upgrade_downgrade_upgrade_round_trip(
         with engine.connect() as connection:
             assert (
                 connection.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0011_result_plane"
+                == "0012_version_identity_nonunique"
             )
             assert (
                 connection.scalar(text("SELECT to_regclass('public.agent_steps')")) == "agent_steps"
@@ -206,7 +232,7 @@ async def test_task4_migration_upgrade_downgrade_upgrade_round_trip(
         with engine.connect() as connection:
             assert (
                 connection.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0011_result_plane"
+                == "0012_version_identity_nonunique"
             )
             assert (
                 connection.scalar(text("SELECT to_regclass('public.agent_steps')")) == "agent_steps"
@@ -535,7 +561,7 @@ async def test_result_plane_migration_upgrade_downgrade_upgrade_round_trip(
         with engine.connect() as connection:
             assert (
                 connection.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0011_result_plane"
+                == "0012_version_identity_nonunique"
             )
             assert {
                 connection.scalar(text("SELECT to_regclass(:name)"), {"name": f"public.{table}"})
@@ -560,7 +586,7 @@ async def test_result_plane_migration_upgrade_downgrade_upgrade_round_trip(
         with engine.connect() as connection:
             assert (
                 connection.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0011_result_plane"
+                == "0012_version_identity_nonunique"
             )
             assert {
                 connection.scalar(text("SELECT to_regclass(:name)"), {"name": f"public.{table}"})

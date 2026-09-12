@@ -592,6 +592,58 @@ async def test_live_change_rejects_approval_then_restore_reuses_verification_and
 
 
 @pytest.mark.integration
+async def test_distinct_revisions_with_same_semantics_get_distinct_versions(
+    isolated_database_url: str,
+    tmp_path: Path,
+) -> None:
+    async with _proposal_system(isolated_database_url, tmp_path) as system:
+        payload = _payload(system)
+        first_revision = await _agent_revision(system, payload=payload)
+        second_revision = await system.service.create_manual_revision(
+            context=_context(),
+            experiment_id=first_revision.experiment_id,
+            payload=payload,
+        )
+        first_verification = await system.service.verify_revision(
+            context=_context(),
+            proposal_revision_id=first_revision.proposal_revision_id,
+        )
+        second_verification = await system.service.verify_revision(
+            context=_context(),
+            proposal_revision_id=second_revision.proposal_revision_id,
+        )
+        first_version = await system.service.approve_revision(
+            context=_context(),
+            proposal_revision_id=first_revision.proposal_revision_id,
+            verification_id=first_verification.proposal_verification_id,
+        )
+        second_version = await system.service.approve_revision(
+            context=_context(),
+            proposal_revision_id=second_revision.proposal_revision_id,
+            verification_id=second_verification.proposal_verification_id,
+        )
+        replayed = await system.service.approve_revision(
+            context=_context(),
+            proposal_revision_id=second_revision.proposal_revision_id,
+            verification_id=second_verification.proposal_verification_id,
+        )
+
+        assert first_revision.proposal_revision_id != second_revision.proposal_revision_id
+        assert first_version.experiment_version_id != second_version.experiment_version_id
+        assert first_version.design_decision_id != second_version.design_decision_id
+        assert first_version.proposal_revision_id == first_revision.proposal_revision_id
+        assert second_version.proposal_revision_id == second_revision.proposal_revision_id
+        assert (first_version.version_number, second_version.version_number) == (1, 2)
+        assert (
+            first_version.experiment_version_identity
+            == second_version.experiment_version_identity
+        )
+        assert replayed.experiment_version_id == second_version.experiment_version_id
+        assert await _table_count(system.database, "experiment_design_decisions") == 2
+        assert await _table_count(system.database, "experiment_versions") == 2
+
+
+@pytest.mark.integration
 async def test_failed_verification_cannot_approve(
     isolated_database_url: str,
     tmp_path: Path,

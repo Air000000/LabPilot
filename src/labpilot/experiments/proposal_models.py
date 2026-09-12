@@ -234,10 +234,6 @@ class ExperimentVersionRow(Base):
             name="uq_experiment_versions_design_decision",
         ),
         UniqueConstraint(
-            "experiment_version_identity",
-            name="uq_experiment_versions_identity",
-        ),
-        UniqueConstraint(
             "experiment_id",
             "version_number",
             name="uq_experiment_versions_experiment_number",
