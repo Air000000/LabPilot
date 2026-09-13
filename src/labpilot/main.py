@@ -3,6 +3,7 @@ from typing import cast
 from uuid import UUID
 
 from labpilot.agent_runtime.context_compiler import ContextCompiler
+from labpilot.agent_runtime.deepseek import DeepSeekChatProvider
 from labpilot.agent_runtime.opencode_go import OpenCodeGoChatProvider
 from labpilot.agent_runtime.provider import ModelProvider, UnconfiguredModelProvider
 from labpilot.agent_runtime.repository import SqlAgentRepository
@@ -59,16 +60,20 @@ def tool_service_for_snapshot(repository_snapshot_id: UUID) -> ToolApplicationSe
 
 provider: ModelProvider
 if settings.agent_provider_model and settings.agent_provider_api_key:
-    provider = OpenCodeGoChatProvider(
-        model=settings.agent_provider_model,
-        api_key=settings.agent_provider_api_key,
-        timeout_seconds=settings.agent_provider_timeout_seconds,
-        max_response_bytes=settings.agent_provider_max_response_bytes,
-    )
+    provider_kwargs = {
+        "model": settings.agent_provider_model,
+        "api_key": settings.agent_provider_api_key,
+        "timeout_seconds": settings.agent_provider_timeout_seconds,
+        "max_response_bytes": settings.agent_provider_max_response_bytes,
+    }
+    if settings.agent_provider_kind == "deepseek":
+        provider = DeepSeekChatProvider(**provider_kwargs)
+    else:
+        provider = OpenCodeGoChatProvider(**provider_kwargs)
     model_name = settings.agent_provider_model
 else:
     provider = UnconfiguredModelProvider()
-    model_name = 'unconfigured'
+    model_name = "unconfigured"
 
 agent_runs = AgentApplicationService(
     repository=SqlAgentRepository(database.session),
