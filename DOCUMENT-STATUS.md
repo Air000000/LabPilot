@@ -1,6 +1,6 @@
 # LabPilot 文档状态
 
-> 当前状态：R0 仍为 V1 rebaseline authority root；Slice 1 已 Accepted；Slice 2 bounded MVP 已验证并集成到 `main`，production hardening deferred；S2→S3 sequencing amendment 已对齐当前 MVP-first planning gate；Slice 3 Result Plane design 与 Detailed Implementation Plan 均已通过 focused review，Slice 3 implementation 已授权在独立 worktree/branch 中开始。
+> 当前状态：R0 仍为 V1 rebaseline authority root；Slice 1 已 Accepted；Slice 2 bounded MVP 已验证并集成到 `main`，production hardening deferred；S2→S3 sequencing amendment 已对齐当前 MVP-first planning gate；Slice 3 Result Plane implementation 已完成，canonical CI 已通过，并完成有界但有意义的真实 native 验证；最终完整 native acceptance 因 B6 acceptance supervisor 在子进程启动前失败而未完全闭合。
 
 | 文档 | 状态 | 用途 |
 |---|---|---|
@@ -80,7 +80,14 @@ Slice-specific detailed plans must record their exact planning baseline commit a
 - Slice 3 Detailed Implementation Plan: **Approved after focused plan review**
 - Slice 3 plan: `docs/superpowers/plans/2026-09-01-labpilot-v1-slice3-result-plane.md`
 - Slice 3 focused plan review: `docs/superpowers/plans/2026-09-01-labpilot-v1-slice3-result-plane-plan-review.md`
-- Slice 3 implementation: **AUTHORIZED** in a new isolated implementation worktree/branch; not on this docs branch
+- Slice 3 Result Plane implementation: **COMPLETED**
+- Slice 3 canonical CI: **PASS**
+- Slice 3 real native validation: bounded / partial but meaningful
+- Slice 3 Product defects discovered by native testing: fixed
+- Slice 3 final full native acceptance: not fully closed because the B6 acceptance supervisor failed before child start
+- Slice 3 additional native rerun: not required for integration
+- Slice 3 deferred issue: acceptance-supervisor durable-marker reliability; this affects acceptance-evidence reliability, not established Product behavior
+- Slice 3 migration rollback: `DB_DOWNGRADE_AFTER_DUPLICATE_IDENTITY=PROHIBITED`; after duplicate semantic identities exist under `0012_version_identity_nonunique`, restoring the former global UNIQUE constraint is not generally valid. Application rollback may leave the DB at `0012`.
 - Task 8 accepted implementation commit: `ab3e773ee957b02f257df3f60f3ea3492626bcfa`
 - Task 9 accepted implementation commit: `949d22a676141cc279086775135610726b518c31`
 - Task 10 accepted implementation commit: `6d85b88c238714ebbd1fb1d7b90b0f93308f5006`
@@ -95,12 +102,10 @@ The Git commit containing this status transition is the exact Slice3 implementat
 Next authorized action:
 
 ```text
-create an isolated Slice3 implementation branch/worktree
-from the exact status/plan-review closure commit
-→ read the approved Detailed Implementation Plan
-→ read the focused plan review C1-C5
-→ execute Task 1 with TDD
-→ stop/review at the task boundary before proceeding
+Slice3 implementation is closed.
+Proceed to the next remaining V1 roadmap tranche only under its own
+planning/authority gate.
+No further Slice3 native acceptance run is authorized by this closeout.
 ```
 
 Implementation remains subordinate to:
