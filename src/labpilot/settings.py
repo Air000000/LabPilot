@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     database_url: str = Field(min_length=1)
     log_level: str = "INFO"
     data_egress_policy: Literal["local_only", "remote_provider_allowed"] = "local_only"
+    agent_provider_kind: Literal["opencode_go", "deepseek"] = "opencode_go"
     agent_provider_model: str | None = None
     agent_provider_api_key: SecretStr | None = None
     agent_provider_timeout_seconds: int = Field(default=60, ge=1, le=300)
