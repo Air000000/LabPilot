@@ -5,6 +5,16 @@ Branch: `feat/competition-mvp`
 Core baseline: `c71c25968e84ad9061ac2a7bd28bbfa4743f8183`
 Target submission: 2026-09-19
 
+## Execution status - 2026-09-13
+
+| Gate | Status | Evidence |
+|---|---|---|
+| Task 0 - Windows/WSL2 runtime | PASS | Ubuntu 24.04 on WSL2; systemd PID 1; Linux-native repository path; Python 3.12.13; uv 0.11.32; Docker Desktop engine and Compose reachable; competition preflight returned `PRECHECK=PASS`. |
+| Task 1 - deterministic CPU workload | PASS | Four real local Trials reproduced `0.650 / 0.895 / 0.895 / 0.941`; threshold `accuracy >= 0.92` yields three expected invalid configurations and one valid configuration; repeated identical high-performing runs were byte-identical during characterization. |
+| Task 2A - standalone demo repository | PASS | WSL-local clean Git repository at `/home/air/labpilot-demo-repo`; frozen commit `3aa00d08ee390ae44060931b9decc9fc6faad9e2`; dataset SHA-256 `1a5ea8912a402d121f54210dabb020adef9bb573471918b8aba2aca444b56e31`. |
+| Task 2B - LabPilot RepositorySnapshot | IN PROGRESS | Competition bootstrap now uses the existing Project and Repository application services from inside the API container so canonical repository paths stay under `/repositories`. |
+| Task 3 - real-model Agent proposal | NOT STARTED | Requires Task 2B plus a programmatically callable provider credential. |
+
 ## Principle
 
 Build the smallest competition layer that proves the existing LabPilot Core as a usable AI research experiment operator. Do not reopen accepted Core semantics unless a concrete Golden Path blocker is demonstrated.
