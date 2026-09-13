@@ -1,121 +1,269 @@
 # LabPilot
 
-LabPilot V1 当前采用 **v0.3 Core Rebaseline**：一个可控、可恢复、可验证的 Agent-assisted Experiment Runner，而不是缩小版 Research Agent OS。
+> **An AI-assisted experiment runtime that turns research goals, experiment versions, physical executions, and results into a traceable experiment lineage.**
 
-## 1. 当前 V1 planning authority
+[![CI](https://github.com/Air000000/LabPilot/actions/workflows/ci.yml/badge.svg)](https://github.com/Air000000/LabPilot/actions/workflows/ci.yml)
 
-对所有尚未实现的 V1 工作，规范性规划输入按以下顺序解释：
+LabPilot starts from a practical research problem: as experiments accumulate, the researcher is often left with many proposal variants, parameter/seed branches, checkpoints, logs, and metrics, while the relationships between **why an experiment was proposed, which version was approved, what was actually executed, and which result was ultimately trusted** become increasingly difficult to reconstruct.
 
-```text
-docs/labpilot/01-v1-scope-and-acceptance-v0.3.md
-> docs/labpilot/architecture/10-v1-core-architecture-rebaseline-v0.3.md
-> docs/labpilot/implementation/01-master-implementation-roadmap-v0.3.md
-> current approved Slice-specific detailed plan / ADR
-```
+The goal is to make that research trajectory explicit and durable. LabPilot persists proposal revisions, approvals, immutable experiment versions, execution identities, physical attempts, artifacts, metrics, validations, and formal result selections so that an experiment can be traced from its research goal to its final result.
 
-`DOCUMENT-STATUS.md` 是当前 authority/status map。
-
-更早的 v0.2 architecture、roadmap、implementation plans 与 Architecture 08/09 对 remaining V1 默认为 historical/informative。它们继续解释在其约束下已经接受的 WP0 与 WP1-A Task 0–10；只有被当前 v0.3 / Slice authority 显式引用的具体 invariant 才重新进入未来实施 tranche。
-
-当前实现状态：
+The Agent participates on top of that lineage: it can inspect bounded repository context, incorporate prior tool results and human feedback, and help revise the next experiment proposal. The runtime and recovery mechanisms exist to make that assistance safe and reproducible rather than to turn the model into an unrestricted source of execution truth.
 
 ```text
-WP0 + WP1-A Tasks 0–10
-= Accepted Historical Foundation
-
-WP1-A v0.2 Tasks 11–17
-= Superseded / Never Executed
-
-Remaining V1
-= Slice 1 → Slice 2 → Slice 3
+Research Goal
+  -> Proposal Revision
+  -> Verification
+  -> Human Approval
+  -> Immutable ExperimentVersion
+  -> Batch
+  -> Trial (parameter / seed branch)
+  -> Attempt (physical execution intent)
+  -> Real Training
+  -> Artifact / Metric / Validation
+  -> Result Selection
+  -> Batch Summary
+  -> Evidence for the next experiment iteration
 ```
 
-R0 finalization 只授权起草 **Slice 1 Detailed Implementation Plan**，不直接授权 Slice 1 implementation。该 plan 必须绑定 exact R0 authority commit SHA。
+## Why LabPilot
 
-## 2. 历史冻结依赖与完整性证据
+In an iterative research project, the difficult part is often not launching one more training command. The difficult part is preserving enough context to answer questions later:
 
-历史 frozen docs、`*.dependencies.sha256` 与 `FINAL-DOCUMENTS.sha256` 继续保留，用于证明对应历史 implementation tranche / release bundle 的输入字节没有漂移。
+- Why was this experiment run in the first place?
+- Which proposal revision and repository state did it come from?
+- Which code, data, environment expectations, parameters, and validation rules were actually approved?
+- Which parameter/seed branch produced this Trial?
+- Was a later Attempt a new scientific trial or only an infrastructure retry?
+- Which physical process produced a checkpoint or metric?
+- Which result passed the declared validation protocol and became the formal result?
+- What evidence should inform the next experiment revision?
 
-例如，`docs/labpilot/implementation/01-master-implementation-roadmap-v0.2.1-frozen.md` 仍被历史 WP0 dependency manifest 绑定，因此不能因为它已经被后续 roadmap 取代而删除。
+Without an explicit lineage, those answers tend to be scattered across shell history, directories, checkpoints, logs, spreadsheets, and human memory. LabPilot's V1 models the path from **proposal goal -> approved version -> logical trial -> physical attempt -> validated result** as durable state.
 
-这些历史 hash **不再自动决定 remaining-V1 的语义 authority**。当前 v0.3 authority 的机器可验证根是完成 R0 finalization 的 Git commit SHA；后续 Slice plan 直接绑定该 SHA，不建立新的级联 architecture hash graph。
+This is the product motivation. The reliability mechanisms described below solve a second-order problem: once an AI Agent is allowed to participate in that workflow, its probabilistic decisions must not make the experiment record less trustworthy.
 
-## 3. Master Blueprint 状态说明
+> **Current evidence boundary:** LabPilot does not claim a measured reduction in researcher time or a production-scale productivity improvement. The current V1 claim is narrower: it establishes a traceable, recoverable, and verifiable experiment lineage that can support later analysis and iteration.
 
-`docs/labpilot/00-master-blueprint-v0.2.md` 头部仍保留历史状态文字。该文件字节已被历史冻结文档和 implementation tranche 绑定，因此不为了同步元数据而原地修改。
+## Architecture
 
-R0 v0.3 之后，它对 remaining V1 属于 historical high-level input，而不是 closed-world authority list 的成员；对已经在其历史 contract 下验收的工作仍保留解释价值。
+```mermaid
+flowchart LR
+    Goal[Research Goal] --> Ctx[Context Compiler]
+    Repo[Repository Snapshot] --> Ctx
+    Tool[Read-only Repository Tools] --> Ctx
+    Human[Human Feedback] --> Ctx
 
-## 4. 历史实施前置与 dependency verification
+    Ctx --> Agent[Bounded Agent Runtime]
+    Agent --> Decision[Structured Decision]
+    Decision --> ToolCall[Tool Call]
+    Decision --> HumanInput[Request Human Input]
+    Decision --> Proposal[Proposal Revision]
+    Decision --> Stop[Stop]
 
-历史 WP0/WP1-A dependency verification 继续有效，例如：
+    Proposal --> Verify[Verification]
+    Verify --> Approval[Human Approval]
+    Approval --> Version[Immutable ExperimentVersion]
 
-```bash
-bash scripts/verify_architecture_dependencies.sh \
-  docs/labpilot/implementation/phase-0-v0.3.4.dependencies.sha256
+    Version --> Batch[Batch]
+    Batch --> Trial[Trial]
+    Trial --> Attempt[Attempt]
+    Attempt --> Coordinator[Coordinator]
+    Coordinator --> Runner[Supervised Runner]
+    Runner --> Training[Real Training Process]
 
-bash scripts/verify_architecture_dependencies.sh \
-  docs/labpilot/implementation/wp1-a-v0.2.dependencies.sha256
+    Attempt --> Artifact[Artifact]
+    Artifact --> Metric[Metric]
+    Metric --> Validation[Deterministic Validation]
+    Validation --> Selection[Result Selection]
+    Selection --> Summary[Batch Summary]
+    Summary --> Next[Next Experiment Iteration]
+    Next --> Goal
 ```
 
-历史 architecture dependency manifests 也仍可单独验证。它们证明对应 frozen tranche 的完整性，不意味着旧 roadmap 仍拥有未来执行 authority。
+## Core capabilities
 
-## 5. Remaining V1 implementation path
+### 1. Research lineage and experiment governance
+
+LabPilot treats experiment history as a first-class system concern rather than as a directory of outputs.
+
+A proposal revision persists the experiment `goal` together with the repository snapshot and execution/validation semantics. The proposal then moves through:
 
 ```text
-R0 v0.3 authority
-→ Slice 1 Detailed Implementation Plan
-→ Slice 1: Repository → Proposal → Approval
-→ Slice 2: Trial → Real Training → Recovery
-→ Slice 3: Artifact → Metric → Validation → Summary
-→ V1 Core Demo
+Proposal Revision
+  -> Verification
+  -> Human Approval
+  -> Immutable ExperimentVersion
 ```
 
-Core complexity budget 优先用于真实 failure modes：Runner/recovery、duplicate-launch prevention、Approval/path/argv/secret safety、scientific provenance 与 deterministic Validation。
+The approved `ExperimentVersion` freezes the semantics needed to later explain and reproduce the experiment, including repository identity, dataset reference, environment expectations, parameterization, declared metrics/artifacts, and validation protocol.
 
-Evidence/Claim Closure、dynamic Tool platform、Projection platform、generic workflow/result-processing platform 不属于 V1 Core 默认实现义务。
+Parameter matrices and random seeds are expanded into stable **Batch / Trial / Attempt** identities:
 
-## 6. 校验命令
+- **Batch** groups one execution expansion of an approved experiment version;
+- **Trial** represents one logical parameter/seed branch;
+- **Attempt** represents a physical execution attempt for that Trial.
 
-### 跨解压器通用命令
+This separation keeps research intent, approved design, logical experiment branches, physical execution, and later results connected without collapsing them into one opaque "run" record.
 
-ZIP 标准支持 Unix 权限元数据，但部分解压器不会恢复执行位。统一可以使用：
+### 2. Agent-assisted experiment iteration
+
+The Agent is intended to help the researcher reason about and revise experiments, not to replace the authoritative experiment record.
+
+LabPilot uses a **bounded Agent Loop**. The runtime compiles repository state, prior tool results, and human feedback into controlled context, then constrains each model step with:
+
+- a structured decision schema;
+- versioned Tool Contracts and JSON Schema validation;
+- bounded repository paths and read-only repository tools;
+- single-step / single-decision semantics;
+- step, model-call, token, and wall-clock budgets;
+- **persist-before-execute**: a validated decision is persisted before tool execution or proposal materialization.
+
+The current decision surface is intentionally small:
+
+```text
+Tool Call | Request Human Input | Proposal | Stop
+```
+
+This lets the Agent inspect evidence and help form the next proposal while keeping model authority explicit and every transition auditable.
+
+### 3. Reliable long-running physical execution
+
+Once an approved experiment crosses into real training, LabPilot has to preserve lineage even through crashes and uncertain external outcomes.
+
+A long-running training task creates a control-plane problem: after a coordinator crash or network failure, the system may not know whether the physical launch actually happened. Blindly retrying would create a second process and corrupt the relationship between the recorded Attempt and reality.
+
+LabPilot therefore uses three core mechanisms:
+
+1. **Persistent Launch Intent** - persist the frozen launch specification and launch intent before crossing the external Runner boundary.
+2. **Stable Execution Identity** - the Runner receives a stable physical execution identity instead of a new identity on every recovery path.
+3. **Coordinator Reconciliation** - startup and periodic scans observe physical state and reconcile it with persisted control-plane state instead of blindly relaunching.
+
+Retry and cancellation are explicit state-machine operations rather than generic exception retries.
+
+In fault-injection acceptance testing, a Coordinator restart was reconciled back to the original training Attempt **without a second physical launch**. The execution path also covers cancellation of both already-running and not-yet-launched work.
+
+> LabPilot does **not** claim a global "exactly-once" execution guarantee. The narrower invariant is: persist intent before side effects, use stable identities, and reconcile uncertain outcomes instead of replaying them blindly.
+
+### 4. Result validation and experiment closure
+
+A directory full of checkpoints and metric files is not yet a usable experiment history. LabPilot closes the lineage with a deterministic result chain:
+
+```text
+Artifact
+  -> Metric
+  -> Validation
+  -> Result Selection
+  -> Batch Summary
+```
+
+The Result Plane records artifacts and metric observations, evaluates deterministic validation rules such as artifact existence and metric finiteness, selects the formal result for a Trial, and produces versioned Batch summaries.
+
+This deliberately separates:
+
+- **probabilistic Agent reasoning** for inspecting context and proposing the next experiment;
+- **deterministic validation** for deciding whether scientific outputs satisfy the declared protocol.
+
+Runtime Events and SSE-backed read paths provide traceability and replay across execution and result state. The result lineage can therefore be tied back to the Trial and approved `ExperimentVersion` that produced it rather than existing as an isolated metric.
+
+## Key design decisions
+
+| Decision | Rationale |
+|---|---|
+| Persist proposal revisions and immutable ExperimentVersions | Preserve why an experiment changed and which exact design was actually authorized. |
+| Separate Batch / Trial / Attempt identities | Keep parameter/seed branches distinct from infrastructure retries and physical executions. |
+| Bounded Agent Runtime instead of unrestricted autonomy | The Agent should help revise experiments without becoming the source of truth for execution or result validity. |
+| Single-step / single-decision model loop | Keeps each model transition observable, budgeted, and recoverable. |
+| Persist decision before execution | Avoids losing the authoritative decision while a later side effect has already happened. |
+| Human approval before immutable ExperimentVersion | Separates model suggestions from the experiment that is actually authorized to run. |
+| Launch intent before Runner launch | Gives recovery logic a durable fact to reconcile after crashes or uncertain external outcomes. |
+| Stable execution identity | Lets recovery refer to the same physical execution instead of accidentally creating a new one. |
+| Deterministic Result Validation | The formal scientific result should be reproducible and auditable instead of depending on a free-form LLM judgment. |
+
+## Runtime components
+
+- **FastAPI control plane** - experiment, proposal, execution, query, and event APIs.
+- **PostgreSQL** - authoritative experiment lineage, identities, command receipts, events, and result records.
+- **Bounded Agent Runtime** - repository-aware proposal iteration under explicit tool and budget constraints.
+- **Coordinator** - preparation, admission, execution control, recovery, cancellation, and reconciliation.
+- **Runner** - isolated physical-process boundary for real training workloads.
+- **Repository observation layer** - bounded, read-only repository access used by the Agent Harness.
+- **Result Plane** - artifacts, metrics, deterministic validation, result selection, and Batch summaries.
+- **Runtime Events / SSE** - state trace and replay surfaces.
+
+## Quick start
+
+### Requirements
+
+- Python **3.12**
+- Docker / Docker Compose
+- PostgreSQL **16** (provided by Compose for local development)
+- `uv` for the repository development workflow
+- A Linux/systemd Runner host for the full real-training execution path
+
+### Start the local API control plane
 
 ```bash
-bash scripts/verify_architecture_dependencies.sh FINAL-DOCUMENTS.sha256
+docker compose up --build postgres migrate api
 ```
 
-### Unix 直接执行
-
-如果脚本执行位已保留，也可以直接运行：
+Then verify readiness:
 
 ```bash
-./scripts/verify_architecture_dependencies.sh FINAL-DOCUMENTS.sha256
+curl http://127.0.0.1:8000/health/ready
 ```
 
-如果解压器忽略权限，可执行：
+The full training path additionally uses the resident Coordinator and the dedicated Runner host. See:
+
+- [`compose.yaml`](compose.yaml)
+- [`scripts/install_labpilot_runner_host.sh`](scripts/install_labpilot_runner_host.sh)
+- [`deploy/systemd/labpilot-runner.service`](deploy/systemd/labpilot-runner.service)
+
+## Development and verification
+
+The local-equivalent CI gate is:
 
 ```bash
-chmod 755 scripts/verify_architecture_dependencies.sh
+./scripts/check_ci.sh
 ```
 
-这些命令验证历史 bundle/tranche integrity，不承担 v0.3 semantic authority selection。
+It verifies locked dependencies and historical dependency manifests, then runs:
 
-## 7. 当前交付边界
+- Ruff;
+- strict mypy;
+- unit and architecture tests;
+- PostgreSQL integration tests;
+- dependency-guard shell tests.
 
-- WP0 已完成；
-- WP1-A Task 0–10 已完成、独立评审并 push；
-- V1 v0.3 R0 Rebaseline 已通过 finding-specific re-review；
-- 完成 R0 finalization 的 commit 将成为 remaining-V1 authority root；
-- 旧 WP1-A Task 11–17 已 superseded，不再执行；
-- 当前只授权起草 Slice 1 Detailed Implementation Plan；
-- Slice 1 implementation 尚未授权；
-- Slice 2/3 只在前一 Slice acceptance 后 JIT planning。
+GitHub Actions runs the same gate and additionally verifies the production Docker image/runtime assumptions.
 
-## 8. 本地 Repository 观察边界
+## Scope and boundaries
 
-当前已实现的 Repository 基础继续作为 Accepted Foundation 使用。现有 Compose 将 `${LABPILOT_REPOSITORY_HOST_ROOT:-.}` 只读挂载到 API 容器 `/repositories`，允许根由服务端 `LABPILOT_REPOSITORY_ALLOWED_ROOTS` 配置；content-addressed repository 数据写入独立 content volume。
+LabPilot V1 prioritizes **traceable experiment lineage, correctness, recovery, reproducibility, no-duplicate physical launch in the accepted recovery path, and deterministic result closure** over feature breadth.
 
-Repository Git 操作用于有界、只读观察，不使用 shell，不执行网络访问，也不执行 fetch、pull、clone、checkout、reset、push 或其他会修改 Repository 的命令。
+The current core is not intended to be:
 
-v0.3 后续模块应通过 narrow Repository contract/facade 消费该基础，不把 Bundle/manifest/CAS 等内部 identity richness 自动传播到 Agent、Proposal、Experiment 或 Result Plane。
+- a generic multi-agent framework;
+- an unrestricted autonomous research agent;
+- a generic workflow engine;
+- a complete experiment-tracking UI or scientific notebook replacement;
+- a claim of production-scale horizontal scheduling or global exactly-once semantics.
+
+Those are separate product and scaling problems. V1 first establishes a trustworthy experiment lineage and the invariants required for an AI Agent to participate in that lineage without making it less reliable.
+
+## Documentation
+
+Detailed architecture, accepted invariants, implementation plans, ADRs, and acceptance evidence remain under [`docs/`](docs/).
+
+Useful entry points include:
+
+- [`DOCUMENT-STATUS.md`](DOCUMENT-STATUS.md) - document authority and status map;
+- [`docs/labpilot/`](docs/labpilot/) - architecture and implementation documents;
+- [`docs/superpowers/specs/`](docs/superpowers/specs/) - focused design specifications and ADRs;
+- [`docs/superpowers/evidence/`](docs/superpowers/evidence/) - acceptance and failure-injection evidence.
+
+The top-level README is intentionally a product-and-architecture overview; historical frozen plans and integrity manifests remain in the documentation tree for traceability.
+
+## Technology
+
+**Python 3.12 · FastAPI · PostgreSQL · SQLAlchemy · Pydantic · Alembic · Docker Compose · systemd · Pytest · Ruff · mypy · SSE**
