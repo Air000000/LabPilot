@@ -1,6 +1,6 @@
 # Competition Golden Path v0.1
 
-Status: Proposed / requires user confirmation before implementation
+Status: Approved for implementation
 Baseline: `c71c25968e84ad9061ac2a7bd28bbfa4743f8183`
 Branch: `feat/competition-mvp`
 
@@ -20,10 +20,10 @@ Recommended scenario:
 - implementation: pure Python logistic regression or similarly small real optimizer, avoiding new heavyweight runtime dependencies;
 - dataset: versioned local CSV committed with the demo workload;
 - parameter sweep: `learning_rate` and `epochs`;
-- seeds: two bounded seeds;
+- seeds: bounded seeds;
 - maximum planned Trials: four;
 - primary metric: `accuracy`;
-- success rule: `accuracy >= 0.80`;
+- success rule: initial target `accuracy >= 0.80`, finalized only after local measurement;
 - artifact: `result.json` using Result Plane `result-json-v1` format;
 - optional second artifact: lightweight `model.json` for presentation only.
 
@@ -150,16 +150,16 @@ Do not add before the initial competition submission unless a Golden Path blocke
 - a new Competition aggregate/state machine;
 - a large dashboard or design system.
 
-## 10. Acceptance gate for moving to implementation
+## 10. Approved implementation order
 
-Before implementing the demo workload or frontend, confirm these four decisions:
+The following decisions are approved for the competition MVP:
 
 1. The primary demo is a small real CPU ML training task, not the acceptance fixture.
 2. The visible demo begins from a pre-registered Project + clean RepositorySnapshot.
 3. The Agent remains repository-read-only and proposes experiments; execution starts only after deterministic verification and human approval.
 4. The initial UI is one Mission Control page and the reliability crash/recovery sequence is secondary evidence, not the live happy-path requirement.
 
-After confirmation, implementation order is:
+Implementation order:
 
 1. add and measure the deterministic real ML demo workload;
 2. prove one full backend Golden Path with a real model provider;
