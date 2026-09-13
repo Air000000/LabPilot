@@ -37,6 +37,12 @@ services:
     volumes:
       - ${LABPILOT_REPOSITORY_HOST_ROOT:-.}:/repositories:ro
       - labpilot_content:/var/lib/labpilot/content
+      - type: bind
+        source: ${LABPILOT_ATTEMPT_WORKSPACE_ROOT:?LABPILOT_ATTEMPT_WORKSPACE_ROOT is required}
+        target: ${LABPILOT_ATTEMPT_WORKSPACE_ROOT:?LABPILOT_ATTEMPT_WORKSPACE_ROOT is required}
+        read_only: true
+        bind:
+          create_host_path: false
     depends_on:
       migrate:
         condition: service_completed_successfully

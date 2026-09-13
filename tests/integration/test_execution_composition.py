@@ -81,15 +81,26 @@ def test_coordinator_composition_uses_exact_train_gid(tmp_path: Path) -> None:
 
 
 @pytest.mark.integration
-def test_compose_grants_execution_authority_only_to_coordinator() -> None:
+def test_compose_grants_workspace_read_access_but_execution_authority_only_to_coordinator() -> None:
     compose = Path("compose.yaml").read_text()
     api = compose.split("\n  api:\n", 1)[1].split("\n  coordinator:\n", 1)[0]
     coordinator = compose.split("\n  coordinator:\n", 1)[1].split(
         "\n  projection:\n", 1
     )[0]
 
+    workspace_root = (
+        "@@D@@{LABPILOT_ATTEMPT_WORKSPACE_ROOT:"
+        "?LABPILOT_ATTEMPT_WORKSPACE_ROOT is required}"
+    ).replace("@@D@@", "$")
+    assert (
+        "- type: bind\n"
+        f"        source: {workspace_root}\n"
+        f"        target: {workspace_root}\n"
+        "        read_only: true\n"
+        "        bind:\n"
+        "          create_host_path: false"
+    ) in api
     for value in (
-        "LABPILOT_ATTEMPT_WORKSPACE_ROOT",
         "LABPILOT_RUNNER_SOCKET_PATH",
         "LABPILOT_TRAIN_GID",
         "/run/labpilot-runner/control.sock",
@@ -121,11 +132,10 @@ def test_compose_grants_execution_authority_only_to_coordinator() -> None:
         not in coordinator
     )
     for value in (
-        "- type: bind",
         "source: /run/labpilot-runner",
         "target: /run/labpilot-runner",
-        "read_only: true",
-        "create_host_path: false",
     ):
         assert value in coordinator
         assert value not in api
+    for value in ("read_only: true", "create_host_path: false"):
+        assert value in coordinator

@@ -47,6 +47,8 @@ def _read_artifact(
 ) -> ArtifactReadResult:
     components = _relative_components(relative_path)
     root_descriptor = _open_root(output_root)
+    if root_descriptor is None:
+        return MissingArtifact(relative_path=relative_path)
     descriptor = root_descriptor
     try:
         for component in components[:-1]:
@@ -56,7 +58,8 @@ def _read_artifact(
                 os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
                 leaf=False,
             )
-            assert child is not None
+            if child is None:
+                return MissingArtifact(relative_path=relative_path)
             os.close(descriptor)
             descriptor = child
 
@@ -85,13 +88,15 @@ def _relative_components(relative_path: str) -> tuple[str, ...]:
     return components
 
 
-def _open_root(output_root: Path) -> int:
+def _open_root(output_root: Path) -> int | None:
     try:
         return os.open(
             output_root,
             os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
         )
     except OSError as error:
+        if error.errno == errno.ENOENT:
+            return None
         _raise_for_oserror(error)
         raise AssertionError("unreachable") from error
 
@@ -106,7 +111,7 @@ def _open_child(
     try:
         return os.open(component, flags, dir_fd=parent_descriptor)
     except OSError as error:
-        if leaf and error.errno == errno.ENOENT:
+        if error.errno == errno.ENOENT:
             return None
         if leaf and error.errno == errno.ENXIO:
             raise ValueError("artifact_not_regular_file") from error

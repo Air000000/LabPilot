@@ -46,6 +46,22 @@ def test_missing_leaf_is_distinct_from_unsafe_paths(tmp_path: Path) -> None:
     assert result == _types().MissingArtifact(relative_path="missing.json")
 
 
+def test_missing_output_root_is_a_missing_artifact(tmp_path: Path) -> None:
+    root = tmp_path / "runtime" / "output"
+
+    result = _reader().read_artifact_identity(root, "result.json", "application/json")
+
+    assert result == _types().MissingArtifact(relative_path="result.json")
+
+
+def test_missing_intermediate_directory_is_a_missing_artifact(tmp_path: Path) -> None:
+    root = _output_root(tmp_path)
+
+    result = _reader().read_artifact_identity(root, "nested/result.json", "application/json")
+
+    assert result == _types().MissingArtifact(relative_path="nested/result.json")
+
+
 @pytest.mark.parametrize(
     "relative_path", ("../outside.json", "/tmp/outside.json", "nested/../x.json")
 )

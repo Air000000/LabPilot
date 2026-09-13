@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import shutil
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from copy import deepcopy
@@ -325,6 +326,54 @@ async def test_attempt_result_api_preserves_history_and_derives_safe_availabilit
             assert unsafe.status_code == 200
             assert unsafe.json()["artifacts"][0]["availability"] == "corrupted"
 
+        assert await _scientific_history(system.database, attempt_id) == historical
+
+
+@pytest.mark.asyncio
+async def test_attempt_result_api_keeps_history_when_output_root_is_removed(
+    isolated_database_url: str, tmp_path: Path
+) -> None:
+    source = b'{"schema_version":"v1","metrics":{"score":0.8200}}'
+    async with _seed_result_attempt(
+        isolated_database_url, tmp_path, output=source
+    ) as (system, _batch_id, _trial_id, attempt_id, workspace):
+        await _process_and_summarize(system, _batch_id, attempt_id)
+        historical = await _scientific_history(system.database, attempt_id)
+        async with _client(system.database) as client:
+            available = await client.get(f"/attempts/{attempt_id}/results")
+            assert available.status_code == 200
+            available_body = available.json()
+
+            shutil.rmtree(workspace / "runtime" / "output")
+
+            missing = await client.get(f"/attempts/{attempt_id}/results")
+            assert missing.status_code == 200
+            missing_body = missing.json()
+            assert [artifact["availability"] for artifact in missing_body["artifacts"]] == [
+                "missing"
+            ]
+            assert [
+                {
+                    key: artifact[key]
+                    for key in ("artifact_id", "content_sha256", "byte_size")
+                }
+                for artifact in missing_body["artifacts"]
+            ] == [
+                {
+                    key: artifact[key]
+                    for key in ("artifact_id", "content_sha256", "byte_size")
+                }
+                for artifact in available_body["artifacts"]
+            ]
+            assert missing_body["metrics"] == available_body["metrics"]
+            assert missing_body["validation_reports"] == available_body["validation_reports"]
+            for artifact in missing_body["artifacts"]:
+                assert not {
+                    "workspace_path",
+                    "absolute_path",
+                    "raw_bytes",
+                    "content",
+                }.intersection(artifact)
         assert await _scientific_history(system.database, attempt_id) == historical
 
 

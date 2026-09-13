@@ -102,6 +102,8 @@ The uniqueness key intentionally does not contain the digest. If an already regi
 
 No managed-copy/CAS requirement exists in Slice3 MVP. Registration proves the declared file was available and intact at registration time. Query code may derive current availability as `available`, `missing`, or `corrupted`; MVP does not persist a mutable availability projection.
 
+The Slice3 Result API receives read-only visibility of the Attempt workspace at the same absolute path as the Coordinator solely to derive current Artifact availability. It receives neither the Runner socket nor execution-control credentials, so this data-plane visibility grants no Execution Plane authority. If the controlled output root or an Artifact path has been removed, historical Artifact registration remains authoritative and current availability is `missing`, not an internal error. This narrowly supersedes the older Slice2 deployment assumption that the API receives no Attempt-workspace visibility.
+
 #### Safe-read contract
 
 Artifact registration and later extraction must use the controlled Attempt output root and must not trust workload-created path topology.
