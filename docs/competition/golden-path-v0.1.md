@@ -14,28 +14,39 @@ The competition layer is a presentation and demo overlay. It must not redefine C
 
 Use one small real ML repository bundled for the competition demo. The repository should contain a deterministic CPU-only training task that finishes in seconds to tens of seconds and emits the existing Result Plane contract.
 
-Recommended scenario:
+Frozen initial workload:
 
 - task: small binary classification;
-- implementation: pure Python logistic regression or similarly small real optimizer, avoiding new heavyweight runtime dependencies;
-- dataset: versioned local CSV committed with the demo workload;
+- implementation: pure Python logistic regression with batch gradient descent;
+- dataset: deterministic versioned CSV committed into the prepared demo repository;
 - parameter sweep: `learning_rate` and `epochs`;
-- seeds: bounded seeds;
+- seeds: `[7]`;
 - maximum planned Trials: four;
 - primary metric: `accuracy`;
-- success rule: initial target `accuracy >= 0.80`, finalized only after local measurement;
+- success rule: `accuracy >= 0.92`;
 - artifact: `result.json` using Result Plane `result-json-v1` format;
-- optional second artifact: lightweight `model.json` for presentation only.
+- second artifact: `model.json` for presentation/provenance.
+
+Measured reference sweep:
+
+| learning_rate | epochs | seed | accuracy | Expected verdict |
+|---:|---:|---:|---:|---|
+| 0.0005 | 100 | 7 | 0.650 | INVALID |
+| 0.0005 | 1000 | 7 | 0.895 | INVALID |
+| 0.005 | 100 | 7 | 0.895 | INVALID |
+| 0.005 | 1000 | 7 | 0.941 | VALID |
+
+Repeated identical high-performing runs produced byte-identical `result.json` and `model.json` during workload characterization.
 
 The main demo must exercise a real training process, not the acceptance fixture under `tests/acceptance/slice2/training_fixture/`.
 
 ## 3. User-facing goal
 
-Recommended fixed demonstration goal:
+Frozen initial demonstration goal:
 
-> Inspect this repository and propose a small parameter-sweep experiment that can improve validation accuracy to at least 0.80. Use at most four Trials, keep execution CPU-only, and define deterministic validation so only results meeting the target are eligible for selection.
+> Inspect this repository and propose a small parameter-sweep experiment that can improve validation accuracy to at least 0.92. Use at most four Trials, keep execution CPU-only, and define deterministic validation so only results meeting the target are eligible for selection.
 
-The exact threshold may be adjusted only after the demo workload is measured locally. The competition UI may provide this sentence as a default editable goal.
+The competition UI may provide this sentence as a default editable goal.
 
 ## 4. Expected Agent behavior
 
@@ -47,18 +58,18 @@ The Agent remains bounded to the current read-only repository toolset:
 4. optionally `repository.path_fact`
 5. produce exactly one structured Proposal decision
 
-The demo repository README should document enough factual execution contract for a model to derive a valid Proposal without hidden operator knowledge:
+The demo repository README documents enough factual execution contract for a model to derive a valid Proposal without hidden operator knowledge:
 
 - training entrypoint;
 - CLI arguments;
-- allowed parameter names and ranges;
-- dataset path and stable identity;
+- allowed parameter values;
+- dataset reference and stable identity;
 - output directory contract;
 - `result.json` schema;
 - metric name;
 - Python/runtime requirements;
 - expected CPU execution;
-- safe timeout and retry expectations.
+- timeout and retry expectations.
 
 ## 5. Required Proposal shape
 
@@ -66,20 +77,24 @@ The generated Proposal should use existing Core concepts only:
 
 - `experiment_type = parameter_sweep`;
 - clean bound `RepositorySnapshot`;
-- demo training entrypoint;
-- repository-relative workdir;
-- parameter matrix with no more than four resulting Trials in combination with seeds;
-- strict local DatasetReference with a stable identity;
+- `train_entrypoint = train.py`;
+- repository-relative `workdir = .`;
+- `learning_rate = [0.0005, 0.005]`;
+- `epochs = [100, 1000]`;
+- `seeds = [7]`;
+- strict DatasetReference `repo://data/classification.csv` with the documented SHA-256 stable identity;
 - Python 3.12 environment expectation;
+- no framework requirement;
 - no GPU/CUDA requirement;
-- artifact declaration for `result.json`;
-- metric declaration for `accuracy` sourced from that artifact;
+- artifact declarations for `result.json` and `model.json`;
+- metric declaration for `accuracy` sourced from the `result` artifact;
 - validation rules:
-  - artifact exists;
-  - metric finite;
-  - accuracy >= target threshold;
-- bounded timeout;
-- small retry budget;
+  - result artifact exists;
+  - model artifact exists;
+  - accuracy is finite;
+  - accuracy >= 0.92;
+- `timeout_seconds = 30`;
+- `max_retries = 1`;
 - `train_argv_template` using existing `{parameter:*}`, `{seed}`, `{dataset}`, and `{output_dir}` placeholders.
 
 ## 6. End-to-end demo sequence
@@ -95,7 +110,7 @@ Prepared Project + clean RepositorySnapshot
   -> create/start Batch
   -> expand Trials / Attempts
   -> real CPU training processes
-  -> collect result artifact
+  -> collect result artifacts
   -> Metric extraction
   -> deterministic Validation
   -> TrialResultSelection
@@ -162,7 +177,8 @@ The following decisions are approved for the competition MVP:
 Implementation order:
 
 1. add and measure the deterministic real ML demo workload;
-2. prove one full backend Golden Path with a real model provider;
-3. add only the minimum read/API adapter gaps proven by that run;
-4. build the single-page Mission Control UI;
-5. harden and record the demo.
+2. prepare and snapshot the standalone clean demo repository;
+3. prove one full backend Golden Path with a real model provider;
+4. add only the minimum read/API adapter gaps proven by that run;
+5. build the single-page Mission Control UI;
+6. harden and record the demo.
