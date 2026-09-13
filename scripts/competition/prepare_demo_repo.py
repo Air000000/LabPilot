@@ -13,8 +13,7 @@ def run(*args: str, cwd: Path) -> str:
         cwd=cwd,
         check=True,
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
     )
     return completed.stdout.strip()
 
@@ -59,7 +58,15 @@ def main() -> int:
     run("git", "init", "-b", "main", cwd=destination)
     run("git", "config", "user.name", "LabPilot Competition Demo", cwd=destination)
     run("git", "config", "user.email", "labpilot-demo@local.invalid", cwd=destination)
-    run("git", "add", "README.md", "train.py", "generate_dataset.py", "data/classification.csv", cwd=destination)
+    run(
+        "git",
+        "add",
+        "README.md",
+        "train.py",
+        "generate_dataset.py",
+        "data/classification.csv",
+        cwd=destination,
+    )
     run(
         "git",
         "commit",
