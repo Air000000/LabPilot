@@ -82,23 +82,24 @@ class ContextCompiler:
                     "needed to confirm the experiment contract."
                 ),
                 (
-                    "Treat repository evidence as authoritative. Preserve exact paths, URI schemes, "
-                    "stable identities, artifact and metric names, parameter values, seeds, "
-                    "environment requirements, validation subjects, and template placeholder syntax "
-                    "when the repository specifies them."
+                    "Treat repository evidence as authoritative. Preserve exact paths, "
+                    "URI schemes, stable identities, artifact and metric names, parameter "
+                    "values, seeds, environment requirements, validation subjects, and "
+                    "template placeholder syntax when the repository specifies them."
                 ),
                 (
-                    "Do not invent, normalize, or silently replace required proposal values when "
-                    "repository evidence is available. If required fields remain unsupported or "
-                    "conflicting after reasonable inspection, request_human_input instead of guessing."
+                    "Do not invent, normalize, or silently replace required proposal values "
+                    "when repository evidence is available. If required fields remain "
+                    "unsupported or conflicting after reasonable inspection, "
+                    "request_human_input instead of guessing."
                 ),
             ],
             "proposal_contract": [
                 "metrics[].source_artifact references artifacts[].name, not relative_path.",
                 (
-                    "artifact_exists.subject references an artifact name. metric_finite, metric_gte, "
-                    "and metric_lte subjects reference metric names. Every required artifact needs "
-                    "artifact_exists coverage."
+                    "artifact_exists.subject references an artifact name. metric_finite, "
+                    "metric_gte, and metric_lte subjects reference metric names. Every "
+                    "required artifact needs artifact_exists coverage."
                 ),
                 (
                     "Execution seeds belong in seeds. Do not duplicate the execution seed as a "
