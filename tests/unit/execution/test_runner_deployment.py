@@ -129,6 +129,7 @@ def test_service_freezes_candidate_b_hardening() -> None:
         "restart": "on-failure",
         "restartsec": "1s",
         "nonewprivileges": "yes",
+        "ambientcapabilities": "CAP_SETUID",
         "restrictaddressfamilies": "AF_UNIX",
     }
     assert dict(parser["Install"]) == {"wantedby": "multi-user.target"}
@@ -177,6 +178,7 @@ case "$4" in
   UMask) echo 0077 ;;
   RuntimeDirectoryPreserve) echo restart ;;
   NoNewPrivileges) echo yes ;;
+  AmbientCapabilities) echo CAP_SETUID ;;
   RestrictAddressFamilies) echo AF_UNIX ;;
   ExecStart) printf '%s%s\n' \
     '/opt/labpilot-runner/app/.venv/bin/python -E -s -B -m ' \

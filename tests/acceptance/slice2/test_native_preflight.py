@@ -540,6 +540,7 @@ def test_effective_runner_service_contract_is_exact() -> None:
         "RuntimeDirectoryPreserve": "restart",
         "Restart": "on-failure",
         "NoNewPrivileges": "yes",
+        "AmbientCapabilities": "CAP_SETUID",
         "RestrictAddressFamilies": "AF_UNIX",
         "ExecStart": (
             "{ path=/opt/labpilot-runner/app/.venv/bin/python ; "
