@@ -23,8 +23,8 @@ The Cartesian product produces exactly four Trials.
 - `workdir`: `.`
 - Python profile: `python-3.12`
 - framework requirements: none
-- device requirement: none / CPU
-- CUDA requirement: none
+- `device_requirement`: `null` (CPU-only; no CUDA device requirement)
+- `cuda_requirement`: `null`
 - recommended timeout: 30 seconds
 - recommended max retries: 1
 
@@ -150,6 +150,8 @@ seeds = [7]
 dataset = repo://data/classification.csv
 python_profile = python-3.12
 framework_requirements = []
+device_requirement = null
+cuda_requirement = null
 timeout_seconds = 30
 max_retries = 1
 ```

@@ -19,7 +19,7 @@ from labpilot.settings import get_settings
 
 _PROJECT_IDEMPOTENCY_KEY = "competition-demo-project-v1"
 _REGISTER_IDEMPOTENCY_KEY = "competition-demo-register-v1"
-_SNAPSHOT_IDEMPOTENCY_KEY = "competition-demo-snapshot-v1"
+_SNAPSHOT_IDEMPOTENCY_KEY_PREFIX = "competition-demo-snapshot"
 
 
 def parse_args() -> argparse.Namespace:
@@ -113,9 +113,18 @@ async def bootstrap(repository: Path) -> None:
         else:
             await _assert_existing_registration_path(database, registration_id, repository)
 
+        probe = await git.probe(repository)
+        if probe.status_entries:
+            raise RuntimeError(
+                "competition demo repository must be clean before snapshot capture"
+            )
+        snapshot_idempotency_key = (
+            f"{_SNAPSHOT_IDEMPOTENCY_KEY_PREFIX}-{probe.head_commit}"
+        )
+
         snapshot_outcome = await repositories.capture_repository_snapshot(
             context=_context(),
-            idempotency_key=_SNAPSHOT_IDEMPOTENCY_KEY,
+            idempotency_key=snapshot_idempotency_key,
             command=CaptureRepositorySnapshot(registration_id),
         )
         snapshot_id = UUID(snapshot_outcome.envelope.primary_result_id)

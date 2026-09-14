@@ -4,13 +4,15 @@ from math import isfinite, prod
 from typing import Literal
 from uuid import UUID
 
+from packaging.version import InvalidVersion, Version
+
 from labpilot.common.hashing import namespaced_sha256
 from labpilot.experiments.proposal_ports import ProposalRepositoryFactPort
 from labpilot.experiments.proposal_types import ProposalPayload
 
 type VerificationSeverity = Literal["blocking", "warning"]
 
-VERIFIER_PROFILE = "slice1-v2"
+VERIFIER_PROFILE = "slice1-v3"
 _RESULT_HASH_NAMESPACE = "labpilot-proposal-verification-result:v1"
 
 
@@ -207,6 +209,7 @@ class ProposalVerifier:
         trial_count = self._check_parameter_matrix(payload, findings)
         self._check_experiment_type(payload, trial_count, findings)
         self._check_dataset(payload, findings)
+        self._check_environment_expectation(payload, findings)
         self._check_artifacts_and_metrics(payload, findings)
         self._check_train_argv_template(payload, findings)
 
@@ -464,6 +467,39 @@ class ProposalVerifier:
                     "dataset_identity_required",
                     field="dataset_reference",
                     message="strict DatasetReference requires a stable identity.",
+                )
+            )
+
+    @staticmethod
+    def _check_environment_expectation(
+        payload: ProposalPayload,
+        findings: list[VerificationFinding],
+    ) -> None:
+        expectation = payload.environment_expectation
+        if expectation.device_requirement not in {None, "cuda"}:
+            findings.append(
+                _finding(
+                    "device_requirement_invalid",
+                    field="environment_expectation.device_requirement",
+                    message=(
+                        "device_requirement must be null for CPU/no device requirement "
+                        "or 'cuda'."
+                    ),
+                )
+            )
+
+        if expectation.cuda_requirement is None:
+            return
+        try:
+            _ = Version(expectation.cuda_requirement)
+        except InvalidVersion:
+            findings.append(
+                _finding(
+                    "cuda_requirement_invalid",
+                    field="environment_expectation.cuda_requirement",
+                    message=(
+                        "cuda_requirement must be null or a valid CUDA version."
+                    ),
                 )
             )
 
