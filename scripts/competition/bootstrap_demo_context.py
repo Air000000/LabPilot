@@ -22,6 +22,11 @@ _REGISTER_IDEMPOTENCY_KEY = "competition-demo-register-v1"
 _SNAPSHOT_IDEMPOTENCY_KEY_PREFIX = "competition-demo-snapshot"
 
 
+def _normalize_uuid(value: UUID) -> UUID:
+    """Normalize database-driver UUID subclasses to stdlib uuid.UUID."""
+    return UUID(str(value))
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -111,6 +116,7 @@ async def bootstrap(repository: Path) -> None:
             )
             registration_id = UUID(registration_outcome.envelope.primary_result_id)
         else:
+            registration_id = _normalize_uuid(registration_id)
             await _assert_existing_registration_path(database, registration_id, repository)
 
         probe = await git.probe(repository)
