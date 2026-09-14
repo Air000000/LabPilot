@@ -178,7 +178,7 @@ case "$4" in
   UMask) echo 0077 ;;
   RuntimeDirectoryPreserve) echo restart ;;
   NoNewPrivileges) echo yes ;;
-  AmbientCapabilities) echo CAP_SETUID ;;
+  AmbientCapabilities) echo cap_setuid ;;
   RestrictAddressFamilies) echo AF_UNIX ;;
   ExecStart) printf '%s%s\n' \
     '/opt/labpilot-runner/app/.venv/bin/python -E -s -B -m ' \
