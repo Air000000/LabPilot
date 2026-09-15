@@ -205,7 +205,7 @@ async def test_agent_trace_get_returns_persisted_steps(
                 "/agent-runs/cccccccc-cccc-4ccc-8ccc-cccccccccccc/trace"
             )
             assert missing.status_code == 404
-            assert missing.json()["error_code"] == "resource_not_found"
+            assert missing.json()["error_code"] == "agent_run_not_found"
 
 
 @pytest.mark.asyncio
