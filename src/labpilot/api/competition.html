@@ -149,6 +149,30 @@
       margin-top: 28px;
     }
 
+
+    .table-wrap {
+      overflow-x: auto;
+    }
+
+    table {
+      border-collapse: collapse;
+      margin-top: 16px;
+      width: 100%;
+    }
+
+    th,
+    td {
+      border: 1px solid #d7dde5;
+      padding: 8px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: #f7f8fa;
+      font-size: 0.75rem;
+    }
+
     [hidden] {
       display: none;
     }
@@ -179,15 +203,15 @@
         <span class="stage-name">APPROVE</span>
         <span class="stage-state">Loading evidence</span>
       </div>
-      <div class="stage" data-state="pending">
+      <div class="stage" data-stage="execute" data-state="pending">
         <span class="stage-name">EXECUTE</span>
         <span class="stage-state">Pending this UI slice</span>
       </div>
-      <div class="stage" data-state="pending">
+      <div class="stage" data-stage="validate" data-state="pending">
         <span class="stage-name">VALIDATE</span>
         <span class="stage-state">Pending this UI slice</span>
       </div>
-      <div class="stage" data-state="pending">
+      <div class="stage" data-stage="select" data-state="pending">
         <span class="stage-name">SELECT</span>
         <span class="stage-state">Pending this UI slice</span>
       </div>
@@ -221,6 +245,39 @@
         <p id="materialization-label"></p>
         <div class="fields" id="version-fields"></div>
       </article>
+
+      <article class="wide">
+        <h2>Execution Overview</h2>
+        <div class="fields" id="execution-overview"></div>
+      </article>
+      <article class="wide">
+        <h2>Trials</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Ordinal</th>
+                <th>Parameters</th>
+                <th>Seed</th>
+                <th>Status</th>
+                <th>Attempts</th>
+                <th>Target metric</th>
+                <th>Selection</th>
+              </tr>
+            </thead>
+            <tbody id="trial-rows"></tbody>
+          </table>
+        </div>
+        <div class="fields" id="attempt-evidence"></div>
+      </article>
+      <article class="wide">
+        <h2>Validation / Result Evidence</h2>
+        <div class="fields" id="validation-evidence"></div>
+      </article>
+      <article class="wide">
+        <h2>Selection / Batch Summary</h2>
+        <div class="fields" id="summary-fields"></div>
+      </article>
     </section>
   </main>
 
@@ -231,6 +288,8 @@
       "/proposal-verifications/b4871e14-fd3e-4a94-aa9d-3d81aecece31";
     const VERSION_PATH =
       "/experiment-versions/6e19ac98-8f6c-4c8b-b698-8c35b7a9cd2d";
+    const BATCH_ID = "42c60d3c-ca98-47ac-8a9f-273fad87f44f";
+    const BATCH_PATH = "/batches/" + BATCH_ID;
 
     async function fetchJson(path) {
       const response = await fetch(path);
@@ -410,31 +469,333 @@
       setStage("approve", "passed", "ExperimentVersion materialized");
     }
 
+
+    function requireArray(value, label) {
+      if (!Array.isArray(value)) {
+        throw new Error("Evidence integrity error: " + label + " must be an array.");
+      }
+      return value;
+    }
+
+    function requireRecord(value, label) {
+      if (!value || Array.isArray(value) || typeof value !== "object") {
+        throw new Error("Evidence integrity error: " + label + " must be an object.");
+      }
+      return value;
+    }
+
+    function targetMetricSubject(proposal) {
+      return proposal.validation_rules.find((rule) => rule.kind === "metric_gte")
+        ?.subject;
+    }
+
+    async function loadExecution(batch) {
+      requireArray(batch.trial_ids, "batch trial IDs");
+      const trialEvidence = await Promise.all(
+        batch.trial_ids.map(async (trialId) => {
+          const trial = await fetchJson("/trials/" + trialId);
+          requireArray(trial.attempt_ids, "trial attempt IDs");
+          const [attemptEvidence, trialResult] = await Promise.all([
+            Promise.all(
+              trial.attempt_ids.map(async (attemptId) => {
+                const [attempt, results] = await Promise.all([
+                  fetchJson("/attempts/" + attemptId),
+                  fetchJson("/attempts/" + attemptId + "/results"),
+                ]);
+                return { attempt, results };
+              })
+            ),
+            fetchJson("/trials/" + trialId + "/result"),
+          ]);
+          return { trial, attemptEvidence, trialResult };
+        })
+      );
+      const summary = await fetchJson(BATCH_PATH + "/summary");
+      return { batch, trialEvidence, summary };
+    }
+
+    function validateExecution(execution, experimentVersion) {
+      const { batch, trialEvidence, summary } = execution;
+      requireRecord(batch, "batch");
+      if (batch.batch_id !== BATCH_ID) {
+        throw new Error("Evidence integrity error: batch ID does not match navigation config.");
+      }
+      if (batch.experiment_version_id !== experimentVersion.experiment_version_id) {
+        throw new Error(
+          "Evidence integrity error: batch and ExperimentVersion disagree."
+        );
+      }
+      if (batch.trial_count !== batch.trial_ids.length) {
+        throw new Error("Evidence integrity error: batch trial count disagrees with IDs.");
+      }
+      if (!summary || summary.batch_id !== batch.batch_id) {
+        throw new Error("Evidence integrity error: batch summary disagrees with batch.");
+      }
+
+      const byTrialId = new Map();
+      trialEvidence.forEach((evidence) => {
+        const { trial, attemptEvidence, trialResult } = evidence;
+        if (trial.batch_id !== batch.batch_id) {
+          throw new Error("Evidence integrity error: trial belongs to another batch.");
+        }
+        if (trial.attempt_count !== trial.attempt_ids.length) {
+          throw new Error("Evidence integrity error: trial attempt count disagrees with IDs.");
+        }
+        if (trialResult.trial_id !== trial.trial_id) {
+          throw new Error("Evidence integrity error: trial result belongs to another trial.");
+        }
+        const attemptsById = new Map();
+        attemptEvidence.forEach(({ attempt, results }) => {
+          if (
+            attempt.trial_id !== trial.trial_id ||
+            attempt.batch_id !== batch.batch_id ||
+            results.attempt_id !== attempt.attempt_id
+          ) {
+            throw new Error("Evidence integrity error: attempt linkage is invalid.");
+          }
+          requireArray(results.artifacts, "attempt artifacts");
+          requireArray(results.metrics, "attempt metrics");
+          requireArray(results.validation_reports, "validation reports");
+          attemptsById.set(attempt.attempt_id, { attempt, results });
+        });
+        if (trialResult.selection) {
+          const selected = attemptsById.get(trialResult.selection.attempt_id);
+          if (
+            !selected ||
+            !selected.results.validation_reports.some(
+              (report) =>
+                report.validation_report_id ===
+                trialResult.selection.validation_report_id
+            )
+          ) {
+            throw new Error(
+              "Evidence integrity error: selection does not match persisted validation."
+            );
+          }
+        }
+        byTrialId.set(trial.trial_id, { ...evidence, attemptsById });
+      });
+
+      if (!("latest_summary" in summary)) {
+        throw new Error("Evidence integrity error: batch summary shape is invalid.");
+      }
+      if (summary.latest_summary !== null) {
+        const latest = requireRecord(summary.latest_summary, "latest summary");
+        const included = requireArray(latest.included, "summary included results");
+        const excluded = requireArray(latest.excluded, "summary excluded results");
+        requireRecord(latest.aggregates, "summary aggregates");
+        const seenTrialIds = new Set();
+        [...included, ...excluded].forEach((reference) => {
+          const item = requireRecord(reference, "summary result reference");
+          const evidence = byTrialId.get(item.trial_id);
+          if (!evidence) {
+            throw new Error("Evidence integrity error: summary references an unknown trial.");
+          }
+          if (seenTrialIds.has(item.trial_id)) {
+            throw new Error("Evidence integrity error: summary references a trial twice.");
+          }
+          if (
+            item.trial_ordinal !== undefined &&
+            item.trial_ordinal !== evidence.trial.trial_ordinal
+          ) {
+            throw new Error("Evidence integrity error: summary trial ordinal disagrees.");
+          }
+          seenTrialIds.add(item.trial_id);
+        });
+        if (
+          seenTrialIds.size !== new Set(batch.trial_ids).size ||
+          [...new Set(batch.trial_ids)].some((trialId) => !seenTrialIds.has(trialId))
+        ) {
+          throw new Error("Evidence integrity error: summary does not cover every batch trial.");
+        }
+        included.forEach((reference) => {
+          const item = requireRecord(reference, "included result reference");
+          const metrics = requireArray(item.metrics, "included result metrics");
+          const evidence = byTrialId.get(item.trial_id);
+          const selection = evidence.trialResult.selection;
+          const selected = selection && evidence.attemptsById.get(selection.attempt_id);
+          if (
+            !selection ||
+            !selected ||
+            item.selected_attempt_id !== selection.attempt_id ||
+            item.validation_report_id !== selection.validation_report_id
+          ) {
+            throw new Error(
+              "Evidence integrity error: summary included result does not match selection."
+            );
+          }
+          metrics.forEach((summaryMetric) => {
+            const metric = requireRecord(summaryMetric, "summary metric observation");
+            if (
+              !selected.results.metrics.some(
+                (attemptMetric) =>
+                  attemptMetric.metric_observation_id === metric.metric_observation_id &&
+                  attemptMetric.metric_name === metric.metric_name &&
+                  attemptMetric.split === metric.split &&
+                  attemptMetric.numeric_value === metric.numeric_value
+              )
+            ) {
+              throw new Error(
+                "Evidence integrity error: summary metric does not match selected attempt."
+              );
+            }
+          });
+        });
+      }
+      return byTrialId;
+    }
+
+    function renderExecution(execution, proposal) {
+      const { batch, trialEvidence } = execution;
+      const overview = document.querySelector("#execution-overview");
+      const retries = trialEvidence.reduce(
+        (total, evidence) => total + Math.max(evidence.trial.attempt_count - 1, 0),
+        0
+      );
+      appendField(overview, "Batch status", batch.presentation_status);
+      appendField(overview, "Trial count", batch.trial_count);
+      appendField(overview, "Start requested at", batch.start_requested_at);
+      appendField(overview, "Retries observed", retries);
+
+      const targetSubject = targetMetricSubject(proposal);
+      const rows = document.querySelector("#trial-rows");
+      const attempts = document.querySelector("#attempt-evidence");
+      [...trialEvidence]
+        .sort((left, right) => left.trial.trial_ordinal - right.trial.trial_ordinal)
+        .forEach((evidence) => {
+          const { trial, attemptEvidence, trialResult } = evidence;
+          const row = document.createElement("tr");
+          const targetValues = attemptEvidence
+            .flatMap(({ results }) =>
+              results.metrics
+                .filter((metric) => metric.metric_name === targetSubject)
+                .map((metric) => metric.numeric_value)
+            )
+            .join(", ");
+          [
+            trial.trial_ordinal,
+            JSON.stringify(trial.resolved_parameters),
+            trial.seed,
+            trial.presentation_status,
+            trial.attempt_count,
+            targetValues || "No observed target metric",
+            trialResult.selection ? "Present" : "Absent",
+          ].forEach((value) => {
+            const cell = document.createElement("td");
+            cell.textContent = String(value);
+            row.append(cell);
+          });
+          rows.append(row);
+
+          attemptEvidence.forEach(({ attempt }) => {
+            appendJsonField(
+              attempts,
+              "Trial " + trial.trial_ordinal + " / Attempt " + attempt.attempt_number,
+              {
+                attempt_number: attempt.attempt_number,
+                status: attempt.status,
+                terminal_kind: attempt.terminal_kind,
+                exit_code: attempt.exit_code,
+                physical_started_at: attempt.physical_started_at,
+                physical_ended_at: attempt.physical_ended_at,
+              }
+            );
+          });
+        });
+      setStage("execute", "passed", "Batch evidence loaded");
+    }
+
+    function renderValidation(execution) {
+      const container = document.querySelector("#validation-evidence");
+      execution.trialEvidence.forEach((evidence) => {
+        evidence.attemptEvidence.forEach(({ attempt, results }) => {
+          appendJsonField(
+            container,
+            "Trial " + evidence.trial.trial_ordinal + " / Attempt " +
+              attempt.attempt_number + " validation",
+            {
+              artifacts: results.artifacts.map((artifact) => ({
+                artifact_name: artifact.artifact_name,
+                relative_path: artifact.relative_path,
+                availability: artifact.availability,
+                content_sha256: artifact.content_sha256,
+              })),
+              metrics: results.metrics.map((metric) => ({
+                metric_name: metric.metric_name,
+                split: metric.split,
+                numeric_value: metric.numeric_value,
+              })),
+              validation_reports: results.validation_reports.map((report) => ({
+                validation_report_id: report.validation_report_id,
+                verdict: report.verdict,
+                reasons: report.reasons,
+                warnings: report.warnings,
+              })),
+            }
+          );
+        });
+      });
+      setStage("validate", "passed", "Result evidence loaded");
+    }
+
+    function renderSelect(execution, byTrialId) {
+      const fields = document.querySelector("#summary-fields");
+      const latest = execution.summary.latest_summary;
+      if (latest === null) {
+        appendField(fields, "Batch summary", "Not materialized");
+        setStage("select", "pending", "Summary not materialized");
+        return;
+      }
+      const selectedEvidence = latest.included.map((reference) => {
+        const evidence = byTrialId.get(reference.trial_id);
+        return {
+          trial_ordinal: evidence.trial.trial_ordinal,
+          selected_attempt_id: reference.selected_attempt_id,
+          validation_report_id: reference.validation_report_id,
+          metrics: reference.metrics,
+        };
+      });
+      appendField(fields, "Summary status", latest.presentation_status);
+      appendField(fields, "Revision number", latest.revision_number);
+      appendField(fields, "Summary protocol version", latest.summary_protocol_version);
+      appendField(fields, "Included count", latest.included.length);
+      appendField(fields, "Excluded count", latest.excluded.length);
+      appendJsonField(fields, "Aggregates", latest.aggregates);
+      appendJsonField(fields, "Included selected result evidence", selectedEvidence);
+      setStage("select", "passed", "Summary evidence loaded");
+    }
+
     function showError(detail) {
       document.querySelector("#research-goal").textContent =
         "Persisted evidence unavailable";
       document.querySelector("#error-detail").textContent = detail;
       document.querySelector("#evidence-error").hidden = false;
       document.querySelector("#evidence").hidden = true;
-      ["understand", "plan", "verify", "approve"].forEach((stage) => {
+      ["understand", "plan", "verify", "approve", "execute", "validate", "select"].forEach((stage) => {
         setStage(stage, "unavailable", "Evidence unavailable");
       });
     }
 
     async function loadEvidence() {
       try {
-        const [trace, verification, experimentVersion] = await Promise.all([
+        const [trace, verification, experimentVersion, batch] = await Promise.all([
           fetchJson(TRACE_PATH),
           fetchJson(VERIFICATION_PATH),
           fetchJson(VERSION_PATH),
+          fetchJson(BATCH_PATH),
         ]);
         const proposal = proposalFromTrace(trace);
         validateEvidence(trace, verification, experimentVersion, proposal);
+        const execution = await loadExecution(batch);
+        const byTrialId = validateExecution(execution, experimentVersion);
         renderUnderstand(trace);
         renderActivity(trace);
         renderPlan(proposal);
         renderVerification(verification);
         renderVersion(experimentVersion);
+        renderExecution(execution, proposal);
+        renderValidation(execution);
+        renderSelect(execution, byTrialId);
         document.querySelector("#evidence").hidden = false;
       } catch (error) {
         showError(error instanceof Error ? error.message : "Unknown loading error");

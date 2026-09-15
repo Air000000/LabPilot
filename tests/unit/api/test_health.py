@@ -160,6 +160,29 @@ def test_competition_shell_is_html_and_hidden_from_openapi() -> None:
         assert endpoint in response.text
     for forbidden in ("0.941", "0.650", "0.895", "0.92"):
         assert forbidden not in response.text
+    assert "42c60d3c-ca98-47ac-8a9f-273fad87f44f" in response.text
+    for endpoint in ("/batches/", "/trials/", "/attempts/", "/results", "/result", "/summary"):
+        assert endpoint in response.text
+    for forbidden in (
+        "0.941",
+        "0.650",
+        "0.895",
+        "bad7c1c7",
+        "a7372865",
+        "f0d502f2",
+        "cbd5b16a",
+        "0f9c3af2",
+        "93e94e28",
+        "349bd8a8",
+        "386fbada",
+        "duplicate launches",
+        "exactly once",
+        "Best result evidence",
+        "innerHTML",
+        "insertAdjacentHTML",
+        "document.write",
+    ):
+        assert forbidden not in response.text
     assert "POST" not in response.text
     assert "http://" not in response.text
     assert "https://" not in response.text
