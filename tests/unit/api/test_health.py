@@ -153,14 +153,21 @@ def test_competition_shell_is_html_and_hidden_from_openapi() -> None:
     assert "LabPilot / Experiment Console" in response.text
     assert "Unable to load persisted Golden Path evidence" in response.text
     for endpoint in (
-        "/agent-runs/c6d80472-31f7-4c6c-9e56-6f00d3cde1ed/trace",
-        "/proposal-verifications/b4871e14-fd3e-4a94-aa9d-3d81aecece31",
-        "/experiment-versions/6e19ac98-8f6c-4c8b-b698-8c35b7a9cd2d",
+        "/agent-runs/9702da20-968a-469f-8fd4-e33b0f2dbfa4/trace",
+        "/proposal-verifications/64daf1fc-a1cf-4736-8009-b932ee07da57",
+        "/experiment-versions/63755870-9582-46dd-bf3f-3d7054643ad2",
     ):
         assert endpoint in response.text
+    for stale_navigation_id in (
+        "c6d80472-31f7-4c6c-9e56-6f00d3cde1ed",
+        "b4871e14-fd3e-4a94-aa9d-3d81aecece31",
+        "6e19ac98-8f6c-4c8b-b698-8c35b7a9cd2d",
+        "42c60d3c-ca98-47ac-8a9f-273fad87f44f",
+    ):
+        assert stale_navigation_id not in response.text
     for forbidden in ("0.941", "0.650", "0.895", "0.92"):
         assert forbidden not in response.text
-    assert "42c60d3c-ca98-47ac-8a9f-273fad87f44f" in response.text
+    assert "4fef6810-a1b9-4463-9f00-edac8e22f40a" in response.text
     for endpoint in ("/batches/", "/trials/", "/attempts/", "/results", "/result", "/summary"):
         assert endpoint in response.text
     for forbidden in (
