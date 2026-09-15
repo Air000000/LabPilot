@@ -16,14 +16,14 @@
     }
 
     main {
-      max-width: 960px;
+      max-width: 1080px;
       margin: 0 auto;
-      padding: 64px 24px;
+      padding: 48px 24px 72px;
     }
 
     header {
       border-bottom: 1px solid #d7dde5;
-      padding-bottom: 28px;
+      padding-bottom: 24px;
     }
 
     .eyebrow {
@@ -31,7 +31,7 @@
       font-size: 0.8rem;
       font-weight: 700;
       letter-spacing: 0.08em;
-      margin: 0 0 12px;
+      margin: 0 0 10px;
       text-transform: uppercase;
     }
 
@@ -40,33 +40,117 @@
       margin: 0;
     }
 
-    header p:last-child {
-      color: #52657c;
-      margin: 12px 0 0;
+    h2 {
+      font-size: 1.05rem;
+      margin: 0;
     }
 
+    .subtitle,
+    .muted {
+      color: #52657c;
+    }
+
+    .subtitle {
+      margin: 10px 0 0;
+    }
+
+    .stage-strip,
     .panels {
       display: grid;
-      gap: 16px;
-      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      margin-top: 32px;
+      gap: 14px;
     }
 
-    article {
+    .stage-strip {
+      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+      margin: 28px 0;
+    }
+
+    .stage,
+    article,
+    .error {
       background: #fff;
       border: 1px solid #d7dde5;
       border-radius: 6px;
-      padding: 20px;
+      padding: 16px;
     }
 
-    h2 {
-      font-size: 1rem;
-      margin: 0 0 8px;
+    .stage-name {
+      display: block;
+      font-size: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
     }
 
-    article p {
+    .stage-state {
       color: #52657c;
-      margin: 0;
+      display: block;
+      font-size: 0.85rem;
+      margin-top: 6px;
+    }
+
+    .stage[data-state="passed"] .stage-state {
+      color: #23623a;
+    }
+
+    .stage[data-state="failed"] .stage-state,
+    .error {
+      border-color: #c44b4b;
+      color: #8f2525;
+    }
+
+    .panels {
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    }
+
+    article {
+      min-width: 0;
+    }
+
+    .wide {
+      grid-column: 1 / -1;
+    }
+
+    .fields {
+      display: grid;
+      gap: 12px;
+      margin: 16px 0 0;
+    }
+
+    .field-label {
+      color: #52657c;
+      display: block;
+      font-size: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      margin-bottom: 3px;
+      text-transform: uppercase;
+    }
+
+    code,
+    pre {
+      font-family: "Courier New", monospace;
+    }
+
+    pre {
+      background: #f7f8fa;
+      border: 1px solid #e1e5ea;
+      margin: 4px 0 0;
+      overflow-x: auto;
+      padding: 10px;
+      white-space: pre-wrap;
+    }
+
+    ul {
+      margin: 12px 0 0;
+      padding-left: 20px;
+    }
+
+    .error {
+      margin-top: 28px;
+    }
+
+    [hidden] {
+      display: none;
     }
   </style>
 </head>
@@ -74,23 +158,290 @@
   <main>
     <header>
       <p class="eyebrow">LabPilot</p>
-      <h1>Experiment Console</h1>
-      <p>Competition workspace shell. No experiment evidence is loaded yet.</p>
+      <h1>AI Experiment Operator</h1>
+      <p class="subtitle" id="research-goal">Loading persisted research goal...</p>
     </header>
-    <section class="panels" aria-label="Competition console">
+
+    <section class="stage-strip" aria-label="Competition stages">
+      <div class="stage" data-stage="understand" data-state="loading">
+        <span class="stage-name">UNDERSTAND</span>
+        <span class="stage-state">Loading evidence</span>
+      </div>
+      <div class="stage" data-stage="plan" data-state="loading">
+        <span class="stage-name">PLAN</span>
+        <span class="stage-state">Loading evidence</span>
+      </div>
+      <div class="stage" data-stage="verify" data-state="loading">
+        <span class="stage-name">VERIFY</span>
+        <span class="stage-state">Loading evidence</span>
+      </div>
+      <div class="stage" data-stage="approve" data-state="loading">
+        <span class="stage-name">APPROVE</span>
+        <span class="stage-state">Loading evidence</span>
+      </div>
+      <div class="stage" data-state="pending">
+        <span class="stage-name">EXECUTE</span>
+        <span class="stage-state">Pending this UI slice</span>
+      </div>
+      <div class="stage" data-state="pending">
+        <span class="stage-name">VALIDATE</span>
+        <span class="stage-state">Pending this UI slice</span>
+      </div>
+      <div class="stage" data-state="pending">
+        <span class="stage-name">SELECT</span>
+        <span class="stage-state">Pending this UI slice</span>
+      </div>
+    </section>
+
+    <section class="error" id="evidence-error" aria-live="polite" hidden>
+      <h2>Unable to load persisted Golden Path evidence</h2>
+      <p id="error-detail"></p>
+    </section>
+
+    <section class="panels" id="evidence" hidden>
       <article>
-        <h2>Experiment evidence</h2>
-        <p>Connect persisted evidence in a later slice.</p>
+        <h2>Understand</h2>
+        <div class="fields" id="understand-fields"></div>
       </article>
       <article>
-        <h2>Run activity</h2>
-        <p>Live run details are not loaded by this page shell.</p>
+        <h2>Verification</h2>
+        <div class="fields" id="verification-fields"></div>
+        <ul id="verification-findings"></ul>
       </article>
-      <article>
-        <h2>Review queue</h2>
-        <p>Validation and decision details are not loaded by this page shell.</p>
+      <article class="wide">
+        <h2>Agent Activity</h2>
+        <ul id="agent-activity"></ul>
+      </article>
+      <article class="wide">
+        <h2>Proposed Experiment</h2>
+        <div class="fields" id="proposal-fields"></div>
+      </article>
+      <article class="wide">
+        <h2>ExperimentVersion</h2>
+        <p id="materialization-label"></p>
+        <div class="fields" id="version-fields"></div>
       </article>
     </section>
   </main>
+
+  <script>
+    const TRACE_PATH =
+      "/agent-runs/c6d80472-31f7-4c6c-9e56-6f00d3cde1ed/trace";
+    const VERIFICATION_PATH =
+      "/proposal-verifications/b4871e14-fd3e-4a94-aa9d-3d81aecece31";
+    const VERSION_PATH =
+      "/experiment-versions/6e19ac98-8f6c-4c8b-b698-8c35b7a9cd2d";
+
+    async function fetchJson(path) {
+      const response = await fetch(path);
+      if (!response.ok) {
+        throw new Error("Failed to load " + path + ": HTTP " + response.status);
+      }
+      return response.json();
+    }
+
+    function setStage(stage, state, text) {
+      const element = document.querySelector('[data-stage="' + stage + '"]');
+      element.dataset.state = state;
+      element.querySelector(".stage-state").textContent = text;
+    }
+
+    function appendField(container, label, value) {
+      const field = document.createElement("div");
+      const name = document.createElement("span");
+      const content = document.createElement("div");
+      name.className = "field-label";
+      name.textContent = label;
+      content.textContent =
+        typeof value === "string" ? value : JSON.stringify(value, null, 2);
+      field.append(name, content);
+      container.append(field);
+    }
+
+    function appendJsonField(container, label, value) {
+      const field = document.createElement("div");
+      const name = document.createElement("span");
+      const content = document.createElement("pre");
+      name.className = "field-label";
+      name.textContent = label;
+      content.textContent = JSON.stringify(value, null, 2);
+      field.append(name, content);
+      container.append(field);
+    }
+
+    function proposalFromTrace(trace) {
+      return [...trace.steps]
+        .filter(
+          (step) =>
+            step.decision_kind === "propose" &&
+            step.decision_json &&
+            step.decision_json.proposal
+        )
+        .sort((left, right) => right.ordinal - left.ordinal)[0]
+        ?.decision_json.proposal;
+    }
+
+    function validateEvidence(trace, verification, experimentVersion, proposal) {
+      if (verification.proposal_revision_id !== experimentVersion.proposal_revision_id) {
+        throw new Error(
+          "Evidence integrity error: verification and ExperimentVersion disagree on proposal revision."
+        );
+      }
+      if (trace.repository_snapshot_id !== experimentVersion.repository_snapshot_id) {
+        throw new Error(
+          "Evidence integrity error: trace and ExperimentVersion disagree on repository snapshot."
+        );
+      }
+      if (!proposal) {
+        throw new Error("Evidence integrity error: persisted proposal is missing from Agent trace.");
+      }
+      if (proposal.repository_snapshot_id !== trace.repository_snapshot_id) {
+        throw new Error(
+          "Evidence integrity error: proposal and trace disagree on repository snapshot."
+        );
+      }
+      if (
+        proposal.repository_snapshot_identity !==
+        experimentVersion.repository_snapshot_identity
+      ) {
+        throw new Error(
+          "Evidence integrity error: proposal and ExperimentVersion disagree on repository identity."
+        );
+      }
+    }
+
+    function plannedTrialCount(proposal) {
+      const parameterCombinations = Object.values(proposal.parameter_matrix).reduce(
+        (count, values) => count * values.length,
+        1
+      );
+      return parameterCombinations * proposal.seeds.length;
+    }
+
+    function renderUnderstand(trace) {
+      document.querySelector("#research-goal").textContent = trace.goal;
+      const fields = document.querySelector("#understand-fields");
+      appendField(fields, "Agent persisted status", trace.status);
+      appendField(fields, "Provider", trace.provider_name);
+      appendField(fields, "Model", trace.model_name);
+      appendField(fields, "Model calls", trace.total_model_calls);
+      appendField(fields, "Total tokens", trace.total_tokens);
+      setStage("understand", "neutral", trace.status);
+    }
+
+    function renderActivity(trace) {
+      const activity = document.querySelector("#agent-activity");
+      [...trace.steps]
+        .sort((left, right) => left.ordinal - right.ordinal)
+        .forEach((step) => {
+          const item = document.createElement("li");
+          if (step.decision_kind === "tool_call") {
+            const toolName = step.decision_json?.tool_name || "Unnamed tool";
+            item.textContent = "Tool action: " + toolName;
+          } else if (step.decision_kind === "propose") {
+            item.textContent = "Proposal generated";
+          } else {
+            item.textContent = "Step " + step.ordinal + ": " + step.step_kind;
+          }
+          activity.append(item);
+        });
+    }
+
+    function renderPlan(proposal) {
+      const fields = document.querySelector("#proposal-fields");
+      appendField(fields, "Experiment type", proposal.experiment_type);
+      appendField(fields, "Train entrypoint", proposal.train_entrypoint);
+      if (proposal.eval_entrypoint !== null) {
+        appendField(fields, "Eval entrypoint", proposal.eval_entrypoint);
+      }
+      appendField(fields, "Workdir", proposal.workdir);
+      appendJsonField(fields, "Parameter matrix", proposal.parameter_matrix);
+      appendJsonField(fields, "Seeds", proposal.seeds);
+      appendJsonField(
+        fields,
+        "Environment expectation",
+        proposal.environment_expectation
+      );
+      appendField(fields, "Timeout seconds", proposal.timeout_seconds);
+      appendField(fields, "Max retries", proposal.max_retries);
+      appendJsonField(fields, "Validation rules", proposal.validation_rules);
+      appendField(fields, "Planned trials", plannedTrialCount(proposal));
+
+      const target = proposal.validation_rules.find(
+        (rule) => rule.kind === "metric_gte"
+      );
+      if (target) {
+        appendField(
+          fields,
+          "Validation target",
+          target.subject + " >= " + target.threshold
+        );
+      }
+      setStage("plan", "passed", "Proposal persisted");
+    }
+
+    function renderVerification(verification) {
+      const fields = document.querySelector("#verification-fields");
+      const resultState = verification.result.passed ? "PASS" : "FAIL";
+      appendField(fields, "Profile", verification.result.profile);
+      appendField(fields, "Result", resultState);
+      verification.result.findings.forEach((finding) => {
+        const item = document.createElement("li");
+        item.textContent =
+          finding.severity + ": " + finding.code + " - " + finding.message;
+        document.querySelector("#verification-findings").append(item);
+      });
+      setStage("verify", verification.result.passed ? "passed" : "failed", resultState);
+    }
+
+    function renderVersion(experimentVersion) {
+      document.querySelector("#materialization-label").textContent =
+        "ExperimentVersion materialized";
+      const fields = document.querySelector("#version-fields");
+      appendField(fields, "Experiment version ID", experimentVersion.experiment_version_id);
+      appendField(fields, "Version number", experimentVersion.version_number);
+      appendField(fields, "Proposal revision ID", experimentVersion.proposal_revision_id);
+      appendField(
+        fields,
+        "Repository snapshot identity",
+        experimentVersion.repository_snapshot_identity
+      );
+      appendField(fields, "Created at", experimentVersion.created_at);
+      setStage("approve", "passed", "ExperimentVersion materialized");
+    }
+
+    function showError(detail) {
+      document.querySelector("#research-goal").textContent =
+        "Persisted evidence unavailable";
+      document.querySelector("#error-detail").textContent = detail;
+      document.querySelector("#evidence-error").hidden = false;
+      document.querySelector("#evidence").hidden = true;
+      ["understand", "plan", "verify", "approve"].forEach((stage) => {
+        setStage(stage, "unavailable", "Evidence unavailable");
+      });
+    }
+
+    async function loadEvidence() {
+      try {
+        const [trace, verification, experimentVersion] = await Promise.all([
+          fetchJson(TRACE_PATH),
+          fetchJson(VERIFICATION_PATH),
+          fetchJson(VERSION_PATH),
+        ]);
+        const proposal = proposalFromTrace(trace);
+        validateEvidence(trace, verification, experimentVersion, proposal);
+        renderUnderstand(trace);
+        renderActivity(trace);
+        renderPlan(proposal);
+        renderVerification(verification);
+        renderVersion(experimentVersion);
+        document.querySelector("#evidence").hidden = false;
+      } catch (error) {
+        showError(error instanceof Error ? error.message : "Unknown loading error");
+      }
+    }
+
+    loadEvidence();
+  </script>
 </body>
 </html>

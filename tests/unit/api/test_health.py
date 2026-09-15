@@ -151,4 +151,16 @@ def test_competition_shell_is_html_and_hidden_from_openapi() -> None:
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
     assert "LabPilot / Experiment Console" in response.text
+    assert "Unable to load persisted Golden Path evidence" in response.text
+    for endpoint in (
+        "/agent-runs/c6d80472-31f7-4c6c-9e56-6f00d3cde1ed/trace",
+        "/proposal-verifications/b4871e14-fd3e-4a94-aa9d-3d81aecece31",
+        "/experiment-versions/6e19ac98-8f6c-4c8b-b698-8c35b7a9cd2d",
+    ):
+        assert endpoint in response.text
+    for forbidden in ("0.941", "0.650", "0.895", "0.92"):
+        assert forbidden not in response.text
+    assert "POST" not in response.text
+    assert "http://" not in response.text
+    assert "https://" not in response.text
     assert "/competition" not in app.openapi()["paths"]
