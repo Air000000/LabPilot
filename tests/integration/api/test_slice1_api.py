@@ -162,14 +162,11 @@ async def test_agent_trace_get_returns_persisted_steps(
     async with _proposal_system(isolated_database_url, tmp_path) as system:
         provider = ScriptedProvider(
             [
-                (
-                    {
-                        "kind": "stop",
-                        "reason_code": "done",
-                        "summary": "persisted trace",
-                    },
-                    {"input_tokens": 10, "output_tokens": 5},
-                )
+                {
+                    "kind": "stop",
+                    "reason_code": "done",
+                    "summary": "persisted trace",
+                }
             ]
         )
         async with _client(system, provider) as client:
@@ -189,7 +186,7 @@ async def test_agent_trace_get_returns_persisted_steps(
             assert body["repository_snapshot_id"] == str(system.snapshot_id)
             assert body["status"] == "completed"
             assert body["total_model_calls"] == 1
-            assert body["total_tokens"] == 15
+            assert body["total_tokens"] == 2
             assert len(body["steps"]) == 1
             step = body["steps"][0]
             assert step["ordinal"] == 1
@@ -201,7 +198,7 @@ async def test_agent_trace_get_returns_persisted_steps(
                 "reason_code": "done",
                 "summary": "persisted trace",
             }
-            assert step["token_usage"] == {"input_tokens": 10, "output_tokens": 5}
+            assert step["token_usage"] == {"total_tokens": 2}
             assert len(provider.calls) == provider_calls_before
 
             missing = await client.get(
