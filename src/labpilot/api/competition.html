@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LabPilot / Experiment Console</title>
+  <style>
+    :root {
+      color: #172033;
+      background: #f4f6f8;
+      font-family: Arial, sans-serif;
+    }
+
+    body {
+      margin: 0;
+    }
+
+    main {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 64px 24px;
+    }
+
+    header {
+      border-bottom: 1px solid #d7dde5;
+      padding-bottom: 28px;
+    }
+
+    .eyebrow {
+      color: #52657c;
+      font-size: 0.8rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      margin: 0 0 12px;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      font-size: 2rem;
+      margin: 0;
+    }
+
+    header p:last-child {
+      color: #52657c;
+      margin: 12px 0 0;
+    }
+
+    .panels {
+      display: grid;
+      gap: 16px;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      margin-top: 32px;
+    }
+
+    article {
+      background: #fff;
+      border: 1px solid #d7dde5;
+      border-radius: 6px;
+      padding: 20px;
+    }
+
+    h2 {
+      font-size: 1rem;
+      margin: 0 0 8px;
+    }
+
+    article p {
+      color: #52657c;
+      margin: 0;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <p class="eyebrow">LabPilot</p>
+      <h1>Experiment Console</h1>
+      <p>Competition workspace shell. No experiment evidence is loaded yet.</p>
+    </header>
+    <section class="panels" aria-label="Competition console">
+      <article>
+        <h2>Experiment evidence</h2>
+        <p>Connect persisted evidence in a later slice.</p>
+      </article>
+      <article>
+        <h2>Run activity</h2>
+        <p>Live run details are not loaded by this page shell.</p>
+      </article>
+      <article>
+        <h2>Review queue</h2>
+        <p>Validation and decision details are not loaded by this page shell.</p>
+      </article>
+    </section>
+  </main>
+</body>
+</html>

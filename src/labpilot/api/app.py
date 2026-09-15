@@ -7,6 +7,7 @@ from labpilot.api.actor import ActorProvider
 from labpilot.api.dependencies import ApplicationServices
 from labpilot.api.errors import register_error_handlers
 from labpilot.api.routers.agent_runs import router as agent_runs_router
+from labpilot.api.routers.competition import router as competition_router
 from labpilot.api.routers.execution import router as execution_router
 from labpilot.api.routers.experiments import router as experiments_router
 from labpilot.api.routers.health import router as health_router
@@ -59,6 +60,7 @@ def create_app(
     app.include_router(health_router)
     app.include_router(projects_router)
     app.include_router(agent_runs_router)
+    app.include_router(competition_router)
     app.include_router(experiments_router)
     app.include_router(execution_router)
     app.include_router(results_router)

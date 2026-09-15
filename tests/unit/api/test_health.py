@@ -137,3 +137,18 @@ async def test_lifespan_preserves_body_and_cleanup_failures() -> None:
             raise ValueError("body failed")
     messages = {str(error) for error in captured.value.exceptions}
     assert messages == {"body failed", "cleanup failed"}
+
+
+def test_competition_shell_is_html_and_hidden_from_openapi() -> None:
+    app = create_app(
+        services=_SERVICES,
+        actor_provider=_ACTOR_PROVIDER,
+    )
+    client = TestClient(app)
+
+    response = client.get("/competition")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert "LabPilot / Experiment Console" in response.text
+    assert "/competition" not in app.openapi()["paths"]
