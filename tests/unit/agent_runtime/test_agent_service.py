@@ -584,6 +584,79 @@ def _factory_service(
 
 
 @pytest.mark.asyncio
+async def test_get_trace_returns_persisted_state_without_side_effects() -> None:
+    descriptor = _descriptor()
+    repository = MemoryAgentRepository()
+    provider = ScriptedProvider(
+        [
+            (
+                {
+                    "kind": "stop",
+                    "reason_code": "done",
+                    "summary": "persisted summary",
+                },
+                {"input_tokens": 10, "output_tokens": 5},
+            )
+        ]
+    )
+    factory = RecordingToolFactory(repository)
+    service = _factory_service(repository, SnapshotSource(descriptor), provider, factory)
+    run = await service.create_run(
+        context=_context(),
+        project_id=descriptor.project_id,
+        repository_snapshot_id=descriptor.repository_snapshot_id,
+        goal="goal",
+        budget=_budget(),
+    )
+
+    persisted_run = await service.advance_run(
+        context=_context(),
+        agent_run_id=run.agent_run_id,
+        expected_row_version=run.row_version,
+    )
+    persisted_steps = await repository.list_steps(run.agent_run_id)
+    provider_calls_before = len(provider.calls)
+    tool_factory_calls_before = len(factory.calls)
+    tool_requests_before = sum(
+        tools.events.count("request_call") for tools in factory.services
+    )
+    tool_executions_before = sum(tools.executions for tools in factory.services)
+
+    trace = await service.get_trace(run.agent_run_id)
+
+    assert trace.run == persisted_run
+    assert trace.steps == persisted_steps
+    assert trace.steps[0].ordinal == 1
+    assert trace.steps[0].decision_kind == "stop"
+    assert trace.steps[0].decision_json == {
+        "kind": "stop",
+        "reason_code": "done",
+        "summary": "persisted summary",
+    }
+    assert trace.steps[0].token_usage == {"input_tokens": 10, "output_tokens": 5}
+    assert len(provider.calls) == provider_calls_before
+    assert len(factory.calls) == tool_factory_calls_before
+    assert sum(tools.events.count("request_call") for tools in factory.services) == (
+        tool_requests_before
+    )
+    assert sum(tools.executions for tools in factory.services) == tool_executions_before
+
+
+@pytest.mark.asyncio
+async def test_get_trace_rejects_missing_run() -> None:
+    descriptor = _descriptor()
+    repository = MemoryAgentRepository()
+    provider = ScriptedProvider([])
+    factory = RecordingToolFactory(repository)
+    service = _factory_service(repository, SnapshotSource(descriptor), provider, factory)
+
+    with pytest.raises(AgentRuntimeError) as error:
+        await service.get_trace(uuid4())
+
+    assert error.value.reason_code == "agent_run_not_found"
+
+
+@pytest.mark.asyncio
 async def test_create_run_does_not_resolve_tool_factory() -> None:
     descriptor = _descriptor()
     repository = MemoryAgentRepository()

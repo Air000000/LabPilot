@@ -14,6 +14,7 @@ from sqlalchemy import func, select
 from tests.integration.agent_runtime.test_agent_service import ScriptedProvider
 from tests.integration.experiments.test_proposal_service import (
     PROJECT_ID,
+    _agent_revision,
     _proposal_system,
 )
 
@@ -151,6 +152,96 @@ async def _create(client: AsyncClient, snapshot_id: UUID) -> dict[str, object]:
     )
     assert response.status_code == 201
     return response.json()
+
+
+@pytest.mark.asyncio
+async def test_agent_trace_get_returns_persisted_steps(
+    isolated_database_url: str,
+    tmp_path: Path,
+) -> None:
+    async with _proposal_system(isolated_database_url, tmp_path) as system:
+        provider = ScriptedProvider(
+            [
+                (
+                    {
+                        "kind": "stop",
+                        "reason_code": "done",
+                        "summary": "persisted trace",
+                    },
+                    {"input_tokens": 10, "output_tokens": 5},
+                )
+            ]
+        )
+        async with _client(system, provider) as client:
+            run = await _create(client, system.snapshot_id)
+            advanced = await client.post(
+                f"/agent-runs/{run['agent_run_id']}/advance",
+                json={"expected_row_version": run["row_version"]},
+            )
+            assert advanced.status_code == 200
+            provider_calls_before = len(provider.calls)
+
+            trace = await client.get(f"/agent-runs/{run['agent_run_id']}/trace")
+
+            assert trace.status_code == 200
+            body = trace.json()
+            assert body["agent_run_id"] == run["agent_run_id"]
+            assert body["repository_snapshot_id"] == str(system.snapshot_id)
+            assert body["status"] == "completed"
+            assert body["total_model_calls"] == 1
+            assert body["total_tokens"] == 15
+            assert len(body["steps"]) == 1
+            step = body["steps"][0]
+            assert step["ordinal"] == 1
+            assert step["step_kind"] == "model_call"
+            assert step["outcome"] == "succeeded"
+            assert step["decision_kind"] == "stop"
+            assert step["decision_json"] == {
+                "kind": "stop",
+                "reason_code": "done",
+                "summary": "persisted trace",
+            }
+            assert step["token_usage"] == {"input_tokens": 10, "output_tokens": 5}
+            assert len(provider.calls) == provider_calls_before
+
+            missing = await client.get(
+                "/agent-runs/cccccccc-cccc-4ccc-8ccc-cccccccccccc/trace"
+            )
+            assert missing.status_code == 404
+            assert missing.json()["error_code"] == "resource_not_found"
+
+
+@pytest.mark.asyncio
+async def test_proposal_verification_get_returns_persisted_response(
+    isolated_database_url: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with _proposal_system(isolated_database_url, tmp_path) as system:
+        revision = await _agent_revision(system)
+        provider = ScriptedProvider([])
+        async with _client(system, provider) as client:
+            persisted = await client.post(
+                f"/proposal-revisions/{revision.proposal_revision_id}/verify"
+            )
+            assert persisted.status_code == 200
+
+            async def explode_verify(*, project_id: UUID, payload: object) -> None:
+                raise AssertionError("persisted verification GET must not run verifier")
+
+            with monkeypatch.context() as patch:
+                patch.setattr(system.service._verifier, "verify", explode_verify)
+                fetched = await client.get(
+                    f"/proposal-verifications/{persisted.json()['proposal_verification_id']}"
+                )
+
+            assert fetched.status_code == 200
+            assert fetched.json() == persisted.json()
+            missing = await client.get(
+                "/proposal-verifications/cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+            )
+            assert missing.status_code == 404
+            assert missing.json()["error_code"] == "resource_not_found"
 
 
 @pytest.mark.asyncio

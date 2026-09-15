@@ -442,6 +442,42 @@ async def test_revision_creation_rejects_project_snapshot_ownership_mismatch(
 
 
 @pytest.mark.integration
+async def test_get_verification_returns_persisted_read_without_reverification(
+    isolated_database_url: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from labpilot.experiments.proposal_service import ProposalNotFound
+
+    async with _proposal_system(isolated_database_url, tmp_path) as system:
+        revision = await _agent_revision(system)
+        persisted = await system.service.verify_revision(
+            context=_context(),
+            proposal_revision_id=revision.proposal_revision_id,
+        )
+        before = await _table_count(system.database, "experiment_proposal_verifications")
+
+        async def explode_verify(*, project_id: UUID, payload: ProposalPayload) -> None:
+            raise AssertionError("persisted verification read must not run verifier")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(system.service._verifier, "verify", explode_verify)
+            fetched = await system.service.get_verification(
+                persisted.proposal_verification_id
+            )
+
+        after = await _table_count(system.database, "experiment_proposal_verifications")
+        assert fetched.proposal_verification_id == persisted.proposal_verification_id
+        assert fetched.proposal_revision_id == persisted.proposal_revision_id
+        assert fetched.proposal_payload_hash == persisted.proposal_payload_hash
+        assert fetched.result == persisted.result
+        assert (before, after) == (1, 1)
+
+        with pytest.raises(ProposalNotFound):
+            await system.service.get_verification(uuid4())
+
+
+@pytest.mark.integration
 async def test_verification_is_immutable_and_reused_by_frozen_semantic_key(
     isolated_database_url: str,
     tmp_path: Path,
