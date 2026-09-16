@@ -139,3 +139,20 @@ def test_compose_grants_workspace_read_access_but_execution_authority_only_to_co
         assert value not in api
     for value in ("read_only: true", "create_host_path: false"):
         assert value in coordinator
+
+
+@pytest.mark.integration
+def test_compose_wires_agent_provider_only_to_api() -> None:
+    compose = Path("compose.yaml").read_text()
+    app_env = compose.split("    environment: &app-env\n", 1)[1].split("\n    command:", 1)[0]
+    api = compose.split("\n  api:\n", 1)[1].split("\n  coordinator:\n", 1)[0]
+    coordinator = compose.split("\n  coordinator:\n", 1)[1].split("\n  projection:\n", 1)[0]
+
+    for name in (
+        "LABPILOT_DATA_EGRESS_POLICY",
+        "LABPILOT_AGENT_PROVIDER_MODEL",
+        "LABPILOT_AGENT_PROVIDER_API_KEY",
+    ):
+        assert name in api
+        assert name not in app_env
+        assert name not in coordinator

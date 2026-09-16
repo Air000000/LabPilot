@@ -284,8 +284,11 @@ class NativeSlice3Smoke:
         self._write_result(result)
         return result
 
-    def _run_normal_result_loop(self, preflight: Mapping[str, object]) -> dict[str, object]:
-        version_id = self._approve_version(("0.82", "0.61"), artifact_path="result.json")
+    def _run_normal_result_loop(
+        self, preflight: Mapping[str, object], *, version_id: UUID | None = None
+    ) -> dict[str, object]:
+        if version_id is None:
+            version_id = self._approve_version(("0.82", "0.61"), artifact_path="result.json")
         batch = self._create_and_start_batch(version_id)
         trial_ids = self._wait_for("two trials", lambda: self._trial_ids(batch), 30)
         attempts = self._wait_for(
