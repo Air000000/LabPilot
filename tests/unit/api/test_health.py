@@ -152,6 +152,18 @@ def test_competition_shell_is_html_and_hidden_from_openapi() -> None:
     assert response.headers["content-type"].startswith("text/html")
     assert "LabPilot / Experiment Console" in response.text
     assert "Unable to load persisted Golden Path evidence" in response.text
+    for marker in (
+        "Bounded agent planning. Verified experiment execution.",
+        "Run status",
+        "Scientific outcome",
+        "Validated &amp; Included",
+        "AI Agent",
+        "Controlled handoff",
+        "LabPilot runtime",
+        "Agent Decision Trace",
+        "Validation &amp; Summary",
+    ):
+        assert marker in response.text
     for endpoint in (
         "/agent-runs/9702da20-968a-469f-8fd4-e33b0f2dbfa4/trace",
         "/proposal-verifications/64daf1fc-a1cf-4736-8009-b932ee07da57",
@@ -185,6 +197,11 @@ def test_competition_shell_is_html_and_hidden_from_openapi() -> None:
         "duplicate launches",
         "exactly once",
         "Best result evidence",
+        "best",
+        "winner",
+        "autonomous scientist",
+        "autonomous research loop",
+        "self-improving",
         "innerHTML",
         "insertAdjacentHTML",
         "document.write",

@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>LabPilot / Experiment Console</title>
+  <link rel="icon" href="data:,">
   <style>
     :root {
       color: #172033;
@@ -176,10 +177,711 @@
     [hidden] {
       display: none;
     }
+
+    /* Presentation redesign: persisted evidence is rendered into this read-only view. */
+    #competition-presentation {
+      display: block;
+    }
+
+    #competition-presentation[hidden] {
+      display: none;
+    }
+
+    main > header,
+    main > .stage-strip,
+    main > #evidence {
+      display: none !important;
+    }
+
+    .presentation-masthead {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0 2px 18px;
+    }
+
+    .presentation-brand {
+      font-size: 15px;
+      font-weight: 760;
+      letter-spacing: 0.01em;
+    }
+
+    .presentation-brand b { color: #2c628e; }
+
+    .presentation-context,
+    .presentation-note {
+      color: #607084;
+      font-size: 13px;
+    }
+
+    .presentation-hero {
+      display: grid;
+      grid-template-columns: 54% 46%;
+      min-height: 244px;
+      overflow: hidden;
+      border-radius: 18px;
+      background: #15324a;
+      color: #f7fafc;
+    }
+
+    .presentation-copy {
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: 28px 38px;
+    }
+
+    .presentation-eyebrow {
+      margin: 0 0 8px;
+      color: #b4cad9;
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    .presentation-hero h1 {
+      max-width: 19ch;
+      margin: 0;
+      font-size: clamp(26px, 2.4vw, 36px);
+      line-height: 1.08;
+      letter-spacing: -0.04em;
+    }
+
+    .presentation-goal {
+      margin: 15px 0 0;
+      color: #d5e1ea;
+      font-size: 15px;
+    }
+
+    .presentation-goal b { color: #ffffff; }
+
+    .presentation-story {
+      max-width: 62ch;
+      margin: 19px 0 0;
+      padding-top: 13px;
+      border-top: 1px solid #597083;
+      color: #d8e4eb;
+      font-size: 13px;
+    }
+
+    .presentation-outcome {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      padding: 27px 38px;
+      background: #203f59;
+    }
+
+    .presentation-label,
+    .presentation-field-label {
+      color: #b4cad9;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+    }
+
+    .presentation-accuracy {
+      margin: 7px 0 4px;
+      font-size: clamp(60px, 6.4vw, 88px);
+      font-weight: 760;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: -0.08em;
+      line-height: 0.95;
+    }
+
+    .presentation-target {
+      color: #d2e2eb;
+      font-size: 14px;
+    }
+
+    .presentation-status-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1px;
+      margin-top: 17px;
+      overflow: hidden;
+      border: 1px solid #60798b;
+      border-radius: 9px;
+      background: #60798b;
+    }
+
+    .presentation-status {
+      padding: 8px 10px;
+      background: #23435c;
+    }
+
+    .presentation-status small {
+      display: block;
+      color: #b4cad9;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    .presentation-status strong { font-size: 13px; }
+
+    .presentation-status.good strong { color: #c9f1df; }
+
+    .presentation-facts {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1px;
+      margin-top: 16px;
+      overflow: hidden;
+      border: 1px solid #d7e0e8;
+      border-radius: 12px;
+      background: #d7e0e8;
+    }
+
+    .presentation-fact {
+      padding: 13px 17px;
+      background: #ffffff;
+    }
+
+    .presentation-fact strong {
+      display: block;
+      font-size: 20px;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: -0.04em;
+    }
+
+    .presentation-fact span {
+      display: block;
+      margin-top: 2px;
+      color: #607084;
+      font-size: 12px;
+    }
+
+    .presentation-section { margin-top: 28px; }
+
+    .presentation-heading {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 18px;
+      margin: 0 0 12px;
+    }
+
+    .presentation-heading h2 {
+      margin: 0;
+      font-size: 20px;
+      letter-spacing: -0.025em;
+    }
+
+    .presentation-responsibility {
+      overflow: hidden;
+      border: 1px solid #d7e0e8;
+      border-radius: 14px;
+      background: #ffffff;
+    }
+
+    .presentation-rail-intro {
+      margin: 0;
+      padding: 14px 20px 0;
+      color: #607084;
+      font-size: 13px;
+    }
+
+    .presentation-zone-rail {
+      display: grid;
+      grid-template-columns: 29% 30% 41%;
+      padding: 15px 18px 18px;
+    }
+
+    .presentation-zone {
+      min-width: 0;
+      padding: 0 16px 0 18px;
+      border-left: 1px solid #d7e0e8;
+    }
+
+    .presentation-zone:first-child {
+      padding-left: 2px;
+      border-left: 0;
+    }
+
+    .presentation-zone h3 {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 0 0 4px;
+      font-size: 11px;
+      font-weight: 760;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+    }
+
+    .presentation-zone h3 i {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #2c628e;
+    }
+
+    .presentation-zone > p {
+      min-height: 17px;
+      margin: 0 0 14px;
+      color: #607084;
+      font-size: 12px;
+    }
+
+    .presentation-handoff {
+      border-radius: 9px;
+      background: linear-gradient(90deg, transparent, #f4f1eb 8%, #f4f1eb 92%, transparent);
+    }
+
+    .presentation-handoff h3 i { background: #907755; }
+
+    .presentation-runtime h3 i { background: #13745d; }
+
+    .presentation-stages {
+      display: grid;
+      grid-auto-flow: column;
+      grid-auto-columns: 1fr;
+      gap: 13px;
+      position: relative;
+    }
+
+    .presentation-stages::before {
+      content: "";
+      position: absolute;
+      top: 8px;
+      right: 5px;
+      left: 5px;
+      height: 1px;
+      background: #9bb3c5;
+    }
+
+    .presentation-stage {
+      position: relative;
+      min-width: 0;
+    }
+
+    .presentation-stage-dot {
+      display: block;
+      width: 17px;
+      height: 17px;
+      margin-bottom: 8px;
+      border: 3px solid #ffffff;
+      border-radius: 50%;
+      background: #2c628e;
+      box-shadow: 0 0 0 1px #2c628e;
+    }
+
+    .presentation-stage-name {
+      display: block;
+      font-size: 12px;
+      font-weight: 760;
+      letter-spacing: 0.035em;
+    }
+
+    .presentation-stage-state {
+      display: block;
+      margin-top: 4px;
+      color: #607084;
+      font-size: 11.5px;
+      line-height: 1.3;
+    }
+
+    .presentation-stage[data-p-state="failed"] .presentation-stage-state { color: #a6433d; }
+
+    .presentation-handoff .presentation-stages {
+      grid-auto-flow: row;
+      grid-template-columns: 1fr;
+      gap: 10px;
+    }
+
+    .presentation-handoff .presentation-stage {
+      display: grid;
+      grid-template-columns: 25px 1fr;
+    }
+
+    .presentation-handoff .presentation-stage-dot {
+      grid-row: span 2;
+      margin: 0;
+      background: #907755;
+      box-shadow: 0 0 0 1px #907755;
+    }
+
+    .presentation-handoff .presentation-stage-state { margin-top: 2px; }
+
+    .presentation-runtime .presentation-stage-dot {
+      background: #13745d;
+      box-shadow: 0 0 0 1px #13745d;
+    }
+
+    .presentation-boundary {
+      margin: 12px 0 0;
+      padding: 8px 10px;
+      border-top: 1px solid #d9cfbf;
+      color: #755d41;
+      font-size: 11px;
+      font-weight: 650;
+    }
+
+    .presentation-boundary b {
+      font-family: "Courier New", monospace;
+      font-size: 10px;
+    }
+
+    .presentation-trial-note {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 15px;
+      padding: 12px 15px;
+      border-radius: 10px;
+      background: #e9f1f6;
+      color: #39546a;
+      font-size: 13px;
+    }
+
+    .presentation-threshold,
+    .presentation-code {
+      font-family: "Courier New", monospace;
+    }
+
+    .presentation-threshold {
+      color: #15324a;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .presentation-trials {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 14px;
+      margin-top: 14px;
+    }
+
+    .presentation-trial {
+      min-width: 0;
+      padding: 17px;
+      border: 1px solid #d7e0e8;
+      border-radius: 13px;
+      background: #ffffff;
+    }
+
+    .presentation-trial.included {
+      padding: 16px;
+      border: 2px solid #13745d;
+      background: #fbfefc;
+      box-shadow: 0 5px 13px #13745d18;
+    }
+
+    .presentation-trial-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 8px;
+    }
+
+    .presentation-trial-head strong { font-size: 14px; }
+
+    .presentation-badge {
+      padding: 4px 7px;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 750;
+      white-space: nowrap;
+    }
+
+    .presentation-below { color: #a6433d; background: #fbeae8; }
+
+    .presentation-meets { color: #13745d; background: #e7f4ee; }
+
+    .presentation-metric {
+      margin: 19px 0 3px;
+      font-size: 37px;
+      font-weight: 750;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: -0.075em;
+    }
+
+    .presentation-metric-label {
+      color: #607084;
+      font-size: 12px;
+    }
+
+    .presentation-bar {
+      height: 5px;
+      margin: 15px 0;
+      overflow: hidden;
+      border-radius: 50px;
+      background: #e4ebef;
+    }
+
+    .presentation-bar > span {
+      display: block;
+      height: 100%;
+      background: #2c628e;
+    }
+
+    .presentation-trial.included .presentation-bar > span { background: #13745d; }
+
+    .presentation-trial-fields {
+      display: grid;
+      gap: 4px;
+      color: #4f6070;
+      font-size: 11.5px;
+    }
+
+    .presentation-summary-note {
+      margin: 17px 0 0;
+      padding-top: 13px;
+      border-top: 1px solid #d7e0e8;
+      color: #607084;
+      font-size: 13px;
+    }
+
+    .presentation-summary-note strong { color: #13745d; }
+
+    .presentation-evidence {
+      overflow: hidden;
+      border: 1px solid #d7e0e8;
+      border-radius: 13px;
+      background: #ffffff;
+    }
+
+    .presentation-evidence details { border-bottom: 1px solid #d7e0e8; }
+
+    .presentation-evidence details:last-child { border-bottom: 0; }
+
+    .presentation-evidence summary {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 15px 18px;
+      cursor: pointer;
+      font-weight: 680;
+      list-style: none;
+    }
+
+    .presentation-evidence summary::after {
+      content: "+";
+      color: #2c628e;
+      font-family: "Courier New", monospace;
+      font-size: 18px;
+    }
+
+    .presentation-evidence details[open] summary::after { content: "-"; }
+
+    .presentation-fields {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 13px 24px;
+      padding: 0 18px 18px;
+    }
+
+    .presentation-field { min-width: 0; }
+
+    .presentation-field-label {
+      display: block;
+      margin-bottom: 3px;
+      color: #607084;
+      font-size: 10px;
+    }
+
+    .presentation-field-value {
+      overflow-wrap: anywhere;
+      color: #10243a;
+      font-size: 12.5px;
+    }
+
+    .presentation-list {
+      grid-column: 1 / -1;
+      margin: 0;
+      padding-left: 18px;
+      color: #607084;
+      font-size: 12.5px;
+    }
+
+    @media (max-width: 820px) {
+      main {
+        width: min(100% - 28px, 680px);
+        padding-top: 16px;
+      }
+
+      .presentation-hero { grid-template-columns: 1fr; }
+
+      .presentation-copy,
+      .presentation-outcome { padding: 26px 24px; }
+
+      .presentation-zone-rail {
+        grid-template-columns: 1fr;
+        gap: 12px;
+      }
+
+      .presentation-zone {
+        padding: 15px 0;
+        border-top: 1px solid #d7e0e8;
+        border-left: 0;
+      }
+
+      .presentation-zone:first-child { border-top: 0; }
+
+      .presentation-handoff { padding-left: 14px; }
+
+      .presentation-trials { grid-template-columns: repeat(2, 1fr); }
+
+      .presentation-fields { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 500px) {
+      .presentation-masthead,
+      .presentation-trial-note {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 5px;
+      }
+
+      .presentation-facts,
+      .presentation-trials,
+      .presentation-status-grid { grid-template-columns: 1fr; }
+    }
   </style>
 </head>
 <body>
   <main>
+    <section id="competition-presentation" hidden>
+      <header class="presentation-masthead">
+        <div class="presentation-brand"><b>Lab</b>Pilot</div>
+        <div class="presentation-context">Experiment outcome / bounded parameter sweep</div>
+      </header>
+
+      <section class="presentation-hero" aria-label="Experiment outcome">
+        <div class="presentation-copy">
+          <div>
+            <p class="presentation-eyebrow">AI Experiment Operator</p>
+            <h1>Bounded agent planning. Verified experiment execution.</h1>
+            <p class="presentation-goal"><b>Research goal</b><br><span id="p-research-goal"></span></p>
+          </div>
+          <p class="presentation-story">
+            The agent inspected the repository and proposed a bounded experiment.
+            LabPilot verified the proposal, executed real training runs, and
+            included persisted results that met the target.
+          </p>
+        </div>
+        <div class="presentation-outcome">
+          <div class="presentation-label" id="p-metric-label"></div>
+          <div class="presentation-accuracy" id="p-accuracy"></div>
+          <div class="presentation-target" id="p-target"></div>
+          <div class="presentation-status-grid">
+            <div class="presentation-status">
+              <small>Run status</small>
+              <strong id="p-run-status"></strong>
+            </div>
+            <div class="presentation-status" id="p-scientific-status">
+              <small>Scientific outcome</small>
+              <strong id="p-scientific-outcome"></strong>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="presentation-facts" aria-label="Experiment facts">
+        <div class="presentation-fact"><strong id="p-trial-count"></strong><span>Real Trials</span></div>
+        <div class="presentation-fact"><strong id="p-included-count"></strong><span>Validated &amp; Included</span></div>
+        <div class="presentation-fact"><strong id="p-retry-count"></strong><span>Retries</span></div>
+      </section>
+
+      <section class="presentation-section">
+        <div class="presentation-heading">
+          <h2>Responsibility model</h2>
+          <p class="presentation-note">One flow, with explicit ownership boundaries</p>
+        </div>
+        <div class="presentation-responsibility">
+          <p class="presentation-rail-intro">
+            Probabilistic AI decision passes through a controlled handoff before
+            deterministic LabPilot execution.
+          </p>
+          <div class="presentation-zone-rail">
+            <section class="presentation-zone" aria-label="AI Agent responsibility">
+              <h3><i></i>AI Agent</h3>
+              <p>Repository context and bounded planning</p>
+              <div class="presentation-stages">
+                <div class="presentation-stage" data-p-stage="understand">
+                  <span class="presentation-stage-dot"></span>
+                  <span class="presentation-stage-name">01 UNDERSTAND</span>
+                  <span class="presentation-stage-state"></span>
+                </div>
+                <div class="presentation-stage" data-p-stage="plan">
+                  <span class="presentation-stage-dot"></span>
+                  <span class="presentation-stage-name">02 PLAN</span>
+                  <span class="presentation-stage-state"></span>
+                </div>
+              </div>
+            </section>
+            <section class="presentation-zone presentation-handoff" aria-label="Controlled handoff">
+              <h3><i></i>Controlled handoff</h3>
+              <p>AI output does not directly execute</p>
+              <div class="presentation-stages">
+                <div class="presentation-stage" data-p-stage="verify">
+                  <span class="presentation-stage-dot"></span>
+                  <span class="presentation-stage-name">03 VERIFY</span>
+                  <span class="presentation-stage-state"></span>
+                </div>
+                <div class="presentation-stage" data-p-stage="approve">
+                  <span class="presentation-stage-dot"></span>
+                  <span class="presentation-stage-name">04 APPROVE</span>
+                  <span class="presentation-stage-state"></span>
+                </div>
+              </div>
+              <p class="presentation-boundary"><b>BOUNDARY</b> verified proposal + recorded human approval</p>
+            </section>
+            <section class="presentation-zone presentation-runtime" aria-label="LabPilot runtime responsibility">
+              <h3><i></i>LabPilot runtime</h3>
+              <p>Deterministic workload execution and result processing</p>
+              <div class="presentation-stages">
+                <div class="presentation-stage" data-p-stage="execute">
+                  <span class="presentation-stage-dot"></span>
+                  <span class="presentation-stage-name">05 EXECUTE</span>
+                  <span class="presentation-stage-state"></span>
+                </div>
+                <div class="presentation-stage" data-p-stage="validate">
+                  <span class="presentation-stage-dot"></span>
+                  <span class="presentation-stage-name">06 VALIDATE</span>
+                  <span class="presentation-stage-state"></span>
+                </div>
+                <div class="presentation-stage" data-p-stage="select">
+                  <span class="presentation-stage-dot"></span>
+                  <span class="presentation-stage-name">07 SELECT</span>
+                  <span class="presentation-stage-state"></span>
+                </div>
+              </div>
+            </section>
+          </div>
+        </div>
+      </section>
+
+      <section class="presentation-section">
+        <div class="presentation-heading">
+          <h2>Trial comparison</h2>
+          <p class="presentation-note">Observed target metric against a shared persisted threshold</p>
+        </div>
+        <div class="presentation-trial-note">
+          <span>Each Trial uses the verified experiment specification.</span>
+          <span class="presentation-threshold" id="p-trial-threshold"></span>
+        </div>
+        <div class="presentation-trials" id="p-trial-cards"></div>
+        <p class="presentation-summary-note" id="p-summary-note"></p>
+      </section>
+
+      <section class="presentation-section">
+        <div class="presentation-heading">
+          <h2>Technical evidence</h2>
+          <p class="presentation-note">Available on demand; raw JSON is not the default view</p>
+        </div>
+        <div class="presentation-evidence">
+          <details><summary>Agent Decision Trace</summary><div class="presentation-fields" id="p-agent-fields"></div></details>
+          <details><summary>Experiment Specification</summary><div class="presentation-fields" id="p-proposal-fields"></div></details>
+          <details><summary>Immutable Version &amp; Execution</summary><div class="presentation-fields" id="p-execution-fields"></div></details>
+          <details><summary>Artifact Provenance</summary><div class="presentation-fields" id="p-artifact-fields"></div></details>
+          <details><summary>Validation &amp; Summary</summary><div class="presentation-fields" id="p-validation-fields"></div></details>
+        </div>
+      </section>
+    </section>
+
     <header>
       <p class="eyebrow">LabPilot</p>
       <h1>AI Experiment Operator</h1>
@@ -765,6 +1467,414 @@
       setStage("select", "passed", "Summary evidence loaded");
     }
 
+
+    function setPresentationText(selector, value) {
+      document.querySelector(selector).textContent = String(value);
+    }
+
+    function setPresentationStage(stage, state, text) {
+      const element = document.querySelector('[data-p-stage="' + stage + '"]');
+      element.dataset.pState = state;
+      element.querySelector(".presentation-stage-state").textContent = text;
+    }
+
+    function appendPresentationField(container, label, value, code) {
+      const field = document.createElement("div");
+      const name = document.createElement("span");
+      const content = document.createElement("div");
+      field.className = "presentation-field";
+      name.className = "presentation-field-label";
+      content.className = code
+        ? "presentation-field-value presentation-code"
+        : "presentation-field-value";
+      name.textContent = label;
+      content.textContent =
+        value === null || value === undefined ? "Not recorded" : String(value);
+      field.append(name, content);
+      container.append(field);
+    }
+
+    function appendPresentationList(container, label, values) {
+      const field = document.createElement("div");
+      const name = document.createElement("span");
+      const list = document.createElement("ul");
+      field.className = "presentation-field";
+      name.className = "presentation-field-label";
+      list.className = "presentation-list";
+      name.textContent = label;
+      values.forEach((value) => {
+        const item = document.createElement("li");
+        item.textContent = String(value);
+        list.append(item);
+      });
+      field.append(name);
+      container.append(field, list);
+    }
+
+    function presentationStatus(value) {
+      return String(value)
+        .replaceAll("_", " ")
+        .replace(/\b\w/g, (letter) => letter.toUpperCase());
+    }
+
+    function presentationTargetRule(proposal) {
+      const rule = proposal.validation_rules.find((item) => item.kind === "metric_gte");
+      const threshold = Number(rule?.threshold);
+      if (!rule || !Number.isFinite(threshold)) {
+        throw new Error("Evidence integrity error: proposal metric threshold is missing.");
+      }
+      return { ...rule, threshold };
+    }
+
+    function presentationSummaryMetric(execution, proposal) {
+      const latest = execution.summary.latest_summary;
+      if (latest === null) {
+        throw new Error("Evidence integrity error: primary result requires a persisted Batch Summary.");
+      }
+      const subject = presentationTargetRule(proposal).subject;
+      const metrics = latest.included.flatMap((reference) =>
+        requireArray(reference.metrics, "included result metrics").filter(
+          (metric) => metric.metric_name === subject
+        )
+      );
+      const numericValue = Number(metrics[0]?.numeric_value);
+      if (metrics.length !== 1 || !Number.isFinite(numericValue)) {
+        throw new Error(
+          "Evidence integrity error: primary result requires exactly one included target metric."
+        );
+      }
+      return { ...metrics[0], numeric_value: numericValue };
+    }
+
+    function presentationLatestMetric(evidence, subject) {
+      const attempts = [...evidence.attemptEvidence].sort(
+        (left, right) => left.attempt.attempt_number - right.attempt.attempt_number
+      );
+      const latest = attempts[attempts.length - 1];
+      if (!latest) {
+        return null;
+      }
+      const metrics = latest.results.metrics.filter(
+        (metric) => metric.metric_name === subject
+      );
+      const numericValue = Number(metrics[0]?.numeric_value);
+      return metrics.length === 1 && Number.isFinite(numericValue)
+        ? { ...metrics[0], numeric_value: numericValue }
+        : null;
+    }
+
+    function presentationValidationReport(evidence) {
+      const selection = evidence.trialResult.selection;
+      if (selection) {
+        const selected = evidence.attemptsById.get(selection.attempt_id);
+        return selected.results.validation_reports.find(
+          (report) =>
+            report.validation_report_id === selection.validation_report_id
+        );
+      }
+      const attempts = [...evidence.attemptEvidence].sort(
+        (left, right) => left.attempt.attempt_number - right.attempt.attempt_number
+      );
+      const latest = attempts[attempts.length - 1];
+      return latest ? latest.results.validation_reports.at(-1) : null;
+    }
+
+    function presentationParameters(parameters) {
+      return Object.entries(parameters)
+        .map(([name, value]) => name + " " + String(value))
+        .join(" / ");
+    }
+
+    function presentationRunStatus(status) {
+      return status === "succeeded" ? "Completed" : presentationStatus(status);
+    }
+
+    function renderPresentation(trace, verification, experimentVersion, proposal, execution, byTrialId) {
+      const latest = execution.summary.latest_summary;
+      const targetRule = presentationTargetRule(proposal);
+      const primary = presentationSummaryMetric(execution, proposal);
+      const targetMet = primary.numeric_value >= targetRule.threshold;
+      const retries = execution.trialEvidence.reduce(
+        (total, evidence) => total + Math.max(evidence.trial.attempt_count - 1, 0),
+        0
+      );
+
+      setPresentationText("#p-research-goal", trace.goal);
+      setPresentationText(
+        "#p-metric-label",
+        primary.metric_name.replaceAll("_", " ")
+      );
+      setPresentationText("#p-accuracy", primary.numeric_value);
+      setPresentationText("#p-target", "Target ≥ " + targetRule.threshold);
+      setPresentationText(
+        "#p-run-status",
+        presentationRunStatus(execution.batch.presentation_status)
+      );
+      setPresentationText(
+        "#p-scientific-outcome",
+        targetMet ? "Target met" : "Target not met"
+      );
+      document.querySelector("#p-scientific-status").classList.toggle("good", targetMet);
+      setPresentationText("#p-trial-count", execution.batch.trial_count);
+      setPresentationText("#p-included-count", latest.included.length);
+      setPresentationText("#p-retry-count", retries);
+      setPresentationText("#p-trial-threshold", "TARGET ≥ " + targetRule.threshold);
+
+      const toolSteps = trace.steps.filter((step) => step.decision_kind === "tool_call");
+      setPresentationStage(
+        "understand",
+        toolSteps.length ? "passed" : "failed",
+        toolSteps.length ? "Repository activity recorded" : "No repository activity recorded"
+      );
+      setPresentationStage("plan", "passed", "Bounded sweep proposed");
+      setPresentationStage(
+        "verify",
+        verification.result.passed ? "passed" : "failed",
+        verification.result.passed ? "Deterministic gate passed" : "Deterministic gate failed"
+      );
+      setPresentationStage(
+        "approve",
+        "passed",
+        "Human approval; immutable version materialized"
+      );
+      setPresentationStage(
+        "execute",
+        execution.batch.presentation_status === "succeeded" ? "passed" : "neutral",
+        execution.batch.trial_count + " real training runs " +
+          presentationRunStatus(execution.batch.presentation_status).toLowerCase()
+      );
+      setPresentationStage(
+        "validate",
+        "passed",
+        "Persisted deterministic result validation"
+      );
+      setPresentationStage(
+        "select",
+        latest.included.length ? "passed" : "neutral",
+        latest.included.length
+          ? "Validated result included in Batch Summary"
+          : "No result included in Batch Summary"
+      );
+
+      const includedTrialIds = new Set(
+        latest.included.map((reference) => reference.trial_id)
+      );
+      const cards = document.querySelector("#p-trial-cards");
+      [...execution.trialEvidence]
+        .sort((left, right) => left.trial.trial_ordinal - right.trial.trial_ordinal)
+        .forEach((evidence) => {
+          const metric = presentationLatestMetric(evidence, targetRule.subject);
+          const report = presentationValidationReport(
+            byTrialId.get(evidence.trial.trial_id)
+          );
+          const included = includedTrialIds.has(evidence.trial.trial_id);
+          const card = document.createElement("article");
+          const head = document.createElement("div");
+          const ordinal = document.createElement("strong");
+          const relation = document.createElement("span");
+          const value = document.createElement("div");
+          const label = document.createElement("div");
+          const bar = document.createElement("div");
+          const fill = document.createElement("span");
+          const fields = document.createElement("div");
+          card.className = included
+            ? "presentation-trial included"
+            : "presentation-trial";
+          head.className = "presentation-trial-head";
+          ordinal.textContent =
+            "TRIAL " + String(evidence.trial.trial_ordinal).padStart(2, "0");
+          relation.className =
+            "presentation-badge " +
+            (metric && metric.numeric_value >= targetRule.threshold
+              ? "presentation-meets"
+              : "presentation-below");
+          relation.textContent = metric
+            ? metric.numeric_value >= targetRule.threshold
+              ? "Meets target"
+              : "Below target"
+            : "Metric unavailable";
+          value.className = "presentation-metric";
+          value.textContent = metric ? String(metric.numeric_value) : "Not recorded";
+          label.className = "presentation-metric-label";
+          label.textContent = metric
+            ? metric.metric_name.replaceAll("_", " ")
+            : targetRule.subject.replaceAll("_", " ");
+          bar.className = "presentation-bar";
+          if (metric) {
+            fill.style.width =
+              Math.max(0, Math.min(100, metric.numeric_value * 100)) + "%";
+          }
+          fields.className = "presentation-trial-fields";
+          [
+            presentationParameters(evidence.trial.resolved_parameters),
+            "seed " + evidence.trial.seed,
+            "Validation: " +
+              (report ? presentationStatus(report.verdict) : "Not recorded"),
+            included
+              ? "Included in Summary"
+              : evidence.trialResult.selection
+                ? "Selected, not included in Summary"
+                : "Not included in Summary",
+          ].forEach((text) => {
+            const field = document.createElement("span");
+            field.textContent = text;
+            fields.append(field);
+          });
+          head.append(ordinal, relation);
+          bar.append(fill);
+          card.append(head, value, label, bar, fields);
+          cards.append(card);
+        });
+
+      const summaryNote = document.querySelector("#p-summary-note");
+      const summaryLead = document.createElement("strong");
+      summaryLead.textContent = latest.included.length
+        ? "Included in Batch Summary. "
+        : "No result included in Batch Summary. ";
+      summaryNote.append(summaryLead);
+      summaryNote.append(
+        document.createTextNode(
+          latest.included.length
+            ? "Persisted selection and Summary contain " + latest.included.length +
+              " validated result" + (latest.included.length === 1 ? "." : "s.")
+            : "The persisted Summary contains no included results."
+        )
+      );
+
+      const agentFields = document.querySelector("#p-agent-fields");
+      appendPresentationField(agentFields, "Provider", trace.provider_name);
+      appendPresentationField(agentFields, "Model", trace.model_name);
+      appendPresentationField(agentFields, "Model calls", trace.total_model_calls);
+      appendPresentationField(agentFields, "Total tokens", trace.total_tokens);
+      appendPresentationList(
+        agentFields,
+        "Tool trajectory",
+        toolSteps.map((step) => step.decision_json?.tool_name || "Unnamed tool")
+      );
+
+      const proposalFields = document.querySelector("#p-proposal-fields");
+      appendPresentationField(proposalFields, "Experiment type", proposal.experiment_type);
+      appendPresentationField(proposalFields, "Train entrypoint", proposal.train_entrypoint, true);
+      appendPresentationField(proposalFields, "Workdir", proposal.workdir, true);
+      appendPresentationField(
+        proposalFields,
+        "Parameter matrix",
+        Object.entries(proposal.parameter_matrix)
+          .map(([name, values]) => name + ": " + values.join(", "))
+          .join("; ")
+      );
+      appendPresentationField(proposalFields, "Seeds", proposal.seeds.join(", "));
+      appendPresentationField(
+        proposalFields,
+        "Environment",
+        Object.entries(proposal.environment_expectation)
+          .map(([name, value]) => name + ": " + value)
+          .join("; ")
+      );
+      appendPresentationField(proposalFields, "Timeout seconds", proposal.timeout_seconds);
+      appendPresentationField(proposalFields, "Max retries", proposal.max_retries);
+      appendPresentationList(
+        proposalFields,
+        "Validation rules",
+        proposal.validation_rules.map(
+          (rule) => rule.kind + ": " + rule.subject + " \u2265 " + rule.threshold
+        )
+      );
+
+      const executionFields = document.querySelector("#p-execution-fields");
+      appendPresentationField(
+        executionFields,
+        "ExperimentVersion ID",
+        experimentVersion.experiment_version_id,
+        true
+      );
+      appendPresentationField(
+        executionFields,
+        "Proposal revision ID",
+        experimentVersion.proposal_revision_id,
+        true
+      );
+      appendPresentationField(
+        executionFields,
+        "Repository snapshot identity",
+        experimentVersion.repository_snapshot_identity,
+        true
+      );
+      appendPresentationField(
+        executionFields,
+        "Batch status",
+        execution.batch.presentation_status
+      );
+      appendPresentationField(
+        executionFields,
+        "Batch start requested",
+        execution.batch.start_requested_at
+      );
+      appendPresentationList(
+        executionFields,
+        "Attempts",
+        execution.trialEvidence.flatMap((evidence) =>
+          evidence.attemptEvidence.map(
+            ({ attempt }) =>
+              "Trial " + evidence.trial.trial_ordinal + " / Attempt " +
+              attempt.attempt_number + ": " + attempt.terminal_kind +
+              ", exit " + attempt.exit_code + ", " +
+              attempt.physical_started_at + " to " + attempt.physical_ended_at
+          )
+        )
+      );
+
+      const artifactFields = document.querySelector("#p-artifact-fields");
+      appendPresentationList(
+        artifactFields,
+        "Persisted artifacts",
+        execution.trialEvidence.flatMap((evidence) =>
+          evidence.attemptEvidence.flatMap(({ attempt, results }) =>
+            results.artifacts.map(
+              (artifact) =>
+                "Trial " + evidence.trial.trial_ordinal + " / Attempt " +
+                attempt.attempt_number + ": " + artifact.artifact_name +
+                " at " + artifact.relative_path + "; " +
+                artifact.availability + "; SHA " + artifact.content_sha256
+            )
+          )
+        )
+      );
+
+      const validationFields = document.querySelector("#p-validation-fields");
+      appendPresentationList(
+        validationFields,
+        "Validation reports",
+        execution.trialEvidence.flatMap((evidence) =>
+          evidence.attemptEvidence.flatMap(({ attempt, results }) =>
+            results.validation_reports.map(
+              (report) =>
+                "Trial " + evidence.trial.trial_ordinal + " / Attempt " +
+                attempt.attempt_number + ": " + report.validation_report_id +
+                "; " + report.verdict + "; reasons " + report.reasons.join(", ") +
+                "; warnings " + report.warnings.join(", ")
+            )
+          )
+        )
+      );
+      appendPresentationField(validationFields, "Summary status", latest.presentation_status);
+      appendPresentationField(validationFields, "Summary revision", latest.revision_number);
+      appendPresentationField(validationFields, "Summary protocol", latest.summary_protocol_version);
+      appendPresentationField(
+        validationFields,
+        "Included / excluded",
+        latest.included.length + " / " + latest.excluded.length
+      );
+      appendPresentationList(
+        validationFields,
+        "Summary aggregates",
+        Object.entries(latest.aggregates).map(
+          ([name, value]) => name + ": " + String(value)
+        )
+      );
+      document.querySelector("#competition-presentation").hidden = false;
+    }
+
     function showError(detail) {
       document.querySelector("#research-goal").textContent =
         "Persisted evidence unavailable";
@@ -796,6 +1906,7 @@
         renderExecution(execution, proposal);
         renderValidation(execution);
         renderSelect(execution, byTrialId);
+        renderPresentation(trace, verification, experimentVersion, proposal, execution, byTrialId);
         document.querySelector("#evidence").hidden = false;
       } catch (error) {
         showError(error instanceof Error ? error.message : "Unknown loading error");
