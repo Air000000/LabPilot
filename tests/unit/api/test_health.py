@@ -211,3 +211,50 @@ def test_competition_shell_is_html_and_hidden_from_openapi() -> None:
     assert "http://" not in response.text
     assert "https://" not in response.text
     assert "/competition" not in app.openapi()["paths"]
+
+
+def test_operator_shell_is_html_and_uses_safe_local_browser_code() -> None:
+    app = create_app(services=_SERVICES, actor_provider=_ACTOR_PROVIDER)
+    response = TestClient(app).get("/operator")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    for marker in (
+        "LabPilot / AI 实验操作台",
+        "研究目标",
+        "启动 Agent",
+        "验证实验方案",
+        "批准实验",
+        "实验已准备执行",
+        "正在查看已完成的 Agent 运行记录。",
+        'projectId: "22209cf9-1b5d-456a-a227-d6584f733d9d"',
+        "/agent-runs",
+        "/advance",
+        "/trace",
+        "/verify",
+        "/approve",
+        "expected_row_version",
+    ):
+        assert marker in response.text
+    for stale_product_copy in (
+        "Research goal",
+        "Run progress",
+        "Start Agent",
+        "Verify Proposal",
+        "Approve Experiment",
+        "Experiment ready to execute",
+        "Waiting",
+        "Current",
+        "Complete",
+    ):
+        assert stale_product_copy not in response.text
+    for forbidden in (
+        "innerhtml",
+        "insertadjacenthtml",
+        "document.write",
+        "http://",
+        "https://",
+        "cdn",
+    ):
+        assert forbidden not in response.text.lower()
+    assert "/operator" not in app.openapi()["paths"]

@@ -11,6 +11,7 @@ from labpilot.api.routers.competition import router as competition_router
 from labpilot.api.routers.execution import router as execution_router
 from labpilot.api.routers.experiments import router as experiments_router
 from labpilot.api.routers.health import router as health_router
+from labpilot.api.routers.operator import router as operator_router
 from labpilot.api.routers.projects import router as projects_router
 from labpilot.api.routers.results import router as results_router
 from labpilot.common.readiness import ReadinessProbe, UnconfiguredReadinessProbe
@@ -61,6 +62,7 @@ def create_app(
     app.include_router(projects_router)
     app.include_router(agent_runs_router)
     app.include_router(competition_router)
+    app.include_router(operator_router)
     app.include_router(experiments_router)
     app.include_router(execution_router)
     app.include_router(results_router)

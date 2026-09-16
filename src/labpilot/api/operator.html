@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LabPilot / AI 实验操作台</title>
+  <link rel="icon" href="data:,">
+  <style>
+    :root { color: #193047; background: #edf2f5; font-family: Arial, sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    button, textarea { font: inherit; }
+    button { border: 0; border-radius: 8px; cursor: pointer; font-weight: 700; padding: 12px 16px; }
+    button:focus-visible, textarea:focus-visible, summary:focus-visible { outline: 3px solid #67bad2; outline-offset: 3px; }
+    button:disabled { cursor: not-allowed; opacity: .48; }
+    .topbar { align-items: center; background: #15324a; color: #f7fafc; display: flex; justify-content: space-between; min-height: 72px; padding: 0 max(24px, calc((100vw - 1320px) / 2)); }
+    .brand { font-size: 18px; font-weight: 760; letter-spacing: -.02em; }
+    .brand span { color: #a9d7e6; font-weight: 400; }
+    .run-status { color: #c9dce7; font-size: 13px; }
+    .shell { display: grid; gap: 26px; grid-template-columns: minmax(0, 1fr) 254px; margin: 0 auto; max-width: 1320px; padding: 32px 24px 56px; }
+    .workspace { min-width: 0; }
+    .panel, .stage { background: #fff; border: 1px solid #d5e0e7; border-radius: 14px; }
+    .panel { padding: clamp(22px, 4vw, 42px); }
+    .operator-heading { border-bottom: 1px solid #d5e0e7; margin-bottom: 30px; padding-bottom: 22px; }
+    .kicker { color: #47708a; font-size: 12px; font-weight: 700; letter-spacing: .08em; margin: 0 0 10px; }
+    h1 { font-size: clamp(30px, 4vw, 46px); letter-spacing: -.05em; line-height: .98; margin: 0; max-width: 100%; }
+    h2 { font-size: 20px; letter-spacing: -.025em; margin: 0; }
+    h3 { font-size: 14px; margin: 0; }
+    p { line-height: 1.7; }
+    .muted { color: #60758a; }
+    label { display: block; font-size: 14px; font-weight: 700; margin-bottom: 9px; }
+    textarea { border: 1px solid #aebfcb; border-radius: 9px; color: #193047; display: block; line-height: 1.6; min-height: 164px; padding: 14px; resize: vertical; width: 100%; }
+    .context { background: #f2f6f8; border-left: 3px solid #67bad2; display: grid; gap: 14px; margin: 22px 0; padding: 16px; }
+    .context strong, .field strong { display: block; font-size: 12px; margin-bottom: 3px; }
+    .context span { color: #4d6475; font-size: 14px; }
+    .primary { background: #1f6688; color: #fff; }
+    .primary:hover:not(:disabled) { background: #164f6b; }
+    .secondary { background: #e7f0f4; color: #174965; }
+    .danger { background: #fcecef; border: 1px solid #d26877; color: #8a2639; }
+    .error { background: #fff1f2; border: 1px solid #de8290; border-radius: 8px; color: #8a2639; margin: 16px 0; padding: 12px; }
+    .handoff { background: #173b51; border-radius: 10px; color: #e7f5fa; margin: 22px 0; padding: 14px 16px; }
+    .handoff strong { color: #a9d7e6; display: block; font-size: 12px; letter-spacing: .06em; margin-bottom: 4px; }
+    .progress { align-self: start; position: sticky; top: 20px; }
+    .progress h2 { font-size: 15px; margin: 0 0 12px; }
+    .stage { align-items: center; display: flex; gap: 12px; margin-bottom: 8px; padding: 11px; }
+    .stage-index { align-items: center; background: #e9f0f4; border-radius: 50%; color: #526f82; display: flex; flex: 0 0 28px; font-size: 11px; font-weight: 700; height: 28px; justify-content: center; }
+    .stage strong, .stage span { display: block; }
+    .stage strong { font-size: 12px; }
+    .stage span { color: #708596; font-size: 11px; margin-top: 2px; }
+    .stage.active { border-color: #64aec8; box-shadow: 0 0 0 2px #d9eef4; }
+    .stage.active .stage-index { background: #1f6688; color: #fff; }
+    .stage.complete .stage-index { background: #c8ead9; color: #236246; }
+    .stage.blocked { border-color: #d57884; }
+    .stage.blocked .stage-index { background: #f8d9dd; color: #8a2639; }
+    .metrics, .fields { display: grid; gap: 12px; }
+    .metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 20px 0; }
+    .metric, .field { background: #f5f8fa; border-radius: 8px; padding: 12px; }
+    .metric small, .field strong { color: #60758a; font-size: 11px; }
+    .metric b { display: block; font-size: 20px; margin-top: 4px; }
+    .timeline { border-left: 2px solid #d5e0e7; list-style: none; margin: 22px 0; padding: 0 0 0 20px; }
+    .timeline li { margin: 0 0 16px; position: relative; }
+    .timeline li::before { background: #67bad2; border: 3px solid #fff; border-radius: 50%; box-shadow: 0 0 0 1px #8fc7d9; content: ""; height: 8px; left: -26px; position: absolute; top: 5px; width: 8px; }
+    .timeline b, .timeline span { display: block; }
+    .timeline b { font-size: 14px; }
+    .timeline span { color: #62798b; font-size: 12px; margin-top: 3px; }
+    .proposal-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .field code, pre { font-family: Consolas, monospace; font-size: 12px; overflow-wrap: anywhere; }
+    pre { background: #102c40; border-radius: 9px; color: #d9eff7; margin: 14px 0 0; overflow: auto; padding: 16px; white-space: pre-wrap; }
+    details { margin-top: 18px; }
+    summary { color: #1f6688; cursor: pointer; font-weight: 700; }
+    .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 24px; }
+    .verification.pass { border-left: 4px solid #40956a; }
+    .verification.fail { border-left: 4px solid #cb5264; }
+    .verification { background: #f7fafc; border-radius: 9px; margin-top: 20px; padding: 16px; }
+    .findings { margin: 14px 0 0; padding-left: 20px; }
+    .findings li { margin: 7px 0; }
+    .approved { background: #eaf7ef; border: 1px solid #90d0aa; border-radius: 10px; color: #1f613e; margin-top: 20px; padding: 18px; }
+    .approved b { font-size: 13px; letter-spacing: .06em; }
+    [hidden] { display: none; }
+    @media (max-width: 850px) { .shell { grid-template-columns: 1fr; } .progress { position: static; } .metrics, .proposal-grid { grid-template-columns: 1fr; } }
+    @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto; transition: none !important; } }
+  </style>
+</head>
+<body>
+  <header class="topbar"><div class="brand">LabPilot <span>· AI 实验操作台</span></div><div class="run-status" id="run-status">准备定义受约束的研究目标</div></header>
+  <main class="shell"><section class="workspace" id="workspace" aria-live="polite"></section><aside class="progress" aria-label="实验流程"><h2>实验流程</h2><div id="stages"></div></aside></main>
+  <script>
+    const OPERATOR_CONFIG = {
+      projectId: "22209cf9-1b5d-456a-a227-d6584f733d9d",
+      repositorySnapshotId: "032c4740-1494-4810-a666-a0fe23620137",
+      budget: { max_steps: 6, max_model_calls: 4, max_wall_clock_seconds: 90, max_tokens: 24000 },
+      advanceDelayMs: 450
+    };
+    const appState = { run: null, trace: null, proposal: null, revision: null, verification: null, version: null, error: null, advancing: false, view: "goal" };
+    const stages = [
+      { label: "目标", view: "goal" }, { label: "Agent", view: "agent" },
+      { label: "实验方案", view: "proposal" }, { label: "验证", view: "verify" },
+      { label: "审批", view: "approve" }, { label: "执行", view: "execute" },
+      { label: "结果", view: "results" }
+    ];
+    const workspace = document.querySelector("#workspace");
+    const runStatus = document.querySelector("#run-status");
+
+    async function api(path, options) {
+      const response = await fetch(path, options);
+      if (!response.ok) {
+        let detail = "HTTP " + response.status;
+        try { detail = (await response.json()).detail || detail; } catch (_) { /* ponytail: HTTP status is enough when the response is not JSON. */ }
+        throw new Error(detail);
+      }
+      return response.json();
+    }
+    function node(tag, text, className) { const element = document.createElement(tag); if (text !== undefined) element.textContent = text; if (className) element.className = className; return element; }
+    function button(text, className, handler, disabled) { const element = node("button", text, className); element.type = "button"; element.disabled = Boolean(disabled); element.addEventListener("click", handler); return element; }
+    function panel(title, kicker) { const element = node("section", undefined, "panel"); const head = node("div", undefined, "operator-heading"); if (kicker) head.append(node("p", kicker, "kicker")); head.append(node("h1", title)); element.append(head); return element; }
+    function field(label, value) { const element = node("div", undefined, "field"); element.append(node("strong", label)); const content = node("div"); if (value instanceof Node) content.append(value); else content.textContent = value === null || value === undefined ? "—" : String(value); element.append(content); return element; }
+    function shortId(value) { return value ? value.slice(0, 8) + "…" + value.slice(-4) : "—"; }
+    function formatTime(value) { return value ? new Date(value).toLocaleString() : "—"; }
+    function runStatusText() {
+      if (appState.version) return "ExperimentVersion 已固化";
+      if (!appState.run) return "准备定义受约束的研究目标";
+      const statuses = { completed: "运行已完成", failed: "运行失败", blocked: "运行已阻塞", created: "已创建", requires_human_input: "需要人工输入" };
+      return "Agent " + (statuses[appState.run.status] || "运行中");
+    }
+    function stepOutcomeText(outcome) { return outcome === "succeeded" ? "已完成" : outcome === "failed" ? "失败" : outcome; }
+    function plannedTrials(proposal) { return Object.values(proposal.parameter_matrix || {}).reduce((total, values) => total * values.length, 1) * (proposal.seeds || []).length; }
+    function proposalFromTrace(trace) { return (trace.steps || []).filter((step) => step.decision_kind === "propose" && step.decision_json && step.decision_json.proposal).sort((a, b) => b.ordinal - a.ordinal)[0]?.decision_json.proposal || null; }
+    function setError(error) { appState.error = error instanceof Error ? error.message : String(error); renderApp(); }
+    function appendError(container) { if (appState.error) container.append(node("div", appState.error, "error")); }
+
+    async function refreshRun() {
+      appState.run = await api("/agent-runs/" + appState.run.agent_run_id);
+      appState.trace = await api("/agent-runs/" + appState.run.agent_run_id + "/trace");
+      if (appState.run.produced_proposal_revision_id) {
+        appState.revision = await api("/proposal-revisions/" + appState.run.produced_proposal_revision_id);
+        appState.proposal = proposalFromTrace(appState.trace);
+        if (!appState.proposal) throw new Error("持久化运行记录中没有可展示的实验方案。");
+        appState.view = "proposal";
+      }
+    }
+    async function startAgent() {
+      const goal = document.querySelector("#research-goal").value.trim();
+      if (!goal) { setError("请先输入研究目标，再启动 Agent。"); return; }
+      try {
+        appState.error = null;
+        appState.run = await api("/projects/" + OPERATOR_CONFIG.projectId + "/agent-runs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ repository_snapshot_id: OPERATOR_CONFIG.repositorySnapshotId, goal, budget: OPERATOR_CONFIG.budget }) });
+        appState.view = "agent";
+        await refreshRun();
+        renderApp();
+        advanceAgent();
+      } catch (error) { setError(error); }
+    }
+    function isTerminal(run) { return Boolean(run.produced_proposal_revision_id || run.termination_reason || ["completed", "failed", "blocked", "requires_human_input"].includes(run.status)); }
+    async function advanceAgent() {
+      if (appState.advancing || !appState.run || isTerminal(appState.run)) return;
+      appState.advancing = true;
+      renderApp();
+      try {
+        await api("/agent-runs/" + appState.run.agent_run_id + "/advance", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ expected_row_version: appState.run.row_version }) });
+        await refreshRun();
+      } catch (error) { appState.error = error.message; }
+      appState.advancing = false;
+      renderApp();
+      if (!appState.error && !isTerminal(appState.run)) window.setTimeout(advanceAgent, OPERATOR_CONFIG.advanceDelayMs);
+    }
+    async function verifyProposal() { try { appState.error = null; appState.verification = await api("/proposal-revisions/" + appState.revision.proposal_revision_id + "/verify", { method: "POST" }); appState.view = "verify"; renderApp(); } catch (error) { setError(error); } }
+    async function approveProposal() { if (!appState.verification?.result.passed) return; try { appState.error = null; appState.version = await api("/proposal-revisions/" + appState.revision.proposal_revision_id + "/approve", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ proposal_verification_id: appState.verification.proposal_verification_id }) }); appState.view = "approve"; renderApp(); } catch (error) { setError(error); } }
+
+    function renderStages() {
+      const target = document.querySelector("#stages"); target.replaceChildren();
+      const completed = appState.version ? 5 : appState.verification?.result.passed ? 4 : appState.proposal ? 3 : appState.run ? 1 : 0;
+      stages.forEach((stage, index) => { const item = node("button", undefined, "stage"); item.type = "button"; item.append(node("span", String(index + 1).padStart(2, "0"), "stage-index")); const words = node("span"); words.append(node("strong", stage.label)); let state = index < completed ? "已完成" : index === completed ? "当前" : "等待"; if (stage.view === "verify" && appState.verification && !appState.verification.result.passed) { item.classList.add("blocked"); state = "失败"; } else if (index < completed) item.classList.add("complete"); else if (index === completed) item.classList.add("active"); words.append(node("span", state)); item.append(words); if ((stage.view === "goal" || (stage.view === "agent" && appState.run) || (stage.view === "proposal" && appState.proposal) || (stage.view === "verify" && appState.verification) || (stage.view === "approve" && appState.version))) item.addEventListener("click", () => { appState.view = stage.view; renderApp(); }); target.append(item); });
+    }
+    function renderGoal() {
+      const root = panel("从一个明确的研究目标开始", "研究目标");
+      root.append(node("p", "LabPilot 会读取当前配置的代码仓库，并由 Agent 提出一个受约束的实验方案。只有在确定性验证通过并经过你的明确批准后，实验才会进入执行阶段。", "muted"));
+      const label = node("label", "你希望验证什么问题？"); label.htmlFor = "research-goal"; root.append(label);
+      const textarea = document.createElement("textarea"); textarea.id = "research-goal"; textarea.placeholder = "例如：设计一个 CPU-only 参数扫描实验，验证模型准确率。"; root.append(textarea);
+      const context = node("div", undefined, "context"); context.append(field("代码仓库", "labpilot-demo-repo"), field("执行策略", "受约束的 Agent 规划 · 必须经过人工批准")); root.append(context); appendError(root); root.append(button("启动 Agent", "primary", startAgent)); return root;
+    }
+    function activityText(step) { if (step.decision_kind === "tool_call") return "工具调用：" + (step.decision_json?.tool_name || "repository tool"); if (step.decision_kind === "propose") return "生成实验方案"; return step.step_kind.replaceAll("_", " "); }
+    function renderAgent() {
+      const root = panel("AI Agent", "读取仓库 · 分析上下文 · 生成实验方案"); root.append(node("p", appState.run?.status === "requires_human_input" ? "该 Agent 运行需要人工输入，已停止推进。" : "浏览器会按持久化状态逐步推进 Agent，每完成一步都会重新读取服务端状态。", "muted"));
+      if (appState.proposal) root.append(node("p", "正在查看已完成的 Agent 运行记录。", "muted"));
+      if (appState.trace) { const metrics = node("div", undefined, "metrics"); metrics.append(node("div", undefined, "metric"), node("div", undefined, "metric"), node("div", undefined, "metric")); [["模型提供方 / 模型", appState.trace.provider_name + " / " + appState.trace.model_name], ["模型调用次数", appState.trace.total_model_calls], ["Token 使用量", appState.trace.total_tokens]].forEach((pair, i) => { metrics.children[i].append(node("small", pair[0]), node("b", String(pair[1]))); }); root.append(metrics); const timeline = node("ol", undefined, "timeline"); appState.trace.steps.forEach((step) => { const item = node("li"); item.append(node("b", activityText(step)), node("span", "步骤 " + step.ordinal + " · " + stepOutcomeText(step.outcome))); timeline.append(item); }); root.append(timeline); }
+      if (appState.advancing) root.append(node("p", "正在推进持久化 Agent 运行…", "muted")); if (appState.run?.termination_reason && !appState.proposal) root.append(node("div", "Agent 已停止：" + appState.run.termination_reason, "error")); appendError(root); return root;
+    }
+    function renderProposal() {
+      const root = panel("实验方案 · 修订 " + appState.revision.revision_number, "受控交接"); root.append(node("p", "Agent 已完成规划。当前方案仍只是一个受约束的实验计划，只有通过确定性验证并经过你的明确批准后，才允许进入执行阶段。", "muted")); const fields = node("div", undefined, "fields proposal-grid"); const p = appState.proposal; const target = (p.validation_rules || []).find((rule) => rule.kind === "metric_gte"); fields.append(field("实验类型", p.experiment_type), field("训练入口", p.train_entrypoint), field("参数矩阵", JSON.stringify(p.parameter_matrix)), field("随机种子", (p.seeds || []).join(", ")), field("计划 Trial 数量", plannedTrials(p)), field("运行环境", p.environment_expectation?.device_requirement || "CPU 环境"), field("超时时间", p.timeout_seconds + " 秒"), field("最大重试次数", p.max_retries), field("验证目标", target ? target.subject + " ≥ " + target.threshold : "未指定")); root.append(fields); const raw = document.createElement("details"); raw.append(node("summary", "查看原始方案")); raw.append(node("pre", JSON.stringify(p, null, 2))); root.append(raw); appendError(root); root.append(button("验证实验方案", "primary", verifyProposal)); return root;
+    }
+    function renderVerify() {
+      const root = renderProposal(); root.querySelector("button").remove(); if (appState.verification) { const result = appState.verification.result; const box = node("div", undefined, "verification " + (result.passed ? "pass" : "fail")); box.append(node("h2", "确定性验证"), node("p", result.passed ? "通过" : "未通过"), field("验证规则版本", result.profile)); if (!result.passed) box.append(node("p", "实验方案未通过确定性验证，无法批准。", "muted")); const findings = node("ul", undefined, "findings"); if (result.findings.length) box.append(node("h3", "验证发现")); result.findings.forEach((finding) => findings.append(node("li", finding.severity + ": " + finding.code + " — " + finding.message))); box.append(findings); root.append(box); const actions = node("div", undefined, "actions"); actions.append(button("验证实验方案", "secondary", verifyProposal), button("批准实验", "primary", approveProposal, !result.passed)); root.append(actions); } else root.append(button("验证实验方案", "primary", verifyProposal)); return root;
+    }
+    function renderApprove() { const root = renderVerify(); if (!appState.version) return root; root.querySelector(".actions").remove(); const card = node("div", undefined, "approved"); card.append(node("b", "已批准"), node("h2", "不可变 ExperimentVersion")); const fields = node("div", undefined, "fields proposal-grid"); fields.append(field("版本号", appState.version.version_number), field("创建时间", formatTime(appState.version.created_at)), field("仓库快照标识", appState.version.repository_snapshot_identity), field("ExperimentVersion ID", shortId(appState.version.experiment_version_id))); card.append(fields); root.append(card); const ready = node("div", undefined, "handoff"); ready.append(node("strong", "实验已准备执行"), node("div", "Agent ✓ 实验方案已生成 · 确定性验证 ✓ 已通过 · 人工审批 ✓ 已批准 · ExperimentVersion ✓ 已固化")); root.append(ready); root.append(button("启动实验", "secondary", () => {}, true)); root.append(node("p", "将在下一阶段接入真实实验执行", "muted")); return root; }
+    function renderApp() { runStatus.textContent = runStatusText(); renderStages(); const view = appState.view; workspace.replaceChildren(view === "goal" ? renderGoal() : view === "agent" ? renderAgent() : view === "proposal" ? renderProposal() : view === "verify" ? renderVerify() : renderApprove()); }
+    renderApp();
+  </script>
+</body>
+</html>
