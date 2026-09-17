@@ -256,7 +256,7 @@ def test_operator_shell_is_html_and_uses_safe_local_browser_code() -> None:
         "达到目标",
         "无可纳入结果",
         "正在查看已完成的 Agent 运行记录。",
-        'projectId: "22209cf9-1b5d-456a-a227-d6584f733d9d"',
+        'projectId: "e217c7b5-23b5-46e0-b434-b98a915a9eff"',
         "/agent-runs",
         "/advance",
         "/trace",
