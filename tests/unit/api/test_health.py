@@ -287,3 +287,10 @@ def test_operator_shell_is_html_and_uses_safe_local_browser_code() -> None:
     ):
         assert forbidden not in response.text.lower()
     assert "/operator" not in app.openapi()["paths"]
+
+
+def test_operator_renders_canonical_validation_verdicts() -> None:
+    app = create_app(services=_SERVICES, actor_provider=_ACTOR_PROVIDER)
+    response = TestClient(app).get("/operator")
+
+    assert 'String(report.verdict) === "valid" ? "验证通过" : "验证未通过"' in response.text

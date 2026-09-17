@@ -388,7 +388,7 @@
       return latest?.validation_reports.at(-1) || null;
     }
     function trialResultPending(trial) { return trial.attempt_ids.some((id) => appState.resultState["attempt:" + id] === "pending") || appState.resultState["trial:" + trial.trial_id] === "pending"; }
-    function verdictText(report, trial) { if (!report) return trial && trialResultPending(trial) ? "结果正在处理" : "验证尚不可用"; return String(report.verdict).toUpperCase() === "PASS" ? "验证通过" : "验证未通过"; }
+    function verdictText(report, trial) { if (!report) return trial && trialResultPending(trial) ? "结果正在处理" : "验证尚不可用"; return String(report.verdict) === "valid" ? "验证通过" : "验证未通过"; }
     function trialMetricText(trial) { const selection = appState.trialResults[trial.trial_id]?.selection; const results = selection ? appState.attemptResults[selection.attempt_id] : trial.attempt_ids.map((id) => appState.attemptResults[id]).filter(Boolean).at(-1); return results?.metrics.map((metric) => metric.metric_name + "=" + metric.numeric_value).join(" · ") || (trialResultPending(trial) ? "结果正在处理" : "尚无指标"); }
     function terminalCount() { return Object.values(appState.trials).filter(isTerminalTrial).length; }
     function appendEvidence(container, trial) {
