@@ -25,7 +25,9 @@ async def test_put_read_verify_and_layout(tmp_path: Path) -> None:
     ref = await store.put_bytes(value)
 
     assert ref == f"sha256:{digest}"
-    assert (tmp_path / "content" / "sha256" / digest[:2] / digest[2:]).read_bytes() == value
+    path = tmp_path / "content" / "sha256" / digest[:2] / digest[2:]
+    assert path.read_bytes() == value
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640
     assert await store.read_bytes(ref) == value
     await store.verify(ref, digest)
 
@@ -149,8 +151,14 @@ async def test_parent_directory_fsync_occurs_after_replace(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[str] = []
+    original_fchmod = os.fchmod
     original_replace = os.replace
     original_fsync = os.fsync
+
+    def fchmod(fd: int, mode: int) -> None:
+        assert mode == 0o640
+        events.append("fchmod")
+        original_fchmod(fd, mode)
 
     def replace(
         source: str | bytes | os.PathLike[str] | os.PathLike[bytes],
@@ -164,12 +172,18 @@ async def test_parent_directory_fsync_occurs_after_replace(
         events.append("fsync-dir" if stat.S_ISDIR(mode) else "fsync-file")
         original_fsync(fd)
 
+    monkeypatch.setattr(content_store_module.os, "fchmod", fchmod)
     monkeypatch.setattr(content_store_module.os, "replace", replace)
     monkeypatch.setattr(content_store_module.os, "fsync", fsync)
 
     await ContentAddressedStore(tmp_path / "content").put_bytes(b"durable")
 
-    assert events.index("fsync-file") < events.index("replace") < events.index("fsync-dir")
+    assert (
+        events.index("fchmod")
+        < events.index("fsync-file")
+        < events.index("replace")
+        < events.index("fsync-dir")
+    )
 
 
 @pytest.mark.asyncio
