@@ -45,7 +45,7 @@ async def test_migration_0009_registers_execution_preparation_schema(
         await database.dispose()
 
     assert {"batches", "trials", "attempts"} <= tables
-    assert revision == "0012_version_identity_nonunique"
+    assert revision == "0013_result_aware_agent_runs"
     assert "UNIQUE INDEX" in index_definition
     assert "(trial_id)" in index_definition
     assert "terminal_at IS NULL" in index_definition
