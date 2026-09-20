@@ -1,6 +1,6 @@
 # LabPilot 文档状态
 
-> 当前状态：R0 仍为 V1 rebaseline authority root；Slice 1 已 Accepted；Slice 2 bounded MVP 已验证并集成到 `main`，production hardening deferred；S2→S3 sequencing amendment 已对齐当前 MVP-first planning gate；Slice 3 Result Plane implementation 已完成，canonical CI 已通过，并完成有界但有意义的真实 native 验证；历史 Slice 3 final full native acceptance 仍保留 B6 acceptance-supervisor 未完全闭合的记录。另行完成的 Competition Core Demo Runtime/E2E 已在产品基线 `c92bf45b63053b1ae00209660ed351cf309f91c8` 上验收并冻结：fresh browser Golden Path PASS、same-version Coordinator recovery replay PASS、exact-authority full CI PASS。该 competition closure 不改变 Slice 2 production acceptance/hardening 状态。
+> 当前状态：R0 仍为 V1 rebaseline authority root；Slice 1 已 Accepted；Slice 2 bounded MVP 已验证并集成到 `main`，production hardening deferred；Slice 3 Result Plane implementation 已完成。Competition Core Demo Runtime/E2E 已在产品基线 `c92bf45b63053b1ae00209660ed351cf309f91c8` 上验收并冻结，competition console 已合并回 `main`，并行 Core Demo 工作中已验证的 exact read-only API workspace acceptance contract 也已收敛。比赛后 remaining-V1 已重新进入 planning gate：当前只授权 P1 Result-Aware Experiment Iteration 的设计 focused review，尚未授权实现。
 
 | 文档 | 状态 | 用途 |
 |---|---|---|
@@ -18,6 +18,7 @@
 | Slice3 Result Plane Design | Approved after focused re-review | 冻结 Slice3 Core Result Plane 的对象、边界、验证、恢复、API/SSE 与验收语义 |
 | Slice3 Detailed Implementation Plan | Approved after focused plan review | 冻结 Slice3 implementation 的 task/file/interface/TDD/acceptance 执行顺序；focused review C1–C5 为后续窄 authority |
 | Competition Core Demo closeout | **Accepted / Frozen** | Demo-specific Runtime/E2E closure：browser Golden Path + same immutable ExperimentVersion recovery replay + exact-authority CI；不构成 Slice 2 production acceptance |
+| P1 Result-Aware Experiment Iteration Design | **Proposed / Focused Review Pending** | 比赛后第一个 P1 candidate；只规划 exact ResultContext → Follow-up AgentRun → same-Experiment Follow-up Proposal → existing verification/approval/version chain |
 | Master Roadmap v0.2.1 | Historical frozen dependency | 仅用于历史 WP0 dependency verification |
 | WP0 Foundation v0.3.1 | Completed / Historical Accepted Execution Plan | WP0 已完成；不再标记 Ready for Execution |
 
@@ -102,6 +103,11 @@ Slice-specific detailed plans must record their exact planning baseline commit a
 - Competition claim boundary: browser Golden Path Batch itself did **not** undergo the Coordinator restart; accepted wording is `Fresh browser Golden Path PASS + same immutable ExperimentVersion recovery replay PASS.`
 - Competition closure does **not** establish global exactly-once execution, Slice 2 production acceptance, Slice 2 production hardening completion, or an autonomous research-agent claim
 - Competition closeout evidence: `docs/superpowers/evidence/2026-09-19-labpilot-competition-core-demo-closeout.md`
+- Competition console integration into `main`: `26217975103b3bb53de768e223c64781ce27753f`
+- Parallel Core Demo acceptance-contract convergence: `bf26f9ffcfed02542f4944e160226f3437355706`
+- P1 Result-Aware Iteration Design: **PROPOSED / FOCUSED REVIEW PENDING**
+- P1 Result-Aware Iteration design doc: `docs/superpowers/specs/2026-09-20-labpilot-p1-result-aware-iteration-design.md`
+- P1 Result-Aware Iteration implementation: **NOT AUTHORIZED**
 
 Under Sequencing Amendment v0.3.1, the bounded Slice 2 MVP closeout is sufficient to unlock Slice 3. It does not retroactively complete the deferred Slice 2 production-hardening campaign or establish Slice 2 production acceptance.
 
@@ -109,37 +115,56 @@ The Git commit containing this status transition is the exact Slice3 implementat
 
 ## 4. Next authorized action
 
-Competition workstream next action:
+The competition workstream is closed. Its Runtime/E2E evidence and UI are frozen unless a concrete regression or demo-critical defect is demonstrated.
+
+The next authorized remaining-V1 action is **planning only**:
 
 ```text
-Competition Core Demo Runtime/E2E is accepted and frozen.
-UI visual polish
-→ recording
-→ architecture diagram
-→ PPT
+P1 Result-Aware Experiment Iteration Design
+→ focused design review
+→ resolve only blocking findings/direct regressions
+→ approve or revise design
+→ detailed implementation plan
+→ focused plan review
+→ implementation authorization
 ```
 
-Before competition closure, do not open a new implementation tranche for:
+Current proposed design:
 
-- Slice 4;
+```text
+exact BatchSummaryRevision
+→ deterministic ResultContext
+→ Follow-up AgentRun
+→ Stop | Request Human Input | Follow-up Proposal
+→ existing deterministic ProposalVerification
+→ Human Approval
+→ next immutable ExperimentVersion in the same Experiment
+```
+
+Until focused design review closes, do **not** begin Product implementation for this tranche.
+
+Explicitly not authorized in this first P1 tranche:
+
+- Slice 4 as a new roadmap label;
 - Multi-Agent;
-- result-aware replanning;
-- historical experiment comparison;
-- new Runtime hardening.
+- controlled/autonomous code modification;
+- editable Worktree;
+- cross-Experiment history search;
+- automatic Batch start after Agent proposal;
+- LLM semantic verifier;
+- new Runtime-hardening campaign;
+- competition UI redesign.
 
-No further competition Runtime/E2E expansion, fresh AgentRun, DeepSeek replay, or recovery rerun is authorized by this closeout unless a concrete demo-blocking defect is discovered.
-
-Remaining V1 implementation, if resumed after the competition workstream, remains subordinate to its existing authority and must pass its own planning/authority gate:
+The proposed design remains subordinate to:
 
 ```text
 V1 Scope v0.3
 > Architecture 10 v0.3
 > Master Roadmap v0.3
-> S2→S3 Sequencing Amendment v0.3.1 where applicable
-> approved Slice-specific authority
+> approved P1 Result-Aware authority after review
 ```
 
-Do not reinterpret this competition closeout as completing deferred Slice 2 production hardening or establishing Slice 2 production acceptance.
+Competition closure still does not complete deferred Slice 2 production hardening or establish Slice 2 production acceptance.
 
 ## 5. Historical Slice 1 foundation alignment
 
