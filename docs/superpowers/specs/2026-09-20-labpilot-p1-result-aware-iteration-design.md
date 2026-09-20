@@ -301,6 +301,32 @@ The system instruction for a Follow-up AgentRun must state:
 - if another experiment is warranted, `propose` must provide a full existing ProposalPayload;
 - the Agent never starts or approves the next experiment.
 
+## 9.1 ResultContext data-egress boundary
+
+A Follow-up AgentRun sends ResultContext inside the compiled model request. Structured experiment results are therefore provider-visible data, not merely an internal DB read.
+
+P1-A/B keeps the existing binary Agent egress authority:
+
+```text
+data_egress_policy = local_only
+→ remote provider blocked before provider call
+
+data_egress_policy = remote_provider_allowed
+→ remote provider may receive the compiled Agent context,
+  including the bounded ResultContext
+```
+
+This semantic expansion must be explicit in user/operator documentation and tests. Do not silently treat ResultContext as exempt from data-egress policy.
+
+To keep the first tranche narrow:
+
+- do not introduce a second granular egress-policy engine;
+- never include raw Artifact bytes, stdout/stderr, secrets, credentials, or arbitrary workspace files in ResultContext;
+- keep selected metrics, approved design facts, Trial conditions, exclusion reason codes, warnings, and aggregates bounded and deterministic;
+- preserve the existing guarantee that `local_only + remote provider` fails before a provider request is sent.
+
+If later use cases require allowing repository egress while forbidding result egress (or vice versa), that is a separate policy tranche rather than an implicit behavior in P1-A/B.
+
 ## 10. Agent decision semantics stay unchanged
 
 No fifth top-level decision type is introduced.
@@ -509,7 +535,8 @@ Decisions already frozen in this proposed design:
 - keep the first P1-A/B acceptance path on the same RepositorySnapshot before any controlled-code-modification tranche;
 - preserve the architecture dependency guard: `agent_runtime` must not gain a direct `results_validation` dependency;
 - reuse the existing same-Experiment ProposalRevision/ExperimentVersion numbering semantics;
-- keep invalid/raw scientific outputs outside authoritative ResultContext evidence.
+- keep invalid/raw scientific outputs outside authoritative ResultContext evidence;
+- treat ResultContext as provider-visible under the existing `data_egress_policy`; `remote_provider_allowed` explicitly covers the bounded ResultContext while `local_only` must block the remote call before transmission.
 
 The review should especially test whether the current services and transaction boundaries can implement these decisions without weakening existing replay, approval, or Result Plane invariants.
 
