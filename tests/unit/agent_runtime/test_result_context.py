@@ -245,5 +245,11 @@ def test_result_context_models_reject_extra_fields() -> None:
 
     with pytest.raises(ValidationError):
         ResultContext.model_validate(
-            {**context.model_dump(mode="json"), "unexpected": True}
+            {
+                **context.model_dump(
+                    mode="json",
+                    fallback=lambda value: dict(value),
+                ),
+                "unexpected": True,
+            }
         )
