@@ -1,6 +1,6 @@
 # Keep follow-up proposals in the same Experiment
 
-Status: Proposed for P1 Result-Aware Iteration review
+Status: Accepted for P1 Result-Aware Iteration
 
 Result-aware iteration refines one research objective across approved versions. A Follow-up AgentRun therefore creates its ProposalRevision in the Experiment that owns the source BatchSummaryRevision, rather than silently creating a new Experiment for every loop. After the existing deterministic verification and human approval gates pass, the follow-up becomes the next immutable ExperimentVersion of that Experiment.
 
