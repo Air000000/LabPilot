@@ -520,7 +520,15 @@ def require_api_mounts(mounts: Sequence[Mapping[str, object]], *, workspace_root
         ):
             raise NativePreflightError("API must not receive the Runner runtime mount")
         if _at_or_below(source, workspace_root) or _at_or_below(destination, workspace_root):
-            raise NativePreflightError("API must not receive the Attempt workspace mount")
+            if not (
+                mount.get("Type") == "bind"
+                and source == workspace_root
+                and destination == workspace_root
+                and mount.get("RW") is False
+            ):
+                raise NativePreflightError(
+                    "API Attempt workspace mount must be exact and read-only"
+                )
 
 
 def require_coordinator_continuity(before: str, after: str) -> None:
