@@ -91,7 +91,13 @@ def _result_context(
     }
     warnings = ()
     if warning_blob is not None:
-        warnings = ({"code": "SYNTHETIC", "subject": "accuracy", "details": {"blob": warning_blob}},)
+        warnings = (
+            {
+                "code": "SYNTHETIC",
+                "subject": "accuracy",
+                "details": {"blob": warning_blob},
+            },
+        )
     return ResultContext(
         experiment_id=uuid4(),
         source_experiment_version_id=uuid4(),
