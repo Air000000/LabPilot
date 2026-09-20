@@ -1,7 +1,7 @@
 # LabPilot P1 Result-Aware Experiment Iteration Design
 
 **Date:** 2026-09-20  
-**Status:** Proposed / focused review pending  
+**Status:** Approved / Current  
 **Planning authority root:** `032dd87d3366dc6edd66fb75451d44047e49f7dd`  
 **Current repository baseline:** `bf26f9ffcfed02542f4944e160226f3437355706`
 
@@ -548,7 +548,7 @@ Acceptance must prove that the compiled ResultContext:
 
 ## 17. Review and implementation sequencing
 
-This design is not implementation authority until focused review closes blocking findings.
+Focused design review is closed with APPROVE. This design is now the approved P1 Result-Aware planning authority; Product implementation remains gated on an approved detailed implementation plan.
 
 After design approval:
 
@@ -580,4 +580,4 @@ Decisions already frozen in this proposed design:
 
 The review should especially test whether the current services and transaction boundaries can implement these decisions without weakening existing replay, approval, or Result Plane invariants.
 
-Until focused review closes any blocking findings, implementation is not authorized.
+Focused review closed P1-RESULT-001 with no direct regressions. Detailed implementation planning is authorized; Product implementation is not authorized until the detailed plan passes focused plan review.
