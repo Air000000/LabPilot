@@ -88,7 +88,7 @@ async def test_result_aware_agent_run_provenance_schema(
                     SELECT pg_get_constraintdef(oid)
                     FROM pg_constraint
                     WHERE conname =
-                        'fk_agent_runs_source_summary_revision_id_batch_summary_revisions'
+                        'fk_agent_runs_source_summary_revision'
                     """
                 )
             )
