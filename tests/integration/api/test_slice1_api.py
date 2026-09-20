@@ -151,7 +151,9 @@ async def _create(client: AsyncClient, snapshot_id: UUID) -> dict[str, object]:
         json={"repository_snapshot_id": str(snapshot_id), "goal": "Draft", "budget": BUDGET},
     )
     assert response.status_code == 201
-    return response.json()
+    body = response.json()
+    assert body["source_batch_summary_revision_id"] is None
+    return body
 
 
 @pytest.mark.asyncio
@@ -184,6 +186,7 @@ async def test_agent_trace_get_returns_persisted_steps(
             body = trace.json()
             assert body["agent_run_id"] == run["agent_run_id"]
             assert body["repository_snapshot_id"] == str(system.snapshot_id)
+            assert body["source_batch_summary_revision_id"] is None
             assert body["status"] == "completed"
             assert body["total_model_calls"] == 1
             assert body["total_tokens"] == 2
