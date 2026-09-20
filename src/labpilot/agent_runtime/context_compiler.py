@@ -174,7 +174,13 @@ class ContextCompiler:
             "prior_human_inputs": human_inputs,
         }
         if result_context is not None:
-            result_value = _canonical_value(result_context.model_dump(mode="json"))
+            result_value = _canonical_value(
+                result_context.model_dump(
+                    mode="json",
+                    warnings="none",
+                    fallback=_serialization_fallback,
+                )
+            )
             if len(canonical_json_bytes(result_value)) > _MAX_RESULT_CONTEXT_BYTES:
                 raise ContextCompilationError("result_context_too_large")
             user_value["result_context"] = result_value
@@ -237,6 +243,12 @@ def _tool_contract(definition: ToolDefinition) -> CanonicalValue:
 
 def _render(value: CanonicalValue) -> str:
     return canonical_json_bytes(value).decode("utf-8")
+
+
+def _serialization_fallback(value: object) -> object:
+    if isinstance(value, Mapping):
+        return dict(value)
+    raise TypeError(f"unsupported result context value: {type(value).__name__}")
 
 
 def _require_utf8(value: str, *, field: str, max_bytes: int, non_blank: bool) -> None:
