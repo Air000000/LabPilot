@@ -156,6 +156,7 @@ def test_agent_tables_match_the_frozen_0008_contract(
         "total_tokens",
         "next_step_ordinal",
         "produced_proposal_revision_id",
+        "source_batch_summary_revision_id",
         "created_at",
         "started_at",
         "completed_at",
