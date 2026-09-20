@@ -29,7 +29,7 @@ async def test_upgrade_head_succeeds_on_an_isolated_empty_database(
     try:
         with engine.connect() as connection:
             version = connection.scalar(text("SELECT version_num FROM alembic_version"))
-        assert version == "0012_version_identity_nonunique"
+        assert version == "0013_result_aware_agent_runs"
     finally:
         engine.dispose()
 
@@ -45,6 +45,7 @@ async def test_upgrade_head_succeeds_on_an_isolated_empty_database(
     assert Path("migrations/versions/0010_attempt_physical_execution.py").exists()
     assert Path("migrations/versions/0011_result_plane.py").exists()
     assert Path("migrations/versions/0012_version_identity_nonunique.py").exists()
+    assert Path("migrations/versions/0013_result_aware_agent_runs.py").exists()
 
 
 @pytest.mark.integration
