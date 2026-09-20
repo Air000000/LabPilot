@@ -246,6 +246,29 @@ The ResultContext must have an explicit byte/count bound. V1 Batch size is alrea
 
 The exact ResultContext participates in the Agent model request canonical hash. A replay must therefore be tied to the same result facts, not merely the same natural-language goal.
 
+## 8.4 Module dependency boundary
+
+The current architecture guard intentionally does **not** allow `agent_runtime` to import `results_validation`. This tranche must preserve that direction.
+
+Define the minimal ResultContext DTO/port on the Agent side, for example:
+
+```text
+agent_runtime
+  ResultContext
+  ResultContextSource protocol
+        ↑
+        | implemented in composition/adapter code
+        |
+api/composition adapter
+  may depend on both agent_runtime and results_validation
+        ↓
+results_validation / execution / experiments query services
+```
+
+Do not add `results_validation` to `agent_runtime`'s allowed-import set merely to implement this feature.
+
+The nullable AgentRun foreign-key column may reference `batch_summary_revisions` by table name without importing Result Plane ORM types. Result lineage loading and ResultContext assembly belong behind the injected port/adapter.
+
 ## 9. ContextCompiler behavior
 
 Initial planning run:
@@ -476,16 +499,18 @@ Do not mix controlled code modification, cross-Experiment history, UI redesign, 
 
 ## 18. Open review questions
 
-Focused review should challenge only material boundaries that remain unresolved after inspecting the current schema:
+Focused review should verify the proposed boundaries against the current implementation and report only concrete contradictions, missing invariants, or unsafe ownership transitions.
 
-1. whether requiring the source summary to be latest at Follow-up AgentRun creation is too strict or appropriately fail-closed;
-2. whether any current service/transaction ownership rule makes same-Experiment Agent Proposal revisioning unsafe even though the domain schema already supports multiple ProposalRevisions and ExperimentVersions per Experiment;
-3. whether the proposed ResultContext evidence boundary is sufficient to prevent invalid/raw outputs from being promoted into scientific authority while still giving the Agent enough information to propose the next iteration.
-
-Already resolved by the current schema and therefore not open review questions:
+Decisions already frozen in this proposed design:
 
 - persist only `source_batch_summary_revision_id` on AgentRun; derive Experiment through the restricted summary→batch→version→experiment lineage;
+- require that source summary to be the latest published revision at Follow-up AgentRun creation, then pin the exact revision for the lifetime of the run;
 - include the exact canonical source ProposalPayload in ResultContext;
-- keep the first P1-A/B acceptance path on the same RepositorySnapshot before any controlled-code-modification tranche.
+- keep the first P1-A/B acceptance path on the same RepositorySnapshot before any controlled-code-modification tranche;
+- preserve the architecture dependency guard: `agent_runtime` must not gain a direct `results_validation` dependency;
+- reuse the existing same-Experiment ProposalRevision/ExperimentVersion numbering semantics;
+- keep invalid/raw scientific outputs outside authoritative ResultContext evidence.
 
-Until the remaining questions are reviewed, implementation is not authorized.
+The review should especially test whether the current services and transaction boundaries can implement these decisions without weakening existing replay, approval, or Result Plane invariants.
+
+Until focused review closes any blocking findings, implementation is not authorized.
