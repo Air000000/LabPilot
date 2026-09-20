@@ -497,7 +497,7 @@ After design approval:
 
 Do not mix controlled code modification, cross-Experiment history, UI redesign, or Runtime hardening into the P1-A/B implementation branch.
 
-## 18. Open review questions
+## 18. Focused review gate
 
 Focused review should verify the proposed boundaries against the current implementation and report only concrete contradictions, missing invariants, or unsafe ownership transitions.
 
