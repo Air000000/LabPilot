@@ -57,7 +57,13 @@ def _run_fake_native_preflight(
                         {
                             "Destination": "/app/content",
                             "Source": "/srv/labpilot/content",
-                        }
+                        },
+                        {
+                            "Type": "bind",
+                            "Destination": "/srv/labpilot/attempts",
+                            "Source": "/srv/labpilot/attempts",
+                            "RW": False,
+                        },
                     ]
                 }
             stdout = json.dumps([value])
@@ -661,7 +667,15 @@ def test_compose_network_and_api_mount_authority_are_narrow() -> None:
 
     require_postgres_bind({"5432/tcp": [{"HostIp": "127.0.0.1", "HostPort": "55432"}]})
     require_api_mounts(
-        [{"Destination": "/app/content", "Source": "/srv/labpilot/content"}],
+        [
+            {"Destination": "/app/content", "Source": "/srv/labpilot/content"},
+            {
+                "Type": "bind",
+                "Destination": "/srv/labpilot/attempts",
+                "Source": "/srv/labpilot/attempts",
+                "RW": False,
+            },
+        ],
         workspace_root="/srv/labpilot/attempts",
     )
 
@@ -670,6 +684,48 @@ def test_compose_network_and_api_mount_authority_are_narrow() -> None:
     with pytest.raises(NativePreflightError, match="Runner runtime"):
         require_api_mounts(
             [{"Destination": "/run/labpilot-runner", "Source": "/run/labpilot-runner"}],
+            workspace_root="/srv/labpilot/attempts",
+        )
+    with pytest.raises(NativePreflightError, match="exact and read-only"):
+        require_api_mounts(
+            [
+                {
+                    "Type": "bind",
+                    "Destination": "/srv/labpilot/attempts",
+                    "Source": "/srv/labpilot/attempts",
+                    "RW": True,
+                }
+            ],
+            workspace_root="/srv/labpilot/attempts",
+        )
+
+
+@pytest.mark.parametrize(
+    ("source", "destination"),
+    (
+        ("/srv/labpilot/attempts/child", "/srv/labpilot/attempts/child"),
+        ("/srv/labpilot/attempts", "/app/attempts"),
+        ("/srv/labpilot/other", "/srv/labpilot/attempts/child"),
+    ),
+)
+def test_api_workspace_mount_rejects_subpaths_or_remapping(
+    source: str, destination: str
+) -> None:
+    from tests.acceptance.slice2.native_preflight import (
+        NativePreflightError,
+        require_api_mounts,
+    )
+
+    with pytest.raises(NativePreflightError, match="exact and read-only"):
+        require_api_mounts(
+            [
+                {
+                    "Type": "bind",
+                    "Destination": destination,
+                    "Source": source,
+                    "RW": False,
+                }
+            ],
             workspace_root="/srv/labpilot/attempts",
         )
 
