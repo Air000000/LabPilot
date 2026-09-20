@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, Protocol
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
+from labpilot.agent_runtime.types import AgentRunDetails
 from labpilot.experiments.proposal_types import ProposalPayload
 
 
@@ -34,3 +35,11 @@ class ResultContext(BaseModel):
     excluded_results: tuple[dict[str, JsonValue], ...]
     warnings: tuple[dict[str, JsonValue], ...]
     aggregates: dict[str, JsonValue]
+
+
+class FollowUpRunStore(Protocol):
+    async def create_bound_run(self, run: AgentRunDetails) -> AgentRunDetails: ...
+
+
+class ResultContextSource(Protocol):
+    async def load(self, source_batch_summary_revision_id: UUID) -> ResultContext: ...
