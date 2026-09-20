@@ -27,7 +27,7 @@ def upgrade() -> None:
         ),
     )
     op.create_foreign_key(
-        "fk_agent_runs_source_summary_revision_id_batch_summary_revisions",
+        "fk_agent_runs_source_summary_revision",
         "agent_runs",
         "batch_summary_revisions",
         ["source_batch_summary_revision_id"],
@@ -38,7 +38,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_constraint(
-        "fk_agent_runs_source_summary_revision_id_batch_summary_revisions",
+        "fk_agent_runs_source_summary_revision",
         "agent_runs",
         type_="foreignkey",
     )
