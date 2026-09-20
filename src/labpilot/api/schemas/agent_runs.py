@@ -50,6 +50,7 @@ class AgentRunResponse(BaseModel):
     status: str
     termination_reason: str | None
     produced_proposal_revision_id: UUID | None
+    source_batch_summary_revision_id: UUID | None
     created_at: datetime
     row_version: int
 
@@ -62,6 +63,7 @@ class AgentRunResponse(BaseModel):
             status=details.status,
             termination_reason=details.termination_reason,
             produced_proposal_revision_id=details.produced_proposal_revision_id,
+            source_batch_summary_revision_id=details.source_batch_summary_revision_id,
             created_at=details.created_at,
             row_version=details.row_version,
         )
@@ -111,6 +113,7 @@ class AgentRunTraceResponse(BaseModel):
     agent_run_id: UUID
     project_id: UUID
     repository_snapshot_id: UUID
+    source_batch_summary_revision_id: UUID | None
     goal: str
     status: str
     termination_reason: str | None
@@ -131,6 +134,7 @@ class AgentRunTraceResponse(BaseModel):
             agent_run_id=run.agent_run_id,
             project_id=run.project_id,
             repository_snapshot_id=run.repository_snapshot_id,
+            source_batch_summary_revision_id=run.source_batch_summary_revision_id,
             goal=run.goal,
             status=run.status,
             termination_reason=run.termination_reason,
