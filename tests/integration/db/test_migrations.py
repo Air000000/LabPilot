@@ -48,6 +48,97 @@ async def test_upgrade_head_succeeds_on_an_isolated_empty_database(
     assert Path("migrations/versions/0013_result_aware_agent_runs.py").exists()
 
 
+
+@pytest.mark.integration
+@pytest.mark.destructive
+async def test_result_aware_agent_run_provenance_schema(
+    isolated_database_url: str,
+) -> None:
+    sync_url = isolated_database_url.replace("+asyncpg", "+psycopg")
+    upgrade_database_to_head(isolated_database_url)
+
+    engine = create_engine(sync_url)
+    try:
+        with engine.connect() as connection:
+            column = connection.execute(
+                text(
+                    """
+                    SELECT data_type, is_nullable
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = 'agent_runs'
+                      AND column_name = 'source_batch_summary_revision_id'
+                    """
+                )
+            ).mappings().one()
+            columns = set(
+                connection.scalars(
+                    text(
+                        """
+                        SELECT column_name
+                        FROM information_schema.columns
+                        WHERE table_schema = 'public' AND table_name = 'agent_runs'
+                        """
+                    )
+                )
+            )
+            constraint = connection.scalar(
+                text(
+                    """
+                    SELECT pg_get_constraintdef(oid)
+                    FROM pg_constraint
+                    WHERE conname =
+                        'fk_agent_runs_source_summary_revision_id_batch_summary_revisions'
+                    """
+                )
+            )
+    finally:
+        engine.dispose()
+
+    assert dict(column) == {"data_type": "uuid", "is_nullable": "YES"}
+    assert "bound_experiment_id" not in columns
+    assert constraint is not None
+    assert (
+        "FOREIGN KEY (source_batch_summary_revision_id) "
+        "REFERENCES batch_summary_revisions(batch_summary_revision_id) "
+        "ON DELETE RESTRICT"
+    ) in constraint
+
+
+@pytest.mark.integration
+@pytest.mark.destructive
+async def test_result_aware_agent_run_migration_downgrade_removes_provenance_column(
+    isolated_database_url: str,
+) -> None:
+    config = _alembic_config(isolated_database_url)
+    sync_url = isolated_database_url.replace("+asyncpg", "+psycopg")
+    engine = create_engine(sync_url)
+    try:
+        command.upgrade(config, "head")
+        command.downgrade(config, "0012_version_identity_nonunique")
+        with engine.connect() as connection:
+            assert (
+                connection.scalar(text("SELECT version_num FROM alembic_version"))
+                == "0012_version_identity_nonunique"
+            )
+            assert (
+                connection.scalar(
+                    text(
+                        """
+                        SELECT count(*)
+                        FROM information_schema.columns
+                        WHERE table_schema = 'public'
+                          AND table_name = 'agent_runs'
+                          AND column_name = 'source_batch_summary_revision_id'
+                        """
+                    )
+                )
+                == 0
+            )
+    finally:
+        engine.dispose()
+
+
 @pytest.mark.integration
 @pytest.mark.destructive
 async def test_experiment_version_identity_is_not_unique_after_head(
