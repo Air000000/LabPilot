@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import json
-from dataclasses import replace
 from uuid import uuid4
 
 import pytest
+from pydantic import ValidationError
 
 from labpilot.agent_runtime.context_compiler import ContextCompilationError, ContextCompiler
 from labpilot.agent_runtime.result_context import ResultContext, ResultTrialCondition
@@ -216,11 +216,28 @@ def test_result_context_has_individual_128_kib_bound_before_model_request() -> N
         _compile(compiler, snapshot, result_context=context)
 
 
+def test_total_compiled_message_bound_still_applies_with_result_context() -> None:
+    compiler = ContextCompiler()
+    snapshot = _descriptor()
+
+    with pytest.raises(ContextCompilationError, match="compiled_messages_too_large"):
+        compiler.compile(
+            provider_name="scripted",
+            model="test-model",
+            goal="decide the next experiment",
+            snapshot=snapshot,
+            definitions=(),
+            prior_tool_results=(),
+            prior_human_inputs=("h" * 4000,) * 70,
+            result_context=_result_context(snapshot),
+        )
+
+
 def test_result_context_models_reject_extra_fields() -> None:
     snapshot = _descriptor()
     context = _result_context(snapshot)
 
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         ResultContext.model_validate(
             {**context.model_dump(mode="json"), "unexpected": True}
         )
