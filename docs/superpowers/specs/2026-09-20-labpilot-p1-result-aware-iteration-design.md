@@ -182,14 +182,54 @@ Required creation checks:
 1. source BatchSummaryRevision exists;
 2. it belongs to a Batch whose ExperimentVersion and Experiment exist;
 3. the Experiment belongs to the same Project as the requested RepositorySnapshot;
-4. the source summary was the latest published revision for that Batch at Follow-up AgentRun creation time;
-5. the source summary is in a complete presentation state;
+4. the supplied source summary is the highest persisted revision for that Batch at the linearization point of Follow-up AgentRun creation;
+5. because BatchSummaryRevision has no separate publish/status column, any persisted revision is already a completed/presentable deterministic summary; its presentation status is derived as `complete` or `complete_with_invalid_results` from persisted summary contents;
 6. the RepositorySnapshot is clean;
 7. for the first P1-A/B acceptance path, the follow-up RepositorySnapshot identity equals the source ExperimentVersion RepositorySnapshot identity.
 
 Rule 7 deliberately keeps the first result-aware loop parameter/configuration-only. Editable code changes and a new RepositorySnapshot are deferred to the later controlled-code-modification tranche.
 
-After creation, the AgentRun remains pinned to the exact source summary revision even if a later BatchSummaryRevision is published. A later semantic/result revision requires a new Follow-up AgentRun rather than mutating the existing request provenance.
+### 7.1 Latest-at-create linearization contract
+
+`CreateFollowUpAgentRun` must make the "latest at creation" check and AgentRun insertion one transactionally linearized operation.
+
+The current Summary refresh path already serializes revision creation by locking the owning `BatchRow` with `SELECT ... FOR UPDATE`, then reading the maximum persisted revision and optionally inserting revision N+1. Follow-up creation must reuse that same BatchRow lock boundary.
+
+Required transaction order:
+
+```text
+begin one UnitOfWork
+→ load supplied BatchSummaryRevision to identify batch_id
+→ SELECT owning BatchRow ... FOR UPDATE
+→ re-read supplied BatchSummaryRevision inside the locked transaction
+→ query highest persisted BatchSummaryRevision.revision_number for that Batch
+→ require supplied revision_number == highest persisted revision_number
+→ perform the remaining Project / Version / RepositorySnapshot lineage checks
+→ insert AgentRun with exact source_batch_summary_revision_id
+→ commit the same UnitOfWork
+```
+
+The source-summary latest check and AgentRun persistence must not be split across separate UnitOfWorks or transactions.
+
+Concurrency semantics:
+
+```text
+Summary refresh acquires BatchRow lock first
+→ Follow-up creation waits
+→ after lock acquisition it observes N+1
+→ stale supplied N is rejected
+
+Follow-up creation acquires BatchRow lock first
+→ verifies supplied N is current highest
+→ persists AgentRun bound to N
+→ commits
+→ later Summary refresh may create N+1
+→ existing AgentRun remains validly pinned to N
+```
+
+Therefore "latest-at-create" means latest at the transaction's BatchRow-lock linearization point, not "remains latest forever".
+
+After creation, the AgentRun remains pinned to the exact source summary revision even if a later BatchSummaryRevision is persisted. A later semantic/result revision requires a new Follow-up AgentRun rather than mutating the existing request provenance.
 
 ## 8. Deterministic ResultContext
 
@@ -490,7 +530,7 @@ At minimum:
 
 - nonexistent summary revision;
 - summary/Project lineage mismatch;
-- non-latest summary at run creation;
+- non-latest persisted summary at the BatchRow-lock linearization point;
 - dirty or mismatched RepositorySnapshot;
 - model attempts an invalid decision payload;
 - follow-up Proposal tries to bind another snapshot during the parameter-only tranche;
@@ -530,7 +570,7 @@ Focused review should verify the proposed boundaries against the current impleme
 Decisions already frozen in this proposed design:
 
 - persist only `source_batch_summary_revision_id` on AgentRun; derive Experiment through the restricted summary→batch→version→experiment lineage;
-- require that source summary to be the latest published revision at Follow-up AgentRun creation, then pin the exact revision for the lifetime of the run;
+- require that source summary to be the highest persisted revision under the same BatchRow `FOR UPDATE` lock used by Summary refresh, persist the AgentRun in that same UnitOfWork, then pin the exact revision for the lifetime of the run;
 - include the exact canonical source ProposalPayload in ResultContext;
 - keep the first P1-A/B acceptance path on the same RepositorySnapshot before any controlled-code-modification tranche;
 - preserve the architecture dependency guard: `agent_runtime` must not gain a direct `results_validation` dependency;
