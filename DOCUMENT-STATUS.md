@@ -18,7 +18,8 @@
 | Slice3 Result Plane Design | Approved after focused re-review | 冻结 Slice3 Core Result Plane 的对象、边界、验证、恢复、API/SSE 与验收语义 |
 | Slice3 Detailed Implementation Plan | Approved after focused plan review | 冻结 Slice3 implementation 的 task/file/interface/TDD/acceptance 执行顺序；focused review C1–C5 为后续窄 authority |
 | Competition Core Demo closeout | **Accepted / Frozen** | Demo-specific Runtime/E2E closure：browser Golden Path + same immutable ExperimentVersion recovery replay + exact-authority CI；不构成 Slice 2 production acceptance |
-| P1 Result-Aware Experiment Iteration Design | **Approved / Current** | 比赛后第一个 P1 candidate；focused design review 已 APPROVE；授权 detailed implementation planning，不直接授权 Product implementation |
+| P1 Result-Aware Experiment Iteration Design | **Approved / Current** | focused design review 已 APPROVE；P1-RESULT-001 CLOSED；作为当前 P1 设计 authority |
+| P1 Result-Aware Detailed Implementation Plan | **Approved / Current** | focused plan review APPROVE；P1-PLAN-001 CLOSED；正式授权按计划实施 P1-A/B |
 | Master Roadmap v0.2.1 | Historical frozen dependency | 仅用于历史 WP0 dependency verification |
 | WP0 Foundation v0.3.1 | Completed / Historical Accepted Execution Plan | WP0 已完成；不再标记 Ready for Execution |
 
@@ -108,8 +109,10 @@ Slice-specific detailed plans must record their exact planning baseline commit a
 - P1 Result-Aware Iteration Design: **APPROVED / CURRENT**
 - P1 Result-Aware Iteration design doc: `docs/superpowers/specs/2026-09-20-labpilot-p1-result-aware-iteration-design.md`
 - P1 Result-Aware Iteration focused design review: **APPROVE**; P1-RESULT-001 CLOSED; direct regressions NONE
-- P1 Result-Aware Iteration detailed implementation planning: **AUTHORIZED**
-- P1 Result-Aware Iteration Product implementation: **NOT AUTHORIZED pending approved detailed plan**
+- P1 Result-Aware Iteration detailed implementation plan: **APPROVED / CURRENT**
+- P1 Result-Aware Iteration plan doc: `docs/superpowers/plans/2026-09-20-labpilot-p1-result-aware-iteration.md`
+- P1 Result-Aware Iteration focused plan review: **APPROVE**; P1-PLAN-001 CLOSED; direct regressions NONE
+- P1 Result-Aware Iteration Product implementation: **AUTHORIZED under approved detailed plan**
 
 Under Sequencing Amendment v0.3.1, the bounded Slice 2 MVP closeout is sufficient to unlock Slice 3. It does not retroactively complete the deferred Slice 2 production-hardening campaign or establish Slice 2 production acceptance.
 
@@ -119,15 +122,16 @@ The Git commit containing this status transition is the exact Slice3 implementat
 
 The competition workstream is closed. Its Runtime/E2E evidence and UI are frozen unless a concrete regression or demo-critical defect is demonstrated.
 
-The next authorized remaining-V1 action is **detailed planning only**:
+The detailed plan is approved. The next authorized remaining-V1 action is **implementation under the approved task sequence**:
 
 ```text
 Approved P1 Result-Aware Experiment Iteration Design
-→ detailed implementation plan
-→ focused plan review
-→ resolve only blocking findings/direct regressions
-→ approve plan
-→ implementation authorization
+→ approved detailed implementation plan
+→ P1-A Tasks 1–4
+→ focused P1-A implementation review
+→ P1-B Tasks 5–7
+→ focused P1-B implementation review
+→ final regression/full-CI gate
 ```
 
 Current proposed design:
@@ -142,7 +146,7 @@ exact BatchSummaryRevision
 → next immutable ExperimentVersion in the same Experiment
 ```
 
-Focused design review is closed. Do **not** begin Product implementation until the detailed implementation plan is approved after focused plan review.
+Focused design and focused plan review are closed. Product implementation is authorized only within the approved P1-A/B task sequence and review gates.
 
 Explicitly not authorized in this first P1 tranche:
 
