@@ -1,7 +1,7 @@
 # LabPilot P1 Result-Aware Experiment Iteration Detailed Implementation Plan
 
 **Date:** 2026-09-20  
-**Status:** Proposed / Focused Plan Review Pending  
+**Status:** Approved / Current  
 **Planning baseline:** `eb09844618ae57a3be6400a1b2d0b5de7a88baa5`  
 **Approved design:** `docs/superpowers/specs/2026-09-20-labpilot-p1-result-aware-iteration-design.md`  
 **Design focused re-review:** `docs/superpowers/specs/2026-09-20-labpilot-p1-result-aware-iteration-focused-rereview.md`
@@ -1160,4 +1160,4 @@ Focused plan review should check:
 6. whether the proposed integration acceptance is sufficient to prove the two-iteration closure without live LLM nondeterminism;
 7. whether optional Follow-up ports preserve every existing initial-Agent construction path while still failing closed for Follow-up creation/advance when the ports are absent.
 
-Until focused plan review returns APPROVE, Product implementation is not authorized.
+Focused plan review is closed with APPROVE. This plan is now implementation authority for P1-A/B; implementation must follow the task order and review gates defined here.
