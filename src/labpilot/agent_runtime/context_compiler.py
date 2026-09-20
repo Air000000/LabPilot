@@ -68,7 +68,7 @@ class ContextCompiler:
         output_schema_value = _canonical_value(output_schema)
         output_schema_hash = namespaced_sha256(_OUTPUT_SCHEMA_NAMESPACE, output_schema_value)
         tools = [_tool_contract(definition) for definition in definitions]
-        system_value: CanonicalValue = {
+        system_value: dict[str, CanonicalValue] = {
             "instruction": (
                 "Return exactly one JSON object matching agent_decision_schema. "
                 "Do not include rationale, reasoning, or chain_of_thought."
