@@ -564,16 +564,39 @@ Create:
 
 - `tests/integration/api/test_result_aware_agent_api.py`
 
-### Service constructor
+### Service constructor and initial-path compatibility
 
-Inject:
+Add the two Follow-up ports as **optional keyword-only dependencies with defaults of `None`**:
 
-- `FollowUpRunStore`;
-- `ResultContextSource`.
+```python
+AgentApplicationService(
+    ...,
+    follow_up_run_store: FollowUpRunStore | None = None,
+    result_context_source: ResultContextSource | None = None,
+)
+```
 
-In production, the same `SqlResultAwareAgentAdapter` instance may satisfy both.
+This is a compatibility requirement, not a convenience:
+
+- existing initial AgentRun construction must remain valid without either Follow-up port;
+- `create_run()`, initial `advance_run()`, Tool use, Human Input, initial `propose`, and persisted initial-proposal replay must not consult these ports;
+- `create_follow_up_run()` must fail closed with a stable error such as `follow_up_runtime_unconfigured` unless **both** ports are configured, so the service cannot persist a Follow-up AgentRun that it is structurally unable to advance;
+- `advance_run()` for a persisted run with non-null `source_batch_summary_revision_id` must also fail closed with the same stable error if `ResultContextSource` is unavailable;
+- `advance_run()` for an initial run with null `source_batch_summary_revision_id` must remain independent of the Follow-up ports.
+
+In production `main.py`, configure both ports with the same concrete `SqlResultAwareAgentAdapter` instance.
 
 Keep `SqlAgentRepository` instantiated once in `main.py` so the adapter and Agent service share its transaction-aware insert helper.
+
+Existing direct construction sites are intentionally **not required to add dummy Follow-up dependencies** because the defaults preserve the pre-P1 constructor contract. The implementation must explicitly regression-check the current construction sites in:
+
+- `tests/unit/agent_runtime/test_agent_service.py`;
+- `tests/integration/agent_runtime/test_agent_service.py`;
+- `tests/integration/api/test_slice1_api.py`;
+- `tests/integration/slice1/test_proposal_loop.py`;
+- `tests/integration/slice1/test_opencode_go_smoke.py` (constructor/import compatibility; external execution remains opt-in).
+
+Add a focused unit regression that constructs `AgentApplicationService` **without** either Follow-up port and proves the initial create/advance path still completes normally.
 
 ### New command
 
@@ -594,6 +617,7 @@ AgentApplicationService.create_follow_up_run(
 Behavior:
 
 - validate goal/budget exactly like initial creation;
+- require both Follow-up ports to be configured; otherwise fail closed before persistence with `follow_up_runtime_unconfigured`;
 - construct AgentRun with exact source summary ID;
 - call `FollowUpRunStore.create_bound_run()`;
 - no Tool factory resolution;
@@ -605,7 +629,11 @@ Behavior:
 In `advance_run()`:
 
 ```text
-assert provider egress
+load persisted AgentRun
+→ if source summary ID is non-null:
+     require ResultContextSource configured
+     else fail follow_up_runtime_unconfigured
+→ assert provider egress
 → describe bound RepositorySnapshot
 → if source summary ID:
      load exact ResultContext
@@ -613,6 +641,8 @@ assert provider egress
 → ContextCompiler.compile(... result_context=...)
 → existing persist-before-provider loop
 ```
+
+For an initial run, the null source-summary branch must skip all Follow-up-port checks and preserve the existing control flow/request semantics.
 
 Do not re-run latest-summary admission during advance.
 
@@ -930,13 +960,32 @@ This is the tranche-level semantic acceptance.
 Run focused architecture/data boundary regressions:
 
 ```bash
-uv run pytest   tests/architecture   tests/integration/db/test_migrations.py   tests/unit/agent_runtime   tests/integration/agent_runtime   tests/integration/experiments/test_proposal_service.py   tests/integration/api/test_slice1_api.py   tests/integration/api/test_result_aware_agent_api.py   tests/integration/test_batch_summary_service.py   tests/integration/p1/test_result_aware_iteration.py -q
+uv run pytest \
+  tests/architecture \
+  tests/integration/db/test_migrations.py \
+  tests/unit/agent_runtime \
+  tests/integration/agent_runtime \
+  tests/integration/experiments/test_proposal_service.py \
+  tests/integration/api/test_slice1_api.py \
+  tests/integration/slice1/test_proposal_loop.py \
+  tests/integration/api/test_result_aware_agent_api.py \
+  tests/integration/test_batch_summary_service.py \
+  tests/integration/p1/test_result_aware_iteration.py -q
+```
+
+Also run the OpenCode-Go test module in collection/normal mode so its constructor remains compatible; the external smoke itself may remain skipped unless explicitly enabled:
+
+```bash
+uv run pytest tests/integration/slice1/test_opencode_go_smoke.py -q
 ```
 
 Required assertions:
 
 - architecture dependency guard unchanged for `agent_runtime`;
+- `AgentApplicationService` can still be constructed with the pre-P1 argument set and no Follow-up ports;
 - existing initial Agent proposal loop still passes;
+- Slice 1 API path still passes without injecting dummy Follow-up ports;
+- OpenCode-Go smoke module still constructs the service with the existing argument set when enabled;
 - Result Plane summary tests still pass;
 - migration head is 0013;
 - local-only remote provider remains blocked;
@@ -980,6 +1029,7 @@ source_project_mismatch
 source_snapshot_not_clean
 source_snapshot_mismatch
 result_context_too_large
+follow_up_runtime_unconfigured
 ```
 
 Do not expose raw SQL/constraint errors.
@@ -1107,6 +1157,7 @@ Focused plan review should check:
 3. whether ResultContext can safely use the pinned BatchSummaryRevision JSON plus Trial conditions without re-querying raw metric/artifact evidence;
 4. whether the 128 KiB ResultContext bound is reasonable under the existing 256 KiB compiled-message cap;
 5. whether `create_follow_up_agent_revision()` correctly reuses existing Experiment row locking and origin-step replay semantics;
-6. whether the proposed integration acceptance is sufficient to prove the two-iteration closure without live LLM nondeterminism.
+6. whether the proposed integration acceptance is sufficient to prove the two-iteration closure without live LLM nondeterminism;
+7. whether optional Follow-up ports preserve every existing initial-Agent construction path while still failing closed for Follow-up creation/advance when the ports are absent.
 
 Until focused plan review returns APPROVE, Product implementation is not authorized.
