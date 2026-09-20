@@ -421,7 +421,7 @@ async def test_positive_repository_agent_proposal_approval_version_path(
         assert stored_verification is not None
         assert stored_verification.result_hash == verification.result.result_hash
         assert stored_verification.result_json == {
-            "profile": "slice1-v2",
+            "profile": "slice1-v3",
             "passed": True,
             "findings": [],
             "result_hash": verification.result.result_hash,

@@ -287,6 +287,21 @@ class ProposalApplicationService:
                 )
             return _revision_details(row)
 
+    async def get_verification(
+        self,
+        proposal_verification_id: UUID,
+    ) -> ProposalVerificationDetails:
+        async with self._session_context_factory() as session:
+            row = await self._repository.get_verification(
+                session,
+                proposal_verification_id,
+            )
+            if row is None:
+                raise ProposalNotFound(
+                    f"proposal verification not found: {proposal_verification_id}"
+                )
+            return _verification_details(row)
+
     async def get_version(
         self,
         experiment_version_id: UUID,

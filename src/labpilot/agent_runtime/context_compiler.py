@@ -70,6 +70,53 @@ class ContextCompiler:
                 "Return exactly one JSON object matching agent_decision_schema. "
                 "Do not include rationale, reasoning, or chain_of_thought."
             ),
+            "decision_policy": [
+                (
+                    "Use repository tools to gather enough evidence before proposing. "
+                    "A proposal must be grounded in repository facts rather than plausible guesses."
+                ),
+                (
+                    "After inspecting the repository tree, read relevant repository guidance "
+                    "such as README files, AGENTS files, CONTRIBUTING files, or documentation "
+                    "entry points when present, together with executable or configuration source "
+                    "needed to confirm the experiment contract."
+                ),
+                (
+                    "Treat repository evidence as authoritative. Preserve exact paths, "
+                    "URI schemes, stable identities, artifact and metric names, parameter "
+                    "values, seeds, environment requirements, validation subjects, and "
+                    "template placeholder syntax when the repository specifies them."
+                ),
+                (
+                    "Do not invent, normalize, or silently replace required proposal values "
+                    "when repository evidence is available. If required fields remain "
+                    "unsupported or conflicting after reasonable inspection, "
+                    "request_human_input instead of guessing."
+                ),
+            ],
+            "proposal_contract": [
+                "metrics[].source_artifact references artifacts[].name, not relative_path.",
+                (
+                    "artifact_exists.subject references an artifact name. metric_finite, "
+                    "metric_gte, and metric_lte subjects reference metric names. Every "
+                    "required artifact needs artifact_exists coverage."
+                ),
+                (
+                    "Execution seeds belong in seeds. Do not duplicate the execution seed as a "
+                    "parameter_matrix dimension."
+                ),
+                (
+                    "train_argv_template placeholders are standalone tokens. Use {parameter:<key>} "
+                    "for every parameter_matrix key and consume every parameter dimension. Use "
+                    "{seed} for the execution seed, {dataset} for the dataset argument, and "
+                    "{output_dir} for the artifact output directory. Do not invent alternate "
+                    "placeholder syntax."
+                ),
+                (
+                    "Set eval_entrypoint only when repository evidence identifies a separate "
+                    "evaluation entrypoint; otherwise use null."
+                ),
+            ],
             "agent_decision_schema": output_schema_value,
             "tools": tools,
         }

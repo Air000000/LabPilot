@@ -29,6 +29,7 @@ verify_effective_service() {
   [[ "$(systemd_value UMask)" == 0077 ]] || fail "loaded UMask mismatch"
   [[ "$(systemd_value RuntimeDirectoryPreserve)" == restart ]] || fail "loaded RuntimeDirectoryPreserve mismatch"
   [[ "$(systemd_value NoNewPrivileges)" == yes ]] || fail "loaded NoNewPrivileges mismatch"
+  [[ "$(systemd_value AmbientCapabilities)" == cap_setuid ]] || fail "loaded AmbientCapabilities mismatch"
   [[ "$(systemd_value RestrictAddressFamilies)" == AF_UNIX ]] || fail "loaded address family mismatch"
   exec_start=$(systemd_value ExecStart)
   [[ "$exec_start" == *"/opt/labpilot-runner/app/.venv/bin/python -E -s -B -m labpilot.execution.runner_daemon --policy /etc/labpilot/runner-policy.json"* ]] || fail "loaded ExecStart mismatch"

@@ -50,6 +50,7 @@ _EXPECTED_SERVICE = {
     "RuntimeDirectoryPreserve": "restart",
     "Restart": "on-failure",
     "NoNewPrivileges": "yes",
+    "AmbientCapabilities": "cap_setuid",
     "RestrictAddressFamilies": "AF_UNIX",
 }
 _EXPECTED_EXEC_START = (

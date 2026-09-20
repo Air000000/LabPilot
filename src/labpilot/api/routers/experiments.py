@@ -107,6 +107,18 @@ async def verify_proposal_revision(
     )
 
 
+@router.get(
+    "/proposal-verifications/{proposal_verification_id}",
+    response_model=ProposalVerificationResponse,
+)
+async def get_proposal_verification(
+    proposal_verification_id: UUID,
+    service: Annotated[ProposalApplicationService, Depends(get_proposal_service)],
+) -> ProposalVerificationResponse:
+    details = await service.get_verification(proposal_verification_id)
+    return ProposalVerificationResponse.from_details(details)
+
+
 @router.post(
     "/proposal-revisions/{proposal_revision_id}/approve",
     response_model=ExperimentVersionResponse,

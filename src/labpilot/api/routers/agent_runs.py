@@ -9,6 +9,7 @@ from labpilot.api.errors import RequestDomainValidationError
 from labpilot.api.schemas.agent_runs import (
     AdvanceAgentRunRequest,
     AgentRunResponse,
+    AgentRunTraceResponse,
     CreateAgentRunRequest,
     HumanInputRequest,
 )
@@ -48,6 +49,18 @@ async def get_agent_run(
     service: Annotated[AgentApplicationService, Depends(get_agent_run_service)],
 ) -> AgentRunResponse:
     return AgentRunResponse.from_details(await service.get_run(agent_run_id))
+
+
+@router.get(
+    "/agent-runs/{agent_run_id}/trace",
+    response_model=AgentRunTraceResponse,
+)
+async def get_agent_trace(
+    agent_run_id: UUID,
+    service: Annotated[AgentApplicationService, Depends(get_agent_run_service)],
+) -> AgentRunTraceResponse:
+    details = await service.get_trace(agent_run_id)
+    return AgentRunTraceResponse.from_details(details)
 
 
 @router.post("/agent-runs/{agent_run_id}/advance", response_model=AgentRunResponse)

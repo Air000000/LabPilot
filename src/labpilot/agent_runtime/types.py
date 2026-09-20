@@ -197,3 +197,9 @@ class AgentStepDetails:
     decision_kind: str | None
     decision_json: Mapping[str, object] | None
     human_input_text: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class AgentRunTraceDetails:
+    run: AgentRunDetails
+    steps: tuple[AgentStepDetails, ...]

@@ -444,6 +444,57 @@ async def test_strict_dataset_without_identity_fails() -> None:
     assert "dataset_identity_required" in _codes(result)
 
 
+@pytest.mark.parametrize("device_requirement", ["cpu", "none / CPU"])
+async def test_device_requirement_must_use_null_or_cuda(
+    device_requirement: str,
+) -> None:
+    expectation = EnvironmentExpectation(
+        python_profile="python-3.12",
+        framework_requirements=(),
+        device_requirement=device_requirement,
+        cuda_requirement=None,
+    )
+
+    result = await _verify(
+        _payload(environment_expectation=expectation)
+    )
+
+    assert "device_requirement_invalid" in _codes(result)
+
+
+@pytest.mark.parametrize("cuda_requirement", ["none", "not a version"])
+async def test_cuda_requirement_must_be_null_or_valid_version(
+    cuda_requirement: str,
+) -> None:
+    expectation = EnvironmentExpectation(
+        python_profile="python-3.12",
+        framework_requirements=(),
+        device_requirement=None,
+        cuda_requirement=cuda_requirement,
+    )
+
+    result = await _verify(
+        _payload(environment_expectation=expectation)
+    )
+
+    assert "cuda_requirement_invalid" in _codes(result)
+
+
+async def test_valid_cuda_environment_expectation_passes() -> None:
+    expectation = EnvironmentExpectation(
+        python_profile="python-3.12",
+        framework_requirements=(),
+        device_requirement="cuda",
+        cuda_requirement="12.8",
+    )
+
+    result = await _verify(
+        _payload(environment_expectation=expectation)
+    )
+
+    assert result.passed is True
+
+
 async def test_artifact_names_must_be_unique() -> None:
     result = await _verify(
         _payload(
@@ -579,7 +630,7 @@ async def test_threshold_rule_does_not_replace_metric_finite_coverage() -> None:
     assert "metric_validation_missing" in _codes(result)
 
 
-async def test_verifier_profile_is_slice1_v2() -> None:
+async def test_verifier_profile_is_slice1_v3() -> None:
     result = await _verify(_payload())
 
-    assert result.profile == "slice1-v2"
+    assert result.profile == "slice1-v3"

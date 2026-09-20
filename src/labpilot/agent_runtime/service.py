@@ -27,6 +27,7 @@ from labpilot.agent_runtime.types import (
     AgentRunDetails,
     AgentRunStatus,
     AgentRuntimeError,
+    AgentRunTraceDetails,
     AgentStepDetails,
     HumanInputDecision,
     ProposeDecision,
@@ -402,6 +403,11 @@ class AgentApplicationService:
 
     async def get_run(self, agent_run_id: UUID) -> AgentRunDetails:
         return await self._require_run(agent_run_id)
+
+    async def get_trace(self, agent_run_id: UUID) -> AgentRunTraceDetails:
+        run = await self._require_run(agent_run_id)
+        steps = await self._repository.list_steps(agent_run_id)
+        return AgentRunTraceDetails(run=run, steps=steps)
 
     async def _history(
         self,

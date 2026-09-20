@@ -89,6 +89,7 @@ class ContentAddressedStore:
                 with os.fdopen(descriptor, "wb") as stream:
                     stream.write(value)
                     stream.flush()
+                    os.fchmod(stream.fileno(), 0o640)
                     os.fsync(stream.fileno())
                 os.replace(temp_path, final_path)
                 published = True
