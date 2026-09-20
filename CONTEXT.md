@@ -12,7 +12,7 @@ _Avoid_: treating every follow-up run as a new Experiment
 An immutable, human-approved experimental design inside an Experiment. A later version does not mutate or revoke earlier versions.
 
 **BatchSummaryRevision**:
-A versioned deterministic summary of one Batch after execution, validation, and result selection have settled sufficiently for summary generation.
+A persisted, versioned deterministic summary of one Batch after execution, validation, and result selection have settled sufficiently for summary generation. There is no separate publish state in the current domain; a persisted revision is already presentable, while "latest" means the highest persisted revision number for that Batch.
 
 **ResultContext**:
 A bounded deterministic read model pinned to one exact BatchSummaryRevision and its owning ExperimentVersion. It may include approved design facts, Trial conditions, selected eligible result evidence, exclusions, warnings, and aggregates; it does not turn raw logs or invalid metric values into scientific authority.
