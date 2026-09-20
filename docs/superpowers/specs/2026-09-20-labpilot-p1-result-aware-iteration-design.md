@@ -161,15 +161,21 @@ AgentRun
 - agent_run_id
 - project_id
 - repository_snapshot_id
-- bound_experiment_id?                 # null for initial planning runs
 - source_batch_summary_revision_id?    # null for initial planning runs
 - goal
 - existing budget/provider/state fields
 ```
 
-For P1-A/B, `bound_experiment_id` and `source_batch_summary_revision_id` are either both null or both present.
+Do not duplicate `bound_experiment_id` on AgentRun. The current schema already provides an immutable/restricted lineage:
 
-The public follow-up creation command should accept the exact source summary revision and derive the owning Experiment instead of trusting a caller-supplied Experiment ID.
+```text
+BatchSummaryRevision
+→ Batch
+→ ExperimentVersion
+→ Experiment
+```
+
+Those relationships are protected by foreign keys with `ON DELETE RESTRICT`. The public follow-up creation command therefore accepts the exact source summary revision and derives the owning Experiment instead of persisting or trusting a second Experiment identifier.
 
 Required creation checks:
 
@@ -189,7 +195,7 @@ After creation, the AgentRun remains pinned to the exact source summary revision
 
 ### 8.1 Contents
 
-The ResultContext builder should expose only bounded structured facts needed for next-iteration reasoning:
+The ResultContext builder should expose only bounded structured facts needed for next-iteration reasoning. The approved-design portion uses the exact canonical source ProposalPayload referenced by the source ExperimentVersion; a narrower hand-maintained projection would create a second proposal contract and make revision generation lossy.
 
 ```text
 source lineage
@@ -470,12 +476,16 @@ Do not mix controlled code modification, cross-Experiment history, UI redesign, 
 
 ## 18. Open review questions
 
-Focused review should challenge only material boundaries, especially:
+Focused review should challenge only material boundaries that remain unresolved after inspecting the current schema:
 
-1. whether `bound_experiment_id + source_batch_summary_revision_id` is the minimum sufficient durable provenance on AgentRun;
-2. whether requiring the source summary to be latest at Follow-up AgentRun creation is too strict or appropriately fail-closed;
-3. whether P1-A ResultContext should include the full source ProposalPayload or a narrower approved-design projection;
-4. whether same-RepositorySnapshot in P1-A/B is the right boundary before controlled code modification;
-5. whether any current DB/API ownership rule makes same-Experiment Agent Proposal revisioning unsafe.
+1. whether requiring the source summary to be latest at Follow-up AgentRun creation is too strict or appropriately fail-closed;
+2. whether any current service/transaction ownership rule makes same-Experiment Agent Proposal revisioning unsafe even though the domain schema already supports multiple ProposalRevisions and ExperimentVersions per Experiment;
+3. whether the proposed ResultContext evidence boundary is sufficient to prevent invalid/raw outputs from being promoted into scientific authority while still giving the Agent enough information to propose the next iteration.
 
-Until those are reviewed, implementation is not authorized.
+Already resolved by the current schema and therefore not open review questions:
+
+- persist only `source_batch_summary_revision_id` on AgentRun; derive Experiment through the restricted summary→batch→version→experiment lineage;
+- include the exact canonical source ProposalPayload in ResultContext;
+- keep the first P1-A/B acceptance path on the same RepositorySnapshot before any controlled-code-modification tranche.
+
+Until the remaining questions are reviewed, implementation is not authorized.
