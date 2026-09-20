@@ -40,7 +40,7 @@ class AgentRunRow(Base):
         ForeignKeyConstraint(
             ["source_batch_summary_revision_id"],
             ["batch_summary_revisions.batch_summary_revision_id"],
-            name="fk_agent_runs_source_summary_revision_id_batch_summary_revisions",
+            name="fk_agent_runs_source_summary_revision",
             ondelete="RESTRICT",
         ),
         PrimaryKeyConstraint("agent_run_id", name="pk_agent_runs"),
