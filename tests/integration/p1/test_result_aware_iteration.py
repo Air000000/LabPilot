@@ -93,7 +93,7 @@ async def _counts(system: object) -> tuple[int, int, int]:
 
 
 async def _mutate_raw_metric_after_summary(system: object) -> str:
-    raw_value = "0.01"
+    raw_value = "-12345.6789012345"
     database = system.database  # type: ignore[attr-defined]
     async with database.session() as session:
         metric = await session.scalar(
