@@ -14,6 +14,7 @@ from labpilot.agent_runtime.service import (
 from labpilot.api.actor import ServerConfiguredActorProvider
 from labpilot.api.app import create_app
 from labpilot.api.dependencies import ApplicationServices
+from labpilot.api.result_aware_agent_adapter import SqlResultAwareAgentAdapter
 from labpilot.context.content_store import ContentAddressedStore
 from labpilot.context.git_adapter import GitAdapter
 from labpilot.context.proposal_repository_adapter import ProposalRepositoryFactAdapter
@@ -79,8 +80,13 @@ else:
     provider = UnconfiguredModelProvider()
     model_name = "unconfigured"
 
+agent_repository = SqlAgentRepository(database.session)
+result_aware_agent = SqlResultAwareAgentAdapter(
+    database.session,
+    agent_repository=agent_repository,
+)
 agent_runs = AgentApplicationService(
-    repository=SqlAgentRepository(database.session),
+    repository=agent_repository,
     repository_source=repository_source,
     provider=provider,
     model_name=model_name,
@@ -88,6 +94,8 @@ agent_runs = AgentApplicationService(
     tool_service_factory=tool_service_for_snapshot,
     proposal_service=cast(AgentProposalService, proposals),
     data_egress_policy=settings.data_egress_policy,
+    follow_up_run_store=result_aware_agent,
+    result_context_source=result_aware_agent,
 )
 services = ApplicationServices(
     projects=ProjectApplicationService(database.session),

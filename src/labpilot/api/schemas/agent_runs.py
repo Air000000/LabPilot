@@ -31,6 +31,15 @@ class CreateAgentRunRequest(BaseModel):
     budget: AgentBudgetRequest
 
 
+class CreateFollowUpAgentRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_batch_summary_revision_id: UUID
+    repository_snapshot_id: UUID
+    goal: str
+    budget: AgentBudgetRequest
+
+
 class AdvanceAgentRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
