@@ -935,3 +935,147 @@ async def test_threshold_validation_rule_persists_and_reloads_canonically(
     assert row.payload_json["validation_rules"][-1]["threshold"] == "0.8"
     assert "threshold" not in row.payload_json["validation_rules"][0]
     assert reloaded.payload.validation_rules[-1].threshold == Decimal("0.8")
+
+
+async def _follow_up_revision(
+    system: _ProposalSystem,
+    *,
+    experiment_id: UUID,
+    origin_agent_step_id: UUID | None = None,
+    payload: ProposalPayload | None = None,
+    project_id: UUID = PROJECT_ID,
+):
+    return await system.service.create_follow_up_agent_revision(
+        context=_context(),
+        project_id=project_id,
+        experiment_id=experiment_id,
+        origin_agent_step_id=origin_agent_step_id or uuid4(),
+        payload=payload or _payload(system),
+    )
+
+
+@pytest.mark.integration
+async def test_follow_up_agent_revisions_reuse_experiment_and_sequence(
+    isolated_database_url: str,
+    tmp_path: Path,
+) -> None:
+    async with _proposal_system(isolated_database_url, tmp_path) as system:
+        initial = await _agent_revision(system)
+        experiments_before = await _table_count(system.database, "experiments")
+        second = await _follow_up_revision(system, experiment_id=initial.experiment_id)
+        third = await _follow_up_revision(system, experiment_id=initial.experiment_id)
+
+    assert initial.revision_number == 1
+    assert (second.experiment_id, second.revision_number) == (initial.experiment_id, 2)
+    assert (third.experiment_id, third.revision_number) == (initial.experiment_id, 3)
+    assert await _table_count(system.database, "experiments") == experiments_before
+
+
+@pytest.mark.integration
+async def test_follow_up_agent_revision_replay_is_exact_and_experiment_bound(
+    isolated_database_url: str,
+    tmp_path: Path,
+) -> None:
+    from labpilot.experiments.proposal_service import ProposalInvariantViolation
+
+    async with _proposal_system(isolated_database_url, tmp_path) as system:
+        initial = await _agent_revision(system)
+        origin = uuid4()
+        first = await _follow_up_revision(
+            system,
+            experiment_id=initial.experiment_id,
+            origin_agent_step_id=origin,
+        )
+        replay = await _follow_up_revision(
+            system,
+            experiment_id=initial.experiment_id,
+            origin_agent_step_id=origin,
+        )
+        with pytest.raises(ProposalInvariantViolation):
+            await _follow_up_revision(
+                system,
+                experiment_id=initial.experiment_id,
+                origin_agent_step_id=origin,
+                payload=_payload(system, goal="Changed semantics"),
+            )
+        other = await _agent_revision(system)
+        with pytest.raises(ProposalInvariantViolation):
+            await _follow_up_revision(
+                system,
+                experiment_id=other.experiment_id,
+                origin_agent_step_id=origin,
+            )
+
+    assert replay.proposal_revision_id == first.proposal_revision_id
+    assert replay.revision_number == 2
+
+
+@pytest.mark.integration
+async def test_follow_up_agent_revision_rejects_wrong_project_without_write(
+    isolated_database_url: str,
+    tmp_path: Path,
+) -> None:
+    from labpilot.experiments.proposal_service import ProposalInvariantViolation
+
+    async with _proposal_system(isolated_database_url, tmp_path) as system:
+        initial = await _agent_revision(system)
+        revisions_before = await _table_count(
+            system.database, "experiment_proposal_revisions"
+        )
+        with pytest.raises(ProposalInvariantViolation):
+            await _follow_up_revision(
+                system,
+                experiment_id=initial.experiment_id,
+                project_id=UUID("10000000-0000-4000-8000-000000000099"),
+            )
+
+    assert await _table_count(
+        system.database, "experiment_proposal_revisions"
+    ) == revisions_before
+
+
+@pytest.mark.integration
+async def test_concurrent_distinct_follow_up_agent_revisions_are_consecutive(
+    isolated_database_url: str,
+    tmp_path: Path,
+) -> None:
+    async with _proposal_system(isolated_database_url, tmp_path) as system:
+        initial = await _agent_revision(system)
+        revisions = await asyncio.gather(
+            _follow_up_revision(system, experiment_id=initial.experiment_id),
+            _follow_up_revision(system, experiment_id=initial.experiment_id),
+        )
+
+    assert {revision.experiment_id for revision in revisions} == {initial.experiment_id}
+    assert {revision.revision_number for revision in revisions} == {2, 3}
+    assert await _table_count(system.database, "experiments") == 1
+
+
+@pytest.mark.integration
+async def test_concurrent_same_follow_up_origin_recovers_one_winner(
+    isolated_database_url: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with _proposal_system(isolated_database_url, tmp_path) as system:
+        initial = await _agent_revision(system)
+        origin = uuid4()
+        _synchronize_concurrent_origin_inserts(system, monkeypatch)
+        revisions = await asyncio.gather(
+            _follow_up_revision(
+                system,
+                experiment_id=initial.experiment_id,
+                origin_agent_step_id=origin,
+            ),
+            _follow_up_revision(
+                system,
+                experiment_id=initial.experiment_id,
+                origin_agent_step_id=origin,
+            ),
+        )
+
+    assert len({revision.proposal_revision_id for revision in revisions}) == 1
+    assert {revision.revision_number for revision in revisions} == {2}
+    assert await _table_count(
+        system.database, "experiment_proposal_revisions"
+    ) == 2
