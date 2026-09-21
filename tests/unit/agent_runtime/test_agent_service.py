@@ -451,6 +451,7 @@ class MemoryProposalService:
         self.repository = repository
         self.calls: list[UUID] = []
         self.revisions: dict[UUID, Revision] = {}
+        self.follow_up_calls: list[tuple[UUID, UUID, UUID]] = []
         self.crash_after_first_create = False
 
     async def create_agent_revision(
@@ -472,6 +473,24 @@ class MemoryProposalService:
         if self.crash_after_first_create and len(self.calls) == 1:
             raise RuntimeError("simulated materialization crash")
         return revision
+
+    async def create_follow_up_agent_revision(
+        self, *, context, project_id, experiment_id, origin_agent_step_id, payload
+    ) -> Revision:
+        steps = await self.repository.list_steps(
+            next(
+                run_id
+                for run_id, steps in self.repository.steps.items()
+                if any(step.agent_step_id == origin_agent_step_id for step in steps)
+            )
+        )
+        assert (
+            next(step for step in steps if step.agent_step_id == origin_agent_step_id).outcome
+            == "succeeded"
+        )
+        self.follow_up_calls.append((project_id, experiment_id, origin_agent_step_id))
+        return self.revisions.setdefault(origin_agent_step_id, Revision(uuid4()))
+
 
 
 def _context() -> CommandContext:
@@ -1377,6 +1396,7 @@ async def test_propose_is_persisted_before_materialization_and_replays_after_cra
     assert len(provider.calls) == 1
     assert len(proposals.calls) == 2
     assert proposals.calls[0] == proposals.calls[1]
+    assert proposals.follow_up_calls == []
 
 
 @pytest.mark.asyncio
@@ -1815,11 +1835,12 @@ async def test_remote_follow_up_receives_exact_context_and_stop_does_not_propose
 
 
 @pytest.mark.asyncio
-async def test_follow_up_propose_and_pending_replay_fail_closed() -> None:
+async def test_follow_up_propose_materializes_same_experiment_and_replays() -> None:
     descriptor = _descriptor()
     repository = MemoryAgentRepository()
     summary_id = uuid4()
-    source = MemoryResultContextSource(_result_context(descriptor, summary_id))
+    result_context = _result_context(descriptor, summary_id)
+    source = MemoryResultContextSource(result_context)
     store = MemoryFollowUpRunStore(repository)
     provider = ScriptedProvider([{"kind": "propose", "proposal": _proposal(descriptor)}])
     service, _, proposals = _follow_up_service(
@@ -1834,14 +1855,20 @@ async def test_follow_up_propose_and_pending_replay_fail_closed() -> None:
         budget=_budget(),
     )
 
-    failed = await service.advance_run(
+    completed = await service.advance_run(
         context=_context(),
         agent_run_id=run.agent_run_id,
         expected_row_version=run.row_version,
     )
-    assert failed.status == "failed"
-    assert failed.termination_reason == "follow_up_proposal_not_supported"
+    assert completed.status == "completed"
+    assert completed.termination_reason == "proposal_created"
     assert proposals.calls == []
+    assert len(proposals.follow_up_calls) == 1
+    project_id, experiment_id, step_id = proposals.follow_up_calls[0]
+    assert project_id == descriptor.project_id
+    assert experiment_id == result_context.experiment_id
+    assert step_id == repository.steps[run.agent_run_id][-1].agent_step_id
+    assert source.calls == [summary_id, summary_id]
 
     replay_run = await service.create_follow_up_run(
         context=_context(),
@@ -1876,11 +1903,50 @@ async def test_follow_up_propose_and_pending_replay_fail_closed() -> None:
         replay_run, status="running", next_step_ordinal=2, row_version=2
     )
 
-    replay_failed = await service.advance_run(
+    replay_completed = await service.advance_run(
         context=_context(),
         agent_run_id=replay_run.agent_run_id,
         expected_row_version=2,
     )
-    assert replay_failed.status == "failed"
-    assert replay_failed.termination_reason == "follow_up_proposal_not_supported"
+    assert replay_completed.status == "completed"
+    assert replay_completed.termination_reason == "proposal_created"
     assert proposals.calls == []
+    assert proposals.follow_up_calls == [
+        (descriptor.project_id, result_context.experiment_id, step_id),
+        (descriptor.project_id, result_context.experiment_id, replay_step.agent_step_id)
+    ]
+    assert source.calls == [summary_id, summary_id, summary_id]
+
+
+@pytest.mark.asyncio
+async def test_follow_up_propose_rejects_snapshot_mismatch_without_initial_fallback() -> None:
+    descriptor = _descriptor()
+    repository = MemoryAgentRepository()
+    summary_id = uuid4()
+    source = MemoryResultContextSource(_result_context(descriptor, summary_id))
+    store = MemoryFollowUpRunStore(repository)
+    proposal = _proposal(descriptor)
+    proposal["repository_snapshot_id"] = str(uuid4())
+    provider = ScriptedProvider([{"kind": "propose", "proposal": proposal}])
+    service, _, proposals = _follow_up_service(
+        repository, descriptor, provider, store=store, source=source
+    )
+    run = await service.create_follow_up_run(
+        context=_context(),
+        project_id=descriptor.project_id,
+        source_batch_summary_revision_id=summary_id,
+        repository_snapshot_id=descriptor.repository_snapshot_id,
+        goal="follow up",
+        budget=_budget(),
+    )
+
+    failed = await service.advance_run(
+        context=_context(),
+        agent_run_id=run.agent_run_id,
+        expected_row_version=run.row_version,
+    )
+
+    assert failed.status == "failed"
+    assert failed.termination_reason == "follow_up_proposal_snapshot_mismatch"
+    assert proposals.calls == []
+    assert proposals.follow_up_calls == []

@@ -8,7 +8,7 @@ from pathlib import Path
 from uuid import UUID
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, select, text
 from tests.integration.context.test_repository_snapshot import _seed_capture_service
 from tests.integration.db_helpers import upgrade_database_to_head
 from tests.integration.experiments.test_proposal_service import (
@@ -17,17 +17,26 @@ from tests.integration.experiments.test_proposal_service import (
     _payload,
     _proposal_system,
 )
+from tests.integration.test_batch_summary_service import _process
+from tests.integration.test_result_processing_service import _seed_result_attempt
 
 from labpilot.agent_runtime.context_compiler import ContextCompiler
 from labpilot.agent_runtime.provider import ModelRequest, ModelResponse, ProviderError
 from labpilot.agent_runtime.repository import SqlAgentRepository
 from labpilot.agent_runtime.service import AgentApplicationService, AgentRuntimeError
 from labpilot.agent_runtime.types import AgentBudget
+from labpilot.api.result_aware_agent_adapter import SqlResultAwareAgentAdapter
 from labpilot.common.commands import CommandActor, CommandContext
 from labpilot.context.content_store import ContentAddressedStore
 from labpilot.context.git_adapter import GitAdapter
 from labpilot.context.repository_source import RepositorySnapshotSourceService
 from labpilot.context.repository_types import CaptureRepositorySnapshot
+from labpilot.coordinator.execution_adapters import VersionExecutionSemanticsAdapter
+from labpilot.execution.models import BatchRow
+from labpilot.execution.trial_outcome import TrialExecutionOutcomeService
+from labpilot.experiments.proposal_models import ProposalRevisionRow
+from labpilot.results_validation.models import BatchSummaryRevisionRow
+from labpilot.results_validation.summary_service import BatchSummaryService
 from labpilot.tools_policy.repository import SqlToolRepository
 from labpilot.tools_policy.repository_tools import repository_tool_definitions
 from labpilot.tools_policy.service import ToolApplicationService
@@ -107,6 +116,13 @@ class CrashAfterCreateProposalService:
     async def create_agent_revision(self, **kwargs):
         self.calls += 1
         result = await self.service.create_agent_revision(**kwargs)
+        if self.calls == 1:
+            raise RuntimeError("crash after committed ProposalRevision")
+        return result
+
+    async def create_follow_up_agent_revision(self, **kwargs):
+        self.calls += 1
+        result = await self.service.create_follow_up_agent_revision(**kwargs)
         if self.calls == 1:
             raise RuntimeError("crash after committed ProposalRevision")
         return result
@@ -611,3 +627,112 @@ async def test_concurrent_same_version_has_one_model_call_and_one_conflict(
 
         assert completed.status == "completed"
         assert len(provider.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_follow_up_proposal_crash_replay_keeps_same_r2(
+    isolated_database_url: str, tmp_path: Path
+) -> None:
+    async with _seed_result_attempt(isolated_database_url, tmp_path) as (
+        system,
+        batch_id,
+        _trial_id,
+        attempt_id,
+        _workspace,
+    ):
+        await _process(system.database, attempt_id)
+        outcomes = TrialExecutionOutcomeService(
+            system.database.session,
+            version_semantics=VersionExecutionSemanticsAdapter(system.database.session),
+        )
+        await BatchSummaryService(
+            system.database.session, trial_execution_outcome_service=outcomes
+        ).refresh_summary(batch_id)
+        async with system.database.session() as session:
+            batch = await session.get(BatchRow, batch_id)
+            summary = await session.scalar(
+                select(BatchSummaryRevisionRow)
+                .where(BatchSummaryRevisionRow.batch_id == batch_id)
+                .order_by(BatchSummaryRevisionRow.revision_number.desc())
+            )
+            source_revision = await session.scalar(
+                select(ProposalRevisionRow).order_by(ProposalRevisionRow.revision_number)
+            )
+        assert batch is not None and summary is not None and source_revision is not None
+
+        source = RepositorySnapshotSourceService(
+            system.database.session,
+            git_adapter=GitAdapter(git_executable=Path('/usr/bin/git'), timeout_seconds=2),
+            content_store=ContentAddressedStore(tmp_path / 'content'),
+        )
+        repository = SqlAgentRepository(system.database.session)
+        result_adapter = SqlResultAwareAgentAdapter(
+            system.database.session, agent_repository=repository
+        )
+        provider = ScriptedProvider(
+            [{'kind': 'propose', 'proposal': dict(source_revision.payload_json)}]
+        )
+        crashing = CrashAfterCreateProposalService(system.service)
+        tools = ToolApplicationService(
+            repository_tool_definitions(source, system.snapshot_id),
+            SqlToolRepository(system.database.session),
+        )
+        service = AgentApplicationService(
+            repository=repository,
+            repository_source=source,
+            provider=provider,
+            model_name='test-model',
+            context_compiler=ContextCompiler(),
+            tool_service_factory=_single_snapshot_tool_factory(system.snapshot_id, tools),
+            proposal_service=crashing,
+            data_egress_policy='local_only',
+            follow_up_run_store=result_adapter,
+            result_context_source=result_adapter,
+        )
+        run = await service.create_follow_up_run(
+            context=_context(),
+            project_id=batch.project_id,
+            source_batch_summary_revision_id=summary.batch_summary_revision_id,
+            repository_snapshot_id=system.snapshot_id,
+            goal='propose the next revision',
+            budget=_budget(),
+        )
+
+        with pytest.raises(RuntimeError, match='crash after committed'):
+            await service.advance_run(
+                context=_context(),
+                agent_run_id=run.agent_run_id,
+                expected_row_version=run.row_version,
+            )
+        after_crash = await service.get_run(run.agent_run_id)
+        assert after_crash.produced_proposal_revision_id is None
+        assert after_crash.status == 'running'
+
+        async with system.database.session() as session:
+            revisions_after_crash = (
+                await session.scalars(
+                    select(ProposalRevisionRow).order_by(ProposalRevisionRow.revision_number)
+                )
+            ).all()
+        assert len(revisions_after_crash) == 2
+        assert revisions_after_crash[1].experiment_id == revisions_after_crash[0].experiment_id
+        assert revisions_after_crash[1].revision_number == 2
+
+        completed = await service.advance_run(
+            context=_context(),
+            agent_run_id=run.agent_run_id,
+            expected_row_version=after_crash.row_version,
+        )
+
+    assert completed.status == 'completed'
+    assert completed.termination_reason == 'proposal_created'
+    assert completed.produced_proposal_revision_id == revisions_after_crash[1].proposal_revision_id
+    assert len(provider.calls) == 1
+    assert str(summary.batch_summary_revision_id) in str(provider.calls[0].messages)
+    async with system.database.session() as session:
+        revisions_after_replay = (
+            await session.scalars(
+                select(ProposalRevisionRow).order_by(ProposalRevisionRow.revision_number)
+            )
+        ).all()
+    assert [revision.revision_number for revision in revisions_after_replay] == [1, 2]

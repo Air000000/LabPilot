@@ -26,9 +26,11 @@ from labpilot.execution.models import BatchRow
 from labpilot.execution.trial_outcome import TrialExecutionOutcomeService
 from labpilot.experiments.project_service import ProjectApplicationService
 from labpilot.experiments.proposal_models import (
+    DesignDecisionRow,
     ExperimentRow,
     ExperimentVersionRow,
     ProposalRevisionRow,
+    ProposalVerificationRow,
 )
 from labpilot.results_validation.models import BatchSummaryRevisionRow
 from labpilot.tools_policy.repository import SqlToolRepository
@@ -133,6 +135,17 @@ async def _counts(system: object) -> tuple[int, int, int, int]:
     return tuple(values)  # type: ignore[return-value]
 
 
+async def _governance_counts(system: object) -> tuple[int, int]:
+    database = system.database  # type: ignore[attr-defined]
+    async with database.session() as session:
+        values = []
+        for row in (ProposalVerificationRow, DesignDecisionRow):
+            value = await session.scalar(select(func.count()).select_from(row))
+            assert value is not None
+            values.append(value)
+    return tuple(values)  # type: ignore[return-value]
+
+
 @pytest.mark.asyncio
 async def test_follow_up_api_binds_exact_summary_context_and_stops_without_writes(
     isolated_database_url: str, tmp_path: Path
@@ -190,7 +203,7 @@ async def _source_proposal(system: object) -> dict[str, object]:
 
 
 @pytest.mark.asyncio
-async def test_follow_up_api_propose_fails_closed_without_new_domain_rows(
+async def test_follow_up_api_propose_creates_same_experiment_revision(
     isolated_database_url: str, tmp_path: Path
 ) -> None:
     async with _seed_result_attempt(isolated_database_url, tmp_path) as (
@@ -221,6 +234,7 @@ async def test_follow_up_api_propose_fails_closed_without_new_domain_rows(
             assert created.status_code == 201
             run = created.json()
             counts_before = await _counts(system)
+            governance_before = await _governance_counts(system)
 
             advanced = await client.post(
                 f"/agent-runs/{run['agent_run_id']}/advance",
@@ -228,6 +242,17 @@ async def test_follow_up_api_propose_fails_closed_without_new_domain_rows(
             )
 
     assert advanced.status_code == 200
-    assert advanced.json()["status"] == "failed"
-    assert advanced.json()["termination_reason"] == "follow_up_proposal_not_supported"
-    assert await _counts(system) == counts_before
+    assert advanced.json()["status"] == "completed"
+    assert advanced.json()["termination_reason"] == "proposal_created"
+    counts_after = await _counts(system)
+    assert counts_after == (counts_before[0] + 1, *counts_before[1:])
+    async with system.database.session() as session:  # type: ignore[attr-defined]
+        revisions = (
+            await session.scalars(
+                select(ProposalRevisionRow).order_by(ProposalRevisionRow.revision_number)
+            )
+        ).all()
+    assert len(revisions) == 2
+    assert revisions[1].experiment_id == revisions[0].experiment_id
+    assert revisions[1].revision_number == revisions[0].revision_number + 1
+    assert await _governance_counts(system) == governance_before

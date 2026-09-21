@@ -86,6 +86,16 @@ class AgentProposalService(Protocol):
         payload: ProposalPayload,
     ) -> ProposalRevisionResult: ...
 
+    async def create_follow_up_agent_revision(
+        self,
+        *,
+        context: CommandContext,
+        project_id: UUID,
+        experiment_id: UUID,
+        origin_agent_step_id: UUID,
+        payload: ProposalPayload,
+    ) -> ProposalRevisionResult: ...
+
 
 class AgentApplicationService:
     def __init__(
@@ -513,25 +523,38 @@ class AgentApplicationService:
         step: AgentStepDetails,
         decision: ProposeDecision | None = None,
     ) -> AgentRunDetails:
-        if run.source_batch_summary_revision_id is not None:
-            return await self._repository.update_run_state(
-                run.agent_run_id,
-                expected_row_version=run.row_version,
-                status="failed",
-                termination_reason="follow_up_proposal_not_supported",
-            )
         if decision is None:
             assert step.decision_json is not None
             parsed = self._decision_adapter.validate_python(step.decision_json)
             if not isinstance(parsed, ProposeDecision):
                 raise AgentRuntimeError("proposal_replay_invalid")
             decision = parsed
-        revision = await self._proposals.create_agent_revision(
-            context=context,
-            project_id=run.project_id,
-            origin_agent_step_id=step.agent_step_id,
-            payload=decision.proposal,
-        )
+        if run.source_batch_summary_revision_id is None:
+            revision = await self._proposals.create_agent_revision(
+                context=context,
+                project_id=run.project_id,
+                origin_agent_step_id=step.agent_step_id,
+                payload=decision.proposal,
+            )
+        else:
+            if decision.proposal.repository_snapshot_id != run.repository_snapshot_id:
+                return await self._repository.update_run_state(
+                    run.agent_run_id,
+                    expected_row_version=run.row_version,
+                    status="failed",
+                    termination_reason="follow_up_proposal_snapshot_mismatch",
+                )
+            assert self._result_context_source is not None
+            result_context = await self._result_context_source.load(
+                run.source_batch_summary_revision_id
+            )
+            revision = await self._proposals.create_follow_up_agent_revision(
+                context=context,
+                project_id=run.project_id,
+                experiment_id=result_context.experiment_id,
+                origin_agent_step_id=step.agent_step_id,
+                payload=decision.proposal,
+            )
         completed = await self._repository.update_run_state(
             run.agent_run_id,
             expected_row_version=run.row_version,
