@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from decimal import Decimal
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -27,7 +28,7 @@ from labpilot.experiments.proposal_models import (
     ProposalRevisionRow,
     ProposalVerificationRow,
 )
-from labpilot.results_validation.models import ValidationReportRow
+from labpilot.results_validation.models import MetricObservationRow, ValidationReportRow
 
 pytestmark = pytest.mark.integration
 
@@ -91,6 +92,19 @@ async def _counts(system: object) -> tuple[int, int, int]:
     return tuple(values)  # type: ignore[return-value]
 
 
+async def _mutate_raw_metric_after_summary(system: object) -> str:
+    raw_value = "0.01"
+    database = system.database  # type: ignore[attr-defined]
+    async with database.session() as session:
+        metric = await session.scalar(
+            select(MetricObservationRow).order_by(MetricObservationRow.created_at)
+        )
+        assert metric is not None
+        metric.numeric_value = Decimal(raw_value)
+        await session.commit()
+    return raw_value
+
+
 @pytest.mark.asyncio
 async def test_result_aware_two_iteration_closure(
     isolated_database_url: str, tmp_path: Path
@@ -108,6 +122,7 @@ async def test_result_aware_two_iteration_closure(
         await _process(system.database, attempt_id)
         excluded_trial_id = await _add_excluded_trial(system, batch_id, attempt_id)
         summary_id, project_id = await _summary_id(system, batch_id)
+        raw_metric_after_summary = await _mutate_raw_metric_after_summary(system)
         async with system.database.session() as session:
             batch = await session.get(BatchRow, batch_id)
             assert batch is not None
@@ -174,6 +189,7 @@ async def test_result_aware_two_iteration_closure(
             for item in result_context['trials']
         )
         assert _SENTINEL not in provider.calls[0].messages[1]['content']
+        assert raw_metric_after_summary not in provider.calls[0].messages[1]['content']
 
         async with system.database.session() as session:
             r2 = await session.get(ProposalRevisionRow, r2_id)
