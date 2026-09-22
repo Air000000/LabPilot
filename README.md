@@ -8,7 +8,7 @@ LabPilot starts from a practical research problem: as experiments accumulate, th
 
 The goal is to make that research trajectory explicit and durable. LabPilot persists proposal revisions, approvals, immutable experiment versions, execution identities, physical attempts, artifacts, metrics, validations, and formal result selections so that an experiment can be traced from its research goal to its final result.
 
-The Agent participates on top of that lineage: it can inspect bounded repository context, incorporate prior tool results and human feedback, and help revise the next experiment proposal. The runtime and recovery mechanisms exist to make that assistance safe and reproducible rather than to turn the model into an unrestricted source of execution truth.
+The Agent participates on top of that lineage: it can inspect bounded repository context, incorporate prior tool results and human feedback, and—after a Batch closes—reason from an exact persisted result summary to help revise the next experiment proposal. The runtime and recovery mechanisms exist to make that assistance safe and reproducible rather than to turn the model into an unrestricted source of execution truth.
 
 ```text
 Research Goal
@@ -23,7 +23,9 @@ Research Goal
   -> Artifact / Metric / Validation
   -> Result Selection
   -> Batch Summary
-  -> Evidence for the next experiment iteration
+  -> Exact ResultContext
+  -> Follow-up AgentRun
+  -> Stop | next Proposal Revision in the same Experiment
 ```
 
 ## Why LabPilot
@@ -77,8 +79,12 @@ flowchart LR
     Metric --> Validation[Deterministic Validation]
     Validation --> Selection[Result Selection]
     Selection --> Summary[Batch Summary]
-    Summary --> Next[Next Experiment Iteration]
-    Next --> Goal
+    Summary --> ResultCtx[Exact ResultContext]
+    ResultCtx --> FollowAgent[Follow-up AgentRun]
+    FollowAgent --> FollowDecision{Stop / Human Input / Proposal}
+    FollowDecision --> FollowStop[Stop]
+    FollowDecision --> FollowHuman[Request Human Input]
+    FollowDecision --> Proposal
 ```
 
 ## Core capabilities
@@ -126,6 +132,8 @@ Tool Call | Request Human Input | Proposal | Stop
 ```
 
 This lets the Agent inspect evidence and help form the next proposal while keeping model authority explicit and every transition auditable.
+
+After a Batch summary is persisted, LabPilot can start a **Follow-up AgentRun** pinned to that exact `BatchSummaryRevision`. The model receives a bounded deterministic `ResultContext` containing the source experiment/version identities, Trial conditions, selected valid evidence, exclusions, warnings, and aggregates. A follow-up Proposal is created as the next `ProposalRevision` in the **same Experiment**, but it still must pass the existing deterministic verification and explicit human-approval path before a new `ExperimentVersion` exists. The Agent does not automatically approve the proposal or create/start the next Batch.
 
 ### 3. Reliable long-running physical execution
 
@@ -179,12 +187,13 @@ Runtime Events and SSE-backed read paths provide traceability and replay across 
 | Launch intent before Runner launch | Gives recovery logic a durable fact to reconcile after crashes or uncertain external outcomes. |
 | Stable execution identity | Lets recovery refer to the same physical execution instead of accidentally creating a new one. |
 | Deterministic Result Validation | The formal scientific result should be reproducible and auditable instead of depending on a free-form LLM judgment. |
+| Exact result-context pinning | A Follow-up AgentRun reasons from one exact persisted BatchSummaryRevision rather than mutable latest/raw result state. |
 
 ## Runtime components
 
 - **FastAPI control plane** - experiment, proposal, execution, query, and event APIs.
 - **PostgreSQL** - authoritative experiment lineage, identities, command receipts, events, and result records.
-- **Bounded Agent Runtime** - repository-aware proposal iteration under explicit tool and budget constraints.
+- **Bounded Agent Runtime** - repository-aware and result-aware proposal iteration under explicit tool, budget, provenance, and approval constraints.
 - **Coordinator** - preparation, admission, execution control, recovery, cancellation, and reconciliation.
 - **Runner** - isolated physical-process boundary for real training workloads.
 - **Repository observation layer** - bounded, read-only repository access used by the Agent Harness.
@@ -247,6 +256,7 @@ The current core is not intended to be:
 - an unrestricted autonomous research agent;
 - a generic workflow engine;
 - a complete experiment-tracking UI or scientific notebook replacement;
+- an automatic self-running next-experiment loop that bypasses verification or human approval;
 - a claim of production-scale horizontal scheduling or global exactly-once semantics.
 
 Those are separate product and scaling problems. V1 first establishes a trustworthy experiment lineage and the invariants required for an AI Agent to participate in that lineage without making it less reliable.
