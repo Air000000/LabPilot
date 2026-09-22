@@ -20,7 +20,6 @@ from labpilot.agent_runtime.types import AgentRunDetails, AgentRuntimeError
 from labpilot.api.result_aware_agent_adapter import SqlResultAwareAgentAdapter
 from labpilot.context.models import RepositorySnapshotRow
 from labpilot.coordinator.execution_adapters import VersionExecutionSemanticsAdapter
-from labpilot.db.uow import UnitOfWork
 from labpilot.execution.models import BatchRow
 from labpilot.execution.trial_outcome import TrialExecutionOutcomeService
 from labpilot.experiments.proposal_models import ExperimentVersionRow
@@ -145,7 +144,9 @@ async def test_missing_and_stale_summary_write_no_follow_up_run(
 
 @pytest.mark.integration
 async def test_batch_lock_linearizes_refresh_before_follow_up(
-    isolated_database_url: str, tmp_path: Path
+    isolated_database_url: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async with _seed_result_attempt(isolated_database_url, tmp_path) as (
         system,
@@ -158,18 +159,25 @@ async def test_batch_lock_linearizes_refresh_before_follow_up(
         await _refresh(system, batch_id)
         summary, batch, version = await _state(system, batch_id)
         await _change_metric(system)
-        async with UnitOfWork(system.database.session) as lock:
-            await lock.session.scalar(
-                select(BatchRow).where(BatchRow.batch_id == batch_id).with_for_update()
-            )
-            refresh_task = asyncio.create_task(_refresh(system, batch_id))
-            await asyncio.sleep(0.05)
-            follow_up_task = asyncio.create_task(
-                _adapter(system).create_bound_run(_run(summary, batch, version))
-            )
-            await asyncio.sleep(0.05)
-            assert not refresh_task.done() and not follow_up_task.done()
-            await lock.commit()
+        summary_service = importlib.import_module("labpilot.results_validation.summary_service")
+        original_build_state = summary_service._build_state
+        refresh_has_batch_lock = asyncio.Event()
+        allow_refresh_to_continue = asyncio.Event()
+
+        async def pause_after_batch_lock(*args: object, **kwargs: object) -> object:
+            refresh_has_batch_lock.set()
+            await allow_refresh_to_continue.wait()
+            return await original_build_state(*args, **kwargs)
+
+        monkeypatch.setattr(summary_service, "_build_state", pause_after_batch_lock)
+        refresh_task = asyncio.create_task(_refresh(system, batch_id))
+        await asyncio.wait_for(refresh_has_batch_lock.wait(), timeout=1)
+        follow_up_task = asyncio.create_task(
+            _adapter(system).create_bound_run(_run(summary, batch, version))
+        )
+        await asyncio.sleep(0)
+        assert not follow_up_task.done()
+        allow_refresh_to_continue.set()
         assert (await refresh_task).created is True
         with pytest.raises(AgentRuntimeError, match="source_summary_not_latest"):
             await follow_up_task
