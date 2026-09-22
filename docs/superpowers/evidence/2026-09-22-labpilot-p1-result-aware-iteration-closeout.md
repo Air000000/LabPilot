@@ -2,7 +2,7 @@
 
 Date: 2026-09-22
 
-Status: Accepted
+Status: Accepted / Integrated
 
 ## 1. Authority
 
@@ -67,3 +67,12 @@ This closeout does NOT establish:
 - measured researcher productivity improvement.
 
 The product claim remains: bounded Agent-assisted Experiment Runtime / Harness.
+
+
+## 6. Repository integration
+
+- Final closeout documentation commit: `631b76190934ed7f6566f49998ae35b7fc274cef`.
+- Final pre-merge GitHub CI: #314 — SUCCESS, including production image/build-context hygiene.
+- PR #9 was merged through the reviewed PR path.
+- Main integration merge commit: `03d1297e44307a37df1c9ed2b35e4dba60e00c87`.
+- No follow-on implementation tranche is authorized by this closeout; further remaining-V1 work returns to a separate planning/authority gate.
