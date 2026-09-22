@@ -37,6 +37,12 @@ class AgentRunRow(Base):
             name="fk_agent_runs_produced_proposal_revision_id_proposal_revisions",
             ondelete="RESTRICT",
         ),
+        ForeignKeyConstraint(
+            ["source_batch_summary_revision_id"],
+            ["batch_summary_revisions.batch_summary_revision_id"],
+            name="fk_agent_runs_source_summary_revision",
+            ondelete="RESTRICT",
+        ),
         PrimaryKeyConstraint("agent_run_id", name="pk_agent_runs"),
         CheckConstraint(
             "status IN ('ready','running','awaiting_human','completed',"
@@ -71,6 +77,9 @@ class AgentRunRow(Base):
         Integer, nullable=False, server_default=text("1")
     )
     produced_proposal_revision_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), nullable=True
+    )
+    source_batch_summary_revision_id: Mapped[UUID | None] = mapped_column(
         PGUUID(as_uuid=True), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

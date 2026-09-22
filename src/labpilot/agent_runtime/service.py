@@ -21,6 +21,10 @@ from labpilot.agent_runtime.provider import (
     assert_provider_egress,
 )
 from labpilot.agent_runtime.repository import AgentRepository
+from labpilot.agent_runtime.result_context import (
+    FollowUpRunStore,
+    ResultContextSource,
+)
 from labpilot.agent_runtime.types import (
     AgentBudget,
     AgentDecision,
@@ -82,6 +86,16 @@ class AgentProposalService(Protocol):
         payload: ProposalPayload,
     ) -> ProposalRevisionResult: ...
 
+    async def create_follow_up_agent_revision(
+        self,
+        *,
+        context: CommandContext,
+        project_id: UUID,
+        experiment_id: UUID,
+        origin_agent_step_id: UUID,
+        payload: ProposalPayload,
+    ) -> ProposalRevisionResult: ...
+
 
 class AgentApplicationService:
     def __init__(
@@ -95,6 +109,8 @@ class AgentApplicationService:
         tool_service_factory: AgentToolServiceFactory,
         proposal_service: AgentProposalService,
         data_egress_policy: DataEgressPolicy,
+        follow_up_run_store: FollowUpRunStore | None = None,
+        result_context_source: ResultContextSource | None = None,
     ) -> None:
         self._repository = repository
         self._repository_source = repository_source
@@ -104,6 +120,8 @@ class AgentApplicationService:
         self._tool_service_factory = tool_service_factory
         self._proposals = proposal_service
         self._egress_policy = data_egress_policy
+        self._follow_up_run_store = follow_up_run_store
+        self._result_context_source = result_context_source
         self._decision_adapter: TypeAdapter[AgentDecision] = TypeAdapter(AgentDecision)
 
     async def create_run(
@@ -149,6 +167,48 @@ class AgentApplicationService:
         _log("agent_run_created", context, stored)
         return stored
 
+    async def create_follow_up_run(
+        self,
+        *,
+        context: CommandContext,
+        project_id: UUID,
+        source_batch_summary_revision_id: UUID,
+        repository_snapshot_id: UUID,
+        goal: str,
+        budget: AgentBudget,
+    ) -> AgentRunDetails:
+        _require_text(goal, "goal", 4000)
+        if self._follow_up_run_store is None or self._result_context_source is None:
+            raise AgentRuntimeError("follow_up_runtime_unconfigured")
+        now = datetime.now(UTC)
+        run = AgentRunDetails(
+            agent_run_id=uuid4(),
+            project_id=project_id,
+            repository_snapshot_id=repository_snapshot_id,
+            goal=goal,
+            status="ready",
+            termination_reason=None,
+            egress_policy=self._egress_policy,
+            provider_name=self._provider.provider_name,
+            model_name=self._model_name,
+            max_steps=budget.max_steps,
+            max_model_calls=budget.max_model_calls,
+            max_wall_clock_seconds=budget.max_wall_clock_seconds,
+            max_tokens=budget.max_tokens,
+            total_model_calls=0,
+            total_tokens=0,
+            next_step_ordinal=1,
+            produced_proposal_revision_id=None,
+            created_at=now,
+            started_at=None,
+            completed_at=None,
+            row_version=1,
+            source_batch_summary_revision_id=source_batch_summary_revision_id,
+        )
+        stored = await self._follow_up_run_store.create_bound_run(run)
+        _log("follow_up_agent_run_created", context, stored)
+        return stored
+
     async def advance_run(
         self,
         *,
@@ -163,6 +223,8 @@ class AgentApplicationService:
             raise AgentRuntimeError("agent_run_terminal")
         if run.status == "awaiting_human":
             raise AgentRuntimeError("human_input_required")
+        if run.source_batch_summary_revision_id is not None and self._result_context_source is None:
+            raise AgentRuntimeError("follow_up_runtime_unconfigured")
         steps = await self._repository.list_steps(agent_run_id)
         if steps and steps[-1].outcome == "reserved":
             return await self._repository.finalize_model_step(
@@ -196,6 +258,12 @@ class AgentApplicationService:
             except ProviderPolicyError as exc:
                 raise AgentRuntimeError(exc.reason_code) from None
             descriptor = await self._repository_source.describe(run.repository_snapshot_id)
+            result_context = None
+            if run.source_batch_summary_revision_id is not None:
+                assert self._result_context_source is not None
+                result_context = await self._result_context_source.load(
+                    run.source_batch_summary_revision_id
+                )
             prior_results, human_inputs = await self._history(agent_run_id, tools)
             compiled = self._compiler.compile(
                 provider_name=run.provider_name,
@@ -205,6 +273,7 @@ class AgentApplicationService:
                 definitions=tools.definitions,
                 prior_tool_results=prior_results,
                 prior_human_inputs=human_inputs,
+                result_context=result_context,
             )
             step = AgentStepDetails(
                 agent_step_id=uuid4(),
@@ -460,12 +529,32 @@ class AgentApplicationService:
             if not isinstance(parsed, ProposeDecision):
                 raise AgentRuntimeError("proposal_replay_invalid")
             decision = parsed
-        revision = await self._proposals.create_agent_revision(
-            context=context,
-            project_id=run.project_id,
-            origin_agent_step_id=step.agent_step_id,
-            payload=decision.proposal,
-        )
+        if run.source_batch_summary_revision_id is None:
+            revision = await self._proposals.create_agent_revision(
+                context=context,
+                project_id=run.project_id,
+                origin_agent_step_id=step.agent_step_id,
+                payload=decision.proposal,
+            )
+        else:
+            if decision.proposal.repository_snapshot_id != run.repository_snapshot_id:
+                return await self._repository.update_run_state(
+                    run.agent_run_id,
+                    expected_row_version=run.row_version,
+                    status="failed",
+                    termination_reason="follow_up_proposal_snapshot_mismatch",
+                )
+            assert self._result_context_source is not None
+            result_context = await self._result_context_source.load(
+                run.source_batch_summary_revision_id
+            )
+            revision = await self._proposals.create_follow_up_agent_revision(
+                context=context,
+                project_id=run.project_id,
+                experiment_id=result_context.experiment_id,
+                origin_agent_step_id=step.agent_step_id,
+                payload=decision.proposal,
+            )
         completed = await self._repository.update_run_state(
             run.agent_run_id,
             expected_row_version=run.row_version,

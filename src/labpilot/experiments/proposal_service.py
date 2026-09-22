@@ -275,6 +275,86 @@ class ProposalApplicationService:
             )
         raise AssertionError("UnitOfWork unexpectedly suppressed control flow")
 
+    async def create_follow_up_agent_revision(
+        self,
+        *,
+        context: CommandContext,
+        project_id: UUID,
+        experiment_id: UUID,
+        origin_agent_step_id: UUID,
+        payload: ProposalPayload,
+    ) -> ProposalRevisionDetails:
+        payload_hash = proposal_payload_hash(payload)
+        async with self._session_context_factory() as session:
+            existing = await self._repository.get_revision_by_origin_step(
+                session, origin_agent_step_id
+            )
+            if existing is not None:
+                return await self._require_exact_agent_replay(
+                    session, existing, payload_hash=payload_hash, project_id=project_id,
+                    expected_experiment_id=experiment_id,
+                )
+
+        await self._require_snapshot_binding(project_id=project_id, payload=payload)
+        actor_id = _actor_id(context)
+        try:
+            async with UnitOfWork(self._session_context_factory) as uow:
+                existing = await self._repository.get_revision_by_origin_step(
+                    uow.session, origin_agent_step_id
+                )
+                if existing is not None:
+                    details = await self._require_exact_agent_replay(
+                        uow.session, existing, payload_hash=payload_hash, project_id=project_id,
+                        expected_experiment_id=experiment_id,
+                    )
+                    await uow.commit()
+                    return details
+
+                experiment = await self._repository.get_experiment_for_update(
+                    uow.session, experiment_id
+                )
+                if experiment is None:
+                    raise ProposalNotFound(f"experiment not found: {experiment_id}")
+                if experiment.project_id != project_id:
+                    raise ProposalInvariantViolation("experiment Project mismatch")
+                revision_number = (
+                    await self._repository.max_revision_number(uow.session, experiment_id)
+                ) + 1
+                row = ProposalRevisionRow(
+                    proposal_revision_id=uuid4(),
+                    experiment_id=experiment_id,
+                    revision_number=revision_number,
+                    origin_agent_step_id=origin_agent_step_id,
+                    repository_snapshot_id=payload.repository_snapshot_id,
+                    repository_snapshot_identity=payload.repository_snapshot_identity,
+                    payload_json=_payload_to_json(payload),
+                    payload_hash=payload_hash,
+                    created_by_actor_type=context.actor.actor_type,
+                    created_by_actor_id=actor_id,
+                    created_at=await _database_now(uow.session),
+                )
+                await self._repository.add_revision(uow, row)
+                details = _revision_details(row)
+                await uow.commit()
+                return details
+        except IntegrityError as exc:
+            if not _is_origin_agent_step_conflict(exc):
+                raise
+
+        async with self._session_context_factory() as session:
+            existing = await self._repository.get_revision_by_origin_step(
+                session, origin_agent_step_id
+            )
+            if existing is None:
+                raise ProposalInvariantViolation(
+                    "origin_agent_step_id conflict has no winning ProposalRevision"
+                )
+            return await self._require_exact_agent_replay(
+                session, existing, payload_hash=payload_hash, project_id=project_id,
+                expected_experiment_id=experiment_id,
+            )
+        raise AssertionError("UnitOfWork unexpectedly suppressed control flow")
+
     async def get_revision(
         self,
         proposal_revision_id: UUID,
@@ -680,6 +760,7 @@ class ProposalApplicationService:
         *,
         payload_hash: str,
         project_id: UUID,
+        expected_experiment_id: UUID | None = None,
     ) -> ProposalRevisionDetails:
         if row.payload_hash != payload_hash:
             raise ProposalInvariantViolation(
@@ -689,6 +770,10 @@ class ProposalApplicationService:
         if experiment is None or experiment.project_id != project_id:
             raise ProposalInvariantViolation(
                 "origin_agent_step_id already binds a different Project"
+            )
+        if expected_experiment_id is not None and row.experiment_id != expected_experiment_id:
+            raise ProposalInvariantViolation(
+                "origin_agent_step_id already binds a different Experiment"
             )
         return _revision_details(row)
 

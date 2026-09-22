@@ -83,11 +83,15 @@ class SqlAgentRepository:
         self._session_context_factory = session_context_factory
 
     async def add_run(self, run: AgentRunDetails) -> AgentRunDetails:
-        row = _run_row(run)
         async with UnitOfWork(self._session_context_factory) as uow:
-            uow.session.add(row)
-            await uow.session.flush()
+            details = await self.add_run_in_uow(uow, run)
             await uow.commit()
+        return details
+
+    async def add_run_in_uow(self, uow: UnitOfWork, run: AgentRunDetails) -> AgentRunDetails:
+        row = _run_row(run)
+        uow.session.add(row)
+        await uow.session.flush()
         return _run_details(row)
 
     async def get_run(self, agent_run_id: UUID) -> AgentRunDetails | None:
@@ -285,6 +289,7 @@ def _run_row(run: AgentRunDetails) -> AgentRunRow:
         total_tokens=run.total_tokens,
         next_step_ordinal=run.next_step_ordinal,
         produced_proposal_revision_id=run.produced_proposal_revision_id,
+        source_batch_summary_revision_id=run.source_batch_summary_revision_id,
         created_at=run.created_at,
         started_at=run.started_at,
         completed_at=run.completed_at,
@@ -337,6 +342,7 @@ def _run_details(row: AgentRunRow) -> AgentRunDetails:
         next_step_ordinal=row.next_step_ordinal,
         produced_proposal_revision_id=row.produced_proposal_revision_id,
         created_at=row.created_at,
+        source_batch_summary_revision_id=row.source_batch_summary_revision_id,
         started_at=row.started_at,
         completed_at=row.completed_at,
         row_version=row.row_version,

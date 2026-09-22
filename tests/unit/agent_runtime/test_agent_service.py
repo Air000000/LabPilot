@@ -12,10 +12,12 @@ import pytest
 
 from labpilot.agent_runtime.context_compiler import ContextCompiler
 from labpilot.agent_runtime.provider import ModelRequest, ModelResponse, ProviderError
+from labpilot.agent_runtime.result_context import ResultContext
 from labpilot.agent_runtime.service import AgentApplicationService, AgentRuntimeError
 from labpilot.agent_runtime.types import AgentBudget, AgentRunDetails, AgentStepDetails
 from labpilot.common.commands import CommandActor, CommandContext
 from labpilot.context.repository_source import RepositorySourceDescriptor
+from labpilot.experiments.proposal_service import _payload_from_json
 from labpilot.tools_policy.types import ToolCallDetails, ToolDefinition
 
 
@@ -449,6 +451,7 @@ class MemoryProposalService:
         self.repository = repository
         self.calls: list[UUID] = []
         self.revisions: dict[UUID, Revision] = {}
+        self.follow_up_calls: list[tuple[UUID, UUID, UUID]] = []
         self.crash_after_first_create = False
 
     async def create_agent_revision(
@@ -470,6 +473,24 @@ class MemoryProposalService:
         if self.crash_after_first_create and len(self.calls) == 1:
             raise RuntimeError("simulated materialization crash")
         return revision
+
+    async def create_follow_up_agent_revision(
+        self, *, context, project_id, experiment_id, origin_agent_step_id, payload
+    ) -> Revision:
+        steps = await self.repository.list_steps(
+            next(
+                run_id
+                for run_id, steps in self.repository.steps.items()
+                if any(step.agent_step_id == origin_agent_step_id for step in steps)
+            )
+        )
+        assert (
+            next(step for step in steps if step.agent_step_id == origin_agent_step_id).outcome
+            == "succeeded"
+        )
+        self.follow_up_calls.append((project_id, experiment_id, origin_agent_step_id))
+        return self.revisions.setdefault(origin_agent_step_id, Revision(uuid4()))
+
 
 
 def _context() -> CommandContext:
@@ -617,9 +638,7 @@ async def test_get_trace_returns_persisted_state_without_side_effects() -> None:
     persisted_steps = await repository.list_steps(run.agent_run_id)
     provider_calls_before = len(provider.calls)
     tool_factory_calls_before = len(factory.calls)
-    tool_requests_before = sum(
-        tools.events.count("request_call") for tools in factory.services
-    )
+    tool_requests_before = sum(tools.events.count("request_call") for tools in factory.services)
     tool_executions_before = sum(tools.executions for tools in factory.services)
 
     trace = await service.get_trace(run.agent_run_id)
@@ -719,9 +738,7 @@ async def test_one_agent_service_isolates_two_run_snapshots() -> None:
         ]
     )
     factory = RecordingToolFactory(repository)
-    service = _factory_service(
-        repository, SnapshotCatalog(first, second), provider, factory
-    )
+    service = _factory_service(repository, SnapshotCatalog(first, second), provider, factory)
     first_run = await service.create_run(
         context=_context(),
         project_id=project_id,
@@ -812,9 +829,7 @@ async def test_tool_arguments_cannot_override_persisted_snapshot_binding() -> No
         ]
     )
     factory = RecordingToolFactory(repository)
-    service = _factory_service(
-        repository, SnapshotCatalog(persisted, attempted), provider, factory
-    )
+    service = _factory_service(repository, SnapshotCatalog(persisted, attempted), provider, factory)
     run = await service.create_run(
         context=_context(),
         project_id=project_id,
@@ -830,10 +845,7 @@ async def test_tool_arguments_cannot_override_persisted_snapshot_binding() -> No
     )
 
     assert factory.calls == [persisted.repository_snapshot_id]
-    assert all(
-        tools.snapshot_id == persisted.repository_snapshot_id
-        for tools in factory.services
-    )
+    assert all(tools.snapshot_id == persisted.repository_snapshot_id for tools in factory.services)
     assert factory.services[0].events.count("request_call") == 1
     assert factory.services[0].events.count("execute_call") == 1
 
@@ -1384,6 +1396,7 @@ async def test_propose_is_persisted_before_materialization_and_replays_after_cra
     assert len(provider.calls) == 1
     assert len(proposals.calls) == 2
     assert proposals.calls[0] == proposals.calls[1]
+    assert proposals.follow_up_calls == []
 
 
 @pytest.mark.asyncio
@@ -1595,3 +1608,345 @@ async def test_structured_logs_have_correlations_and_no_raw_content(caplog) -> N
     assert all(record.request_id == "agent-request-1" for record in lifecycle)
     assert all(record.project_id == str(descriptor.project_id) for record in lifecycle)
     assert all(record.agent_run_id == str(run.agent_run_id) for record in lifecycle)
+
+
+class MemoryFollowUpRunStore:
+    def __init__(self, repository: MemoryAgentRepository) -> None:
+        self.repository = repository
+        self.runs: list[AgentRunDetails] = []
+
+    async def create_bound_run(self, run: AgentRunDetails) -> AgentRunDetails:
+        self.runs.append(run)
+        return await self.repository.add_run(run)
+
+
+class MemoryResultContextSource:
+    def __init__(self, context: ResultContext) -> None:
+        self.context = context
+        self.calls: list[UUID] = []
+
+    async def load(self, source_batch_summary_revision_id: UUID) -> ResultContext:
+        self.calls.append(source_batch_summary_revision_id)
+        return self.context
+
+
+def _result_context(
+    descriptor: RepositorySourceDescriptor, source_summary_id: UUID
+) -> ResultContext:
+    return ResultContext(
+        experiment_id=uuid4(),
+        source_experiment_version_id=uuid4(),
+        source_version_number=1,
+        source_proposal_revision_id=uuid4(),
+        source_batch_id=uuid4(),
+        source_batch_summary_revision_id=source_summary_id,
+        source_summary_revision_number=1,
+        presentation_status="complete",
+        source_proposal=_payload_from_json(_proposal(descriptor)),
+        trials=(),
+        included_results=(),
+        excluded_results=(),
+        warnings=(),
+        aggregates={},
+    )
+
+
+def _follow_up_service(
+    repository: MemoryAgentRepository,
+    descriptor: RepositorySourceDescriptor,
+    provider: ScriptedProvider,
+    *,
+    store: MemoryFollowUpRunStore | None,
+    source: MemoryResultContextSource | None,
+    egress_policy: str = "local_only",
+) -> tuple[AgentApplicationService, MemoryToolService, MemoryProposalService]:
+    tools = MemoryToolService(repository)
+    proposals = MemoryProposalService(repository)
+    service = AgentApplicationService(
+        repository=repository,
+        repository_source=SnapshotSource(descriptor),
+        provider=provider,
+        model_name="test-model",
+        context_compiler=ContextCompiler(),
+        tool_service_factory=lambda snapshot_id: tools,
+        proposal_service=proposals,
+        data_egress_policy=egress_policy,
+        follow_up_run_store=store,
+        result_context_source=source,
+    )
+    return service, tools, proposals
+
+
+@pytest.mark.asyncio
+async def test_initial_constructor_without_follow_up_ports_completes_normally() -> None:
+    descriptor = _descriptor()
+    repository = MemoryAgentRepository()
+    provider = ScriptedProvider([{"kind": "stop", "reason_code": "done"}])
+    service, _, _ = _service(repository, descriptor, provider)
+    run = await service.create_run(
+        context=_context(),
+        project_id=descriptor.project_id,
+        repository_snapshot_id=descriptor.repository_snapshot_id,
+        goal="initial",
+        budget=_budget(),
+    )
+
+    completed = await service.advance_run(
+        context=_context(),
+        agent_run_id=run.agent_run_id,
+        expected_row_version=run.row_version,
+    )
+
+    assert completed.status == "completed"
+    assert completed.termination_reason == "done"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "configured_store,configured_source", [(False, False), (True, False), (False, True)]
+)
+async def test_follow_up_create_requires_both_runtime_ports(
+    configured_store: bool, configured_source: bool
+) -> None:
+    descriptor = _descriptor()
+    repository = MemoryAgentRepository()
+    provider = ScriptedProvider([])
+    summary_id = uuid4()
+    store = MemoryFollowUpRunStore(repository) if configured_store else None
+    source = (
+        MemoryResultContextSource(_result_context(descriptor, summary_id))
+        if configured_source
+        else None
+    )
+    service, tools, proposals = _follow_up_service(
+        repository, descriptor, provider, store=store, source=source
+    )
+
+    with pytest.raises(AgentRuntimeError, match="follow_up_runtime_unconfigured"):
+        await service.create_follow_up_run(
+            context=_context(),
+            project_id=descriptor.project_id,
+            source_batch_summary_revision_id=summary_id,
+            repository_snapshot_id=descriptor.repository_snapshot_id,
+            goal="follow up",
+            budget=_budget(),
+        )
+
+    assert repository.runs == {}
+    assert provider.calls == []
+    assert tools.events == []
+    assert proposals.calls == []
+
+
+@pytest.mark.asyncio
+async def test_follow_up_advance_requires_context_and_checks_egress_before_load() -> None:
+    descriptor = _descriptor()
+    repository = MemoryAgentRepository()
+    summary_id = uuid4()
+    provider = ScriptedProvider([])
+    service, _, _ = _follow_up_service(repository, descriptor, provider, store=None, source=None)
+    initial = await service.create_run(
+        context=_context(),
+        project_id=descriptor.project_id,
+        repository_snapshot_id=descriptor.repository_snapshot_id,
+        goal="follow up",
+        budget=_budget(),
+    )
+    repository.runs[initial.agent_run_id] = replace(
+        initial, source_batch_summary_revision_id=summary_id
+    )
+
+    with pytest.raises(AgentRuntimeError, match="follow_up_runtime_unconfigured"):
+        await service.advance_run(
+            context=_context(),
+            agent_run_id=initial.agent_run_id,
+            expected_row_version=initial.row_version,
+        )
+    assert provider.calls == []
+
+    remote_provider = ScriptedProvider([])
+    remote_provider.egress = "remote"
+    remote_repository = MemoryAgentRepository()
+    source = MemoryResultContextSource(_result_context(descriptor, summary_id))
+    store = MemoryFollowUpRunStore(remote_repository)
+    remote_service, _, _ = _follow_up_service(
+        remote_repository,
+        descriptor,
+        remote_provider,
+        store=store,
+        source=source,
+    )
+    remote_run = await remote_service.create_follow_up_run(
+        context=_context(),
+        project_id=descriptor.project_id,
+        source_batch_summary_revision_id=summary_id,
+        repository_snapshot_id=descriptor.repository_snapshot_id,
+        goal="follow up",
+        budget=_budget(),
+    )
+
+    with pytest.raises(AgentRuntimeError, match="remote_provider_blocked"):
+        await remote_service.advance_run(
+            context=_context(),
+            agent_run_id=remote_run.agent_run_id,
+            expected_row_version=remote_run.row_version,
+        )
+    assert source.calls == []
+    assert remote_provider.calls == []
+
+
+@pytest.mark.asyncio
+async def test_remote_follow_up_receives_exact_context_and_stop_does_not_propose() -> None:
+    descriptor = _descriptor()
+    repository = MemoryAgentRepository()
+    summary_id = uuid4()
+    provider = ScriptedProvider([{"kind": "stop", "reason_code": "goal_satisfied"}])
+    provider.egress = "remote"
+    source = MemoryResultContextSource(_result_context(descriptor, summary_id))
+    store = MemoryFollowUpRunStore(repository)
+    service, _, proposals = _follow_up_service(
+        repository,
+        descriptor,
+        provider,
+        store=store,
+        source=source,
+        egress_policy="remote_provider_allowed",
+    )
+    run = await service.create_follow_up_run(
+        context=_context(),
+        project_id=descriptor.project_id,
+        source_batch_summary_revision_id=summary_id,
+        repository_snapshot_id=descriptor.repository_snapshot_id,
+        goal="follow up",
+        budget=_budget(),
+    )
+
+    completed = await service.advance_run(
+        context=_context(),
+        agent_run_id=run.agent_run_id,
+        expected_row_version=run.row_version,
+    )
+
+    assert completed.status == "completed"
+    assert completed.termination_reason == "goal_satisfied"
+    assert source.calls == [summary_id]
+    assert str(summary_id) in str(provider.calls[0].messages)
+    assert proposals.calls == []
+
+
+@pytest.mark.asyncio
+async def test_follow_up_propose_materializes_same_experiment_and_replays() -> None:
+    descriptor = _descriptor()
+    repository = MemoryAgentRepository()
+    summary_id = uuid4()
+    result_context = _result_context(descriptor, summary_id)
+    source = MemoryResultContextSource(result_context)
+    store = MemoryFollowUpRunStore(repository)
+    provider = ScriptedProvider([{"kind": "propose", "proposal": _proposal(descriptor)}])
+    service, _, proposals = _follow_up_service(
+        repository, descriptor, provider, store=store, source=source
+    )
+    run = await service.create_follow_up_run(
+        context=_context(),
+        project_id=descriptor.project_id,
+        source_batch_summary_revision_id=summary_id,
+        repository_snapshot_id=descriptor.repository_snapshot_id,
+        goal="follow up",
+        budget=_budget(),
+    )
+
+    completed = await service.advance_run(
+        context=_context(),
+        agent_run_id=run.agent_run_id,
+        expected_row_version=run.row_version,
+    )
+    assert completed.status == "completed"
+    assert completed.termination_reason == "proposal_created"
+    assert proposals.calls == []
+    assert len(proposals.follow_up_calls) == 1
+    project_id, experiment_id, step_id = proposals.follow_up_calls[0]
+    assert project_id == descriptor.project_id
+    assert experiment_id == result_context.experiment_id
+    assert step_id == repository.steps[run.agent_run_id][-1].agent_step_id
+    assert source.calls == [summary_id, summary_id]
+
+    replay_run = await service.create_follow_up_run(
+        context=_context(),
+        project_id=descriptor.project_id,
+        source_batch_summary_revision_id=summary_id,
+        repository_snapshot_id=descriptor.repository_snapshot_id,
+        goal="replay",
+        budget=_budget(),
+    )
+    replay_step = AgentStepDetails(
+        agent_step_id=uuid4(),
+        agent_run_id=replay_run.agent_run_id,
+        ordinal=1,
+        step_kind="model_call",
+        tool_call_id=None,
+        provider_name=provider.provider_name,
+        model_name="test-model",
+        canonical_request_hash="a" * 64,
+        bound_toolset_hash="b" * 64,
+        semantic_parameters={},
+        output_schema_hash="c" * 64,
+        started_at=datetime.now(UTC),
+        completed_at=datetime.now(UTC),
+        outcome="succeeded",
+        token_usage={},
+        decision_kind="propose",
+        decision_json={"kind": "propose", "proposal": _proposal(descriptor)},
+        human_input_text=None,
+    )
+    repository.steps[replay_run.agent_run_id] = [replay_step]
+    repository.runs[replay_run.agent_run_id] = replace(
+        replay_run, status="running", next_step_ordinal=2, row_version=2
+    )
+
+    replay_completed = await service.advance_run(
+        context=_context(),
+        agent_run_id=replay_run.agent_run_id,
+        expected_row_version=2,
+    )
+    assert replay_completed.status == "completed"
+    assert replay_completed.termination_reason == "proposal_created"
+    assert proposals.calls == []
+    assert proposals.follow_up_calls == [
+        (descriptor.project_id, result_context.experiment_id, step_id),
+        (descriptor.project_id, result_context.experiment_id, replay_step.agent_step_id)
+    ]
+    assert source.calls == [summary_id, summary_id, summary_id]
+
+
+@pytest.mark.asyncio
+async def test_follow_up_propose_rejects_snapshot_mismatch_without_initial_fallback() -> None:
+    descriptor = _descriptor()
+    repository = MemoryAgentRepository()
+    summary_id = uuid4()
+    source = MemoryResultContextSource(_result_context(descriptor, summary_id))
+    store = MemoryFollowUpRunStore(repository)
+    proposal = _proposal(descriptor)
+    proposal["repository_snapshot_id"] = str(uuid4())
+    provider = ScriptedProvider([{"kind": "propose", "proposal": proposal}])
+    service, _, proposals = _follow_up_service(
+        repository, descriptor, provider, store=store, source=source
+    )
+    run = await service.create_follow_up_run(
+        context=_context(),
+        project_id=descriptor.project_id,
+        source_batch_summary_revision_id=summary_id,
+        repository_snapshot_id=descriptor.repository_snapshot_id,
+        goal="follow up",
+        budget=_budget(),
+    )
+
+    failed = await service.advance_run(
+        context=_context(),
+        agent_run_id=run.agent_run_id,
+        expected_row_version=run.row_version,
+    )
+
+    assert failed.status == "failed"
+    assert failed.termination_reason == "follow_up_proposal_snapshot_mismatch"
+    assert proposals.calls == []
+    assert proposals.follow_up_calls == []

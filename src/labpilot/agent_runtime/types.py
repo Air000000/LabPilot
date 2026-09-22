@@ -175,6 +175,7 @@ class AgentRunDetails:
     started_at: datetime | None
     completed_at: datetime | None
     row_version: int
+    source_batch_summary_revision_id: UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)

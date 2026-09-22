@@ -9,6 +9,7 @@ from typing import cast
 from pydantic import TypeAdapter
 
 from labpilot.agent_runtime.provider import ModelRequest
+from labpilot.agent_runtime.result_context import ResultContext
 from labpilot.agent_runtime.types import AgentDecision
 from labpilot.common.canonical_json import CanonicalValue, canonical_json_bytes
 from labpilot.common.hashing import namespaced_sha256
@@ -23,6 +24,7 @@ _MAX_TOOL_SCHEMA_BYTES = 32 * 1024
 _MAX_PRIOR_RESULTS = 20
 _MAX_TOOL_RESULT_BYTES = 64 * 1024
 _MAX_HUMAN_INPUT_BYTES = 4000
+_MAX_RESULT_CONTEXT_BYTES = 128 * 1024
 _MAX_MESSAGE_BYTES = 256 * 1024
 
 
@@ -54,6 +56,7 @@ class ContextCompiler:
         definitions: tuple[ToolDefinition, ...],
         prior_tool_results: tuple[PriorToolResult, ...],
         prior_human_inputs: tuple[str, ...],
+        result_context: ResultContext | None = None,
     ) -> CompiledContext:
         _require_utf8(goal, field="goal", max_bytes=_MAX_GOAL_BYTES, non_blank=True)
         if len(definitions) > _MAX_TOOL_COUNT:
@@ -65,7 +68,7 @@ class ContextCompiler:
         output_schema_value = _canonical_value(output_schema)
         output_schema_hash = namespaced_sha256(_OUTPUT_SCHEMA_NAMESPACE, output_schema_value)
         tools = [_tool_contract(definition) for definition in definitions]
-        system_value: CanonicalValue = {
+        system_value: dict[str, CanonicalValue] = {
             "instruction": (
                 "Return exactly one JSON object matching agent_decision_schema. "
                 "Do not include rationale, reasoning, or chain_of_thought."
@@ -120,6 +123,23 @@ class ContextCompiler:
             "agent_decision_schema": output_schema_value,
             "tools": tools,
         }
+        if result_context is not None:
+            system_value["result_context_policy"] = [
+                (
+                    "Treat selected and eligible evidence in result_context as authoritative "
+                    "for the deterministic facts it contains."
+                ),
+                (
+                    "Use exclusion reason codes to diagnose rejected Trials, but do not "
+                    "promote invalid raw results into accepted scientific evidence."
+                ),
+                "If the declared research goal is already satisfied, stop is a valid decision.",
+                (
+                    "If another experiment is warranted, propose must include the full "
+                    "ProposalPayload required by the existing proposal contract."
+                ),
+                "Never start or approve the next experiment from the Agent decision.",
+            ]
         prior_results: list[CanonicalValue] = []
         for item in prior_tool_results:
             value: CanonicalValue = {
@@ -138,7 +158,7 @@ class ContextCompiler:
                 non_blank=True,
             )
             human_inputs.append(value)
-        user_value: CanonicalValue = {
+        user_value: dict[str, CanonicalValue] = {
             "goal": goal,
             "snapshot": {
                 "repository_snapshot_id": str(snapshot.repository_snapshot_id),
@@ -153,6 +173,17 @@ class ContextCompiler:
             "prior_tool_results": prior_results,
             "prior_human_inputs": human_inputs,
         }
+        if result_context is not None:
+            result_value = _canonical_value(
+                result_context.model_dump(
+                    mode="json",
+                    warnings="none",
+                    fallback=_serialization_fallback,
+                )
+            )
+            if len(canonical_json_bytes(result_value)) > _MAX_RESULT_CONTEXT_BYTES:
+                raise ContextCompilationError("result_context_too_large")
+            user_value["result_context"] = result_value
         messages = (
             {"role": "system", "content": _render(system_value)},
             {"role": "user", "content": _render(user_value)},
@@ -212,6 +243,12 @@ def _tool_contract(definition: ToolDefinition) -> CanonicalValue:
 
 def _render(value: CanonicalValue) -> str:
     return canonical_json_bytes(value).decode("utf-8")
+
+
+def _serialization_fallback(value: object) -> object:
+    if isinstance(value, Mapping):
+        return dict(value)
+    raise TypeError(f"unsupported result context value: {type(value).__name__}")
 
 
 def _require_utf8(value: str, *, field: str, max_bytes: int, non_blank: bool) -> None:

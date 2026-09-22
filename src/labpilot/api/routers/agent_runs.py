@@ -11,6 +11,7 @@ from labpilot.api.schemas.agent_runs import (
     AgentRunResponse,
     AgentRunTraceResponse,
     CreateAgentRunRequest,
+    CreateFollowUpAgentRunRequest,
     HumanInputRequest,
 )
 from labpilot.common.commands import CommandContext
@@ -36,6 +37,32 @@ async def create_agent_run(
     details = await service.create_run(
         context=context,
         project_id=project_id,
+        repository_snapshot_id=body.repository_snapshot_id,
+        goal=body.goal,
+        budget=budget,
+    )
+    return AgentRunResponse.from_details(details)
+
+
+@router.post(
+    "/projects/{project_id}/agent-runs/follow-up",
+    response_model=AgentRunResponse,
+    status_code=201,
+)
+async def create_follow_up_agent_run(
+    project_id: UUID,
+    body: CreateFollowUpAgentRunRequest,
+    context: Annotated[CommandContext, Depends(get_command_context)],
+    service: Annotated[AgentApplicationService, Depends(get_agent_run_service)],
+) -> AgentRunResponse:
+    try:
+        budget = body.budget.to_domain()
+    except ValueError as exc:
+        raise RequestDomainValidationError("invalid AgentRun request") from exc
+    details = await service.create_follow_up_run(
+        context=context,
+        project_id=project_id,
+        source_batch_summary_revision_id=body.source_batch_summary_revision_id,
         repository_snapshot_id=body.repository_snapshot_id,
         goal=body.goal,
         budget=budget,
