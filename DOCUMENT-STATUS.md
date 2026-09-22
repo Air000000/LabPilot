@@ -1,6 +1,6 @@
 # LabPilot 文档状态
 
-> 当前状态：R0 仍为 V1 rebaseline authority root；Slice 1 已 Accepted；Slice 2 bounded MVP 已验证并集成到 `main`，production hardening deferred；Slice 3 Result Plane implementation 已完成。Competition Core Demo Runtime/E2E 已在产品基线 `c92bf45b63053b1ae00209660ed351cf309f91c8` 上验收并冻结，competition console 已合并回 `main`，并行 Core Demo 工作中已验证的 exact read-only API workspace acceptance contract 也已收敛。比赛后 remaining-V1 已重新进入 planning gate：当前只授权 P1 Result-Aware Experiment Iteration 的设计 focused review，尚未授权实现。
+> 当前状态：R0 仍为 V1 rebaseline authority root；Slice 1 已 Accepted；Slice 2 bounded MVP 已验证并集成到 `main`，production hardening deferred；Slice 3 Result Plane implementation 已完成。Competition Core Demo Runtime/E2E 已验收并冻结。P1 Result-Aware Experiment Iteration implementation completed and accepted; deterministic two-iteration acceptance + regression/full-CI evidence closed。
 
 | 文档 | 状态 | 用途 |
 |---|---|---|
@@ -112,7 +112,12 @@ Slice-specific detailed plans must record their exact planning baseline commit a
 - P1 Result-Aware Iteration detailed implementation plan: **APPROVED / CURRENT**
 - P1 Result-Aware Iteration plan doc: `docs/superpowers/plans/2026-09-20-labpilot-p1-result-aware-iteration.md`
 - P1 Result-Aware Iteration focused plan review: **APPROVE**; P1-PLAN-001 CLOSED; direct regressions NONE
-- P1 Result-Aware Iteration Product implementation: **AUTHORIZED under approved detailed plan**
+- P1 Result-Aware Iteration implementation: **COMPLETED / ACCEPTED**
+- P1 last production-code commit: `ae079be252fd62eff415ef040af4228ab45e2d61`
+- P1 tranche acceptance/test baseline: `e8caaf668fed2b5e5878393fa0c47c001ba218e9`
+- P1 deterministic two-iteration acceptance: **PASS**
+- P1 Task 8 focused regression: **PASS**
+- P1 Task 8 GitHub CI #312: **PASS**
 
 Under Sequencing Amendment v0.3.1, the bounded Slice 2 MVP closeout is sufficient to unlock Slice 3. It does not retroactively complete the deferred Slice 2 production-hardening campaign or establish Slice 2 production acceptance.
 
@@ -122,51 +127,12 @@ The Git commit containing this status transition is the exact Slice3 implementat
 
 The competition workstream is closed. Its Runtime/E2E evidence and UI are frozen unless a concrete regression or demo-critical defect is demonstrated.
 
-The detailed plan is approved. The next authorized remaining-V1 action is **implementation under the approved task sequence**:
+P1 Result-Aware Experiment Iteration implementation is accepted. Repository integration is completed through the normal reviewed PR process; any further remaining-V1 tranche requires its own planning/authority gate.
 
 ```text
-Approved P1 Result-Aware Experiment Iteration Design
-→ approved detailed implementation plan
-→ P1-A Tasks 1–4
-→ focused P1-A implementation review
-→ P1-B Tasks 5–7
-→ focused P1-B implementation review
-→ final regression/full-CI gate
-```
-
-Current proposed design:
-
-```text
-exact BatchSummaryRevision
-→ deterministic ResultContext
-→ Follow-up AgentRun
-→ Stop | Request Human Input | Follow-up Proposal
-→ existing deterministic ProposalVerification
-→ Human Approval
-→ next immutable ExperimentVersion in the same Experiment
-```
-
-Focused design and focused plan review are closed. Product implementation is authorized only within the approved P1-A/B task sequence and review gates.
-
-Explicitly not authorized in this first P1 tranche:
-
-- Slice 4 as a new roadmap label;
-- Multi-Agent;
-- controlled/autonomous code modification;
-- editable Worktree;
-- cross-Experiment history search;
-- automatic Batch start after Agent proposal;
-- LLM semantic verifier;
-- new Runtime-hardening campaign;
-- competition UI redesign.
-
-The proposed design remains subordinate to:
-
-```text
-V1 Scope v0.3
-> Architecture 10 v0.3
-> Master Roadmap v0.3
-> approved P1 Result-Aware authority after review
+implementation accepted
+→ reviewed PR integration
+→ separate planning/authority gate for any further tranche
 ```
 
 Competition closure still does not complete deferred Slice 2 production hardening or establish Slice 2 production acceptance.
