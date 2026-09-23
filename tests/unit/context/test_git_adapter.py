@@ -37,6 +37,21 @@ def _init_repository(path: Path) -> Path:
     return path
 
 
+@pytest.mark.asyncio
+async def test_probe_traverses_search_only_parent_directory(tmp_path: Path) -> None:
+    parent = tmp_path / "search-only"
+    parent.mkdir()
+    repository = _init_repository(parent / "repository")
+    (repository / "README.md").write_text("demo\n", encoding="utf-8")
+    _commit_all(repository)
+    parent.chmod(0o100)
+    try:
+        probe = await GitAdapter(git_executable=GIT, timeout_seconds=2).probe(repository)
+        assert probe.status_entries == ()
+    finally:
+        parent.chmod(0o700)
+
+
 def _commit_all(repository: Path, message: str = "initial") -> None:
     _git(repository, "add", "-A")
     _git(

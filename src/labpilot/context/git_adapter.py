@@ -1500,12 +1500,15 @@ def _snapshot_components(relative_path: str) -> tuple[str, ...]:
 
 
 def _open_canonical_snapshot_root(root: Path) -> int:
-    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+    directory_flags = os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+    traversal_flags = os.O_PATH | directory_flags
+    root_flags = os.O_RDONLY | directory_flags
     if root.anchor != "/":
         raise RepositorySnapshotCaptureConflict("snapshot_path_unavailable")
-    descriptor = os.open("/", flags)
+    descriptor = os.open("/", root_flags if root == Path("/") else traversal_flags)
     try:
-        for component in root.parts[1:]:
+        for index, component in enumerate(root.parts[1:], start=1):
+            flags = root_flags if index == len(root.parts) - 1 else traversal_flags
             child = os.open(component, flags, dir_fd=descriptor)
             os.close(descriptor)
             descriptor = child
