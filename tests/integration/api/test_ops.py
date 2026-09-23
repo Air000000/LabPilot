@@ -43,8 +43,8 @@ async def test_ops_finds_recent_run_without_remembering_ids(
                     project_id=project_id,
                     repository_snapshot_id=uuid4(),
                     goal="CPU <audit> experiment",
-                    status="completed",
-                    termination_reason="proposal_created",
+                    status="awaiting_human",
+                    termination_reason=None,
                     egress_policy="remote_provider_allowed",
                     provider_name="deepseek_chat",
                     model_name="deepseek-v4-flash",
@@ -58,7 +58,7 @@ async def test_ops_finds_recent_run_without_remembering_ids(
                     produced_proposal_revision_id=None,
                     created_at=datetime.now(UTC),
                     started_at=datetime.now(UTC),
-                    completed_at=datetime.now(UTC),
+                    completed_at=None,
                     row_version=1,
                     source_batch_summary_revision_id=None,
                 )
@@ -82,7 +82,7 @@ async def test_ops_finds_recent_run_without_remembering_ids(
         assert missing_summary.status_code == 404
         assert 'href="/ops"' in operator.text
         assert "CPU &lt;audit&gt; experiment" in response.text
-        assert "阶段: Agent 已结束 / 未生成方案" in response.text
+        assert "阶段: 等待人工回答" in response.text
         assert "CPU <audit> experiment" not in response.text
         assert f"/agent-runs/{run_id}/trace" in response.text
         assert f"/operator?run={run_id}" in response.text

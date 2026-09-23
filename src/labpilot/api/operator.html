@@ -151,7 +151,7 @@
       budget: { max_steps: 6, max_model_calls: 4, max_wall_clock_seconds: 90, max_tokens: 24000 },
       advanceDelayMs: 450
     };
-    const appState = { run: null, trace: null, proposal: null, revision: null, verification: null, version: null, batch: null, batchCreateKey: null, batchStartKey: null, trials: {}, attempts: {}, attemptResults: {}, trialResults: {}, summary: null, resultState: {}, summaryState: null, startingFollowUp: false, eventSource: null, sseState: "idle", selectedTrialId: null, executionError: null, error: null, advancing: false, startingBatch: false, refreshingExecution: false, view: "goal" };
+    const appState = { run: null, trace: null, proposal: null, revision: null, verification: null, version: null, batch: null, batchCreateKey: null, batchStartKey: null, trials: {}, attempts: {}, attemptResults: {}, trialResults: {}, summary: null, resultState: {}, summaryState: null, followUpGoal: "基于上一轮已验证的结果，提出同一研究目标的下一轮 CPU-only 参数实验。优先把 epochs 降到上一轮达标配置的最低 epochs 以下；保持已有 learning_rate 候选和 seed，最多四个 Trial，验证目标保持不变。", startingFollowUp: false, eventSource: null, sseState: "idle", selectedTrialId: null, executionError: null, error: null, humanAnswer: "", submittingHuman: false, advancing: false, startingBatch: false, refreshingExecution: false, view: "goal" };
     const stages = [
       { label: "目标", view: "goal" }, { label: "Agent", view: "agent" },
       { label: "实验方案", view: "proposal" }, { label: "验证", view: "verify" },
@@ -165,7 +165,7 @@
       const response = await fetch(path, options);
       if (!response.ok) {
         let detail = "HTTP " + response.status;
-        try { detail = (await response.json()).detail || detail; } catch (_) { /* ponytail: HTTP status is enough when the response is not JSON. */ }
+        try { const body = await response.json(); detail = body.human_message || body.detail || body.error_code || detail; } catch (_) { /* ponytail: HTTP status is enough when the response is not JSON. */ }
         const error = new Error(detail);
         error.status = response.status;
         throw error;
@@ -188,7 +188,7 @@
       }
       if (appState.version) return "ExperimentVersion 已固化";
       if (!appState.run) return "准备定义受约束的研究目标";
-      const statuses = { completed: "运行已完成", failed: "运行失败", blocked: "运行已阻塞", created: "已创建", requires_human_input: "需要人工输入" };
+      const statuses = { completed: "运行已完成", failed: "运行失败", blocked: "运行已阻塞", created: "已创建", awaiting_human: "等待人工回答", budget_exhausted: "预算已耗尽" };
       return "Agent " + (statuses[appState.run.status] || "运行中");
     }
     function stepOutcomeText(outcome) { return outcome === "succeeded" ? "已完成" : outcome === "failed" ? "失败" : outcome; }
@@ -196,6 +196,14 @@
     function idempotencyKey(name) { return appState[name] || (appState[name] = crypto.randomUUID()); }
     function plannedTrials(proposal) { return Object.values(proposal.parameter_matrix || {}).reduce((total, values) => total * values.length, 1) * (proposal.seeds || []).length; }
     function proposalFromTrace(trace) { return (trace.steps || []).filter((step) => step.decision_kind === "propose" && step.decision_json && step.decision_json.proposal).sort((a, b) => b.ordinal - a.ordinal)[0]?.decision_json.proposal || null; }
+    function syncRecordUrl() {
+      if (!appState.run) return;
+      const params = new URLSearchParams({ run: appState.run.agent_run_id });
+      if (appState.verification) params.set("verification", appState.verification.proposal_verification_id);
+      if (appState.version) params.set("version", appState.version.experiment_version_id);
+      if (appState.batch) params.set("batch", appState.batch.batch_id);
+      history.replaceState(null, "", "/operator?" + params);
+    }
     function setError(error) { appState.error = error instanceof Error ? error.message : String(error); renderApp(); }
     function appendError(container) { if (appState.error) container.append(node("div", appState.error, "error")); }
 
@@ -214,10 +222,11 @@
       if (!goal) { setError("请先输入研究目标，再启动 Agent。"); return; }
       try {
         closeEvents();
-        Object.assign(appState, { batch: null, trials: {}, attempts: {}, attemptResults: {}, trialResults: {}, summary: null, resultState: {}, summaryState: null, executionError: null, selectedTrialId: null });
+        Object.assign(appState, { batch: null, trials: {}, attempts: {}, attemptResults: {}, trialResults: {}, summary: null, resultState: {}, summaryState: null, executionError: null, selectedTrialId: null, humanAnswer: "" });
         appState.error = null;
         appState.run = await api("/projects/" + OPERATOR_CONFIG.projectId + "/agent-runs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ repository_snapshot_id: OPERATOR_CONFIG.repositorySnapshotId, goal, budget: OPERATOR_CONFIG.budget }) });
         appState.view = "agent";
+        syncRecordUrl();
         await refreshRun();
         renderApp();
         advanceAgent();
@@ -226,20 +235,34 @@
     async function startFollowUp() {
       const latest = appState.summary?.latest_summary;
       if (!latest?.revision_id || !appState.batch || appState.startingFollowUp) return;
+      const goal = appState.followUpGoal.trim();
+      if (!goal) { setError("请先写明下一轮研究重点。"); return; }
       appState.startingFollowUp = true;
       renderApp();
       try {
-        const goal = "基于上一轮已验证的结果，提出同一研究目标的下一轮 CPU-only 参数实验。优先探索在保持原验证目标的同时减少训练资源；只调整参数，最多四个 Trial。";
-        const run = await api("/projects/" + appState.trace.project_id + "/agent-runs/follow-up", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source_batch_summary_revision_id: latest.revision_id, repository_snapshot_id: appState.trace.repository_snapshot_id, goal, budget: OPERATOR_CONFIG.budget }) });
+        const run = await api("/projects/" + appState.trace.project_id + "/agent-runs/follow-up", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source_batch_summary_revision_id: latest.revision_id, repository_snapshot_id: appState.trace.repository_snapshot_id, goal, budget: { ...OPERATOR_CONFIG.budget, max_wall_clock_seconds: 600 } }) });
         closeEvents();
-        Object.assign(appState, { run, trace: null, proposal: null, revision: null, verification: null, version: null, batch: null, batchCreateKey: null, batchStartKey: null, startingFollowUp: false, error: null, view: "agent" });
+        Object.assign(appState, { run, trace: null, proposal: null, revision: null, verification: null, version: null, batch: null, batchCreateKey: null, batchStartKey: null, startingFollowUp: false, humanAnswer: "", error: null, view: "agent" });
         resetExecutionState();
+        syncRecordUrl();
         await refreshRun();
         renderApp();
         advanceAgent();
       } catch (error) { appState.startingFollowUp = false; setError(error); }
     }
-    function isTerminal(run) { return Boolean(run.produced_proposal_revision_id || run.termination_reason || ["completed", "failed", "blocked", "requires_human_input"].includes(run.status)); }
+    function isTerminal(run) { return Boolean(run.produced_proposal_revision_id || run.termination_reason || ["completed", "failed", "blocked", "awaiting_human", "budget_exhausted"].includes(run.status)); }
+    async function submitHumanInput() {
+      const answer = appState.humanAnswer.trim();
+      if (!answer) { setError("请先回答 Agent 的问题。"); return; }
+      if (appState.submittingHuman || appState.run?.status !== "awaiting_human") return;
+      appState.submittingHuman = true; appState.error = null; renderApp();
+      try {
+        await api("/agent-runs/" + appState.run.agent_run_id + "/human-input", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ expected_row_version: appState.run.row_version, text: answer }) });
+        appState.humanAnswer = "";
+        await refreshRun();
+        appState.submittingHuman = false; renderApp(); advanceAgent();
+      } catch (error) { appState.submittingHuman = false; await refreshRun().catch(() => {}); setError(error); }
+    }
     async function advanceAgent() {
       if (appState.advancing || !appState.run || isTerminal(appState.run)) return;
       appState.advancing = true;
@@ -252,8 +275,8 @@
       renderApp();
       if (!appState.error && !isTerminal(appState.run)) window.setTimeout(advanceAgent, OPERATOR_CONFIG.advanceDelayMs);
     }
-    async function verifyProposal() { try { appState.error = null; appState.verification = await api("/proposal-revisions/" + appState.revision.proposal_revision_id + "/verify", { method: "POST" }); appState.view = "verify"; renderApp(); } catch (error) { setError(error); } }
-    async function approveProposal() { if (!appState.verification?.result.passed) return; try { appState.error = null; appState.version = await api("/proposal-revisions/" + appState.revision.proposal_revision_id + "/approve", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ proposal_verification_id: appState.verification.proposal_verification_id }) }); appState.view = "approve"; renderApp(); } catch (error) { setError(error); } }
+    async function verifyProposal() { try { appState.error = null; appState.verification = await api("/proposal-revisions/" + appState.revision.proposal_revision_id + "/verify", { method: "POST" }); appState.view = "verify"; syncRecordUrl(); renderApp(); } catch (error) { setError(error); } }
+    async function approveProposal() { if (!appState.verification?.result.passed) return; try { appState.error = null; appState.version = await api("/proposal-revisions/" + appState.revision.proposal_revision_id + "/approve", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ proposal_verification_id: appState.verification.proposal_verification_id }) }); appState.view = "approve"; syncRecordUrl(); renderApp(); } catch (error) { setError(error); } }
     async function startExperiment() {
       if (appState.startingBatch || !appState.version) return;
       appState.startingBatch = true;
@@ -263,6 +286,7 @@
         if (!appState.batch) {
           const created = await api("/experiment-versions/" + appState.version.experiment_version_id + "/batches", { method: "POST", headers: { "Idempotency-Key": idempotencyKey("batchCreateKey") } });
           appState.batch = await api("/batches/" + created.batch_id);
+          syncRecordUrl();
         }
         if (!appState.batch.start_requested_at) {
           await api("/batches/" + appState.batch.batch_id + "/start", { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey("batchStartKey") }, body: JSON.stringify({ expected_row_version: appState.batch.row_version }) });
@@ -358,9 +382,9 @@
       const textarea = document.createElement("textarea"); textarea.id = "research-goal"; textarea.placeholder = "例如：设计一个 CPU-only 参数扫描实验，验证模型准确率。"; root.append(textarea);
       const context = node("div", undefined, "context"); context.append(field("代码仓库", "labpilot-demo-repo"), field("执行策略", "受约束的 Agent 规划 · 必须经过人工批准")); root.append(context); appendError(root); root.append(button("启动 Agent", "primary", startAgent)); return root;
     }
-    function activityText(step) { if (step.decision_kind === "tool_call") return "工具调用：" + (step.decision_json?.tool_name || "repository tool"); if (step.decision_kind === "propose") return "生成实验方案"; return step.step_kind.replaceAll("_", " "); }
+    function activityText(step) { if (step.decision_kind === "tool_call") return "工具调用：" + (step.decision_json?.tool_name || "repository tool"); if (step.decision_kind === "propose") return "生成实验方案"; if (step.decision_kind === "request_human_input") return "请求人工判断"; if (step.step_kind === "human_input") return "人工回答"; return "模型分析"; }
     function renderAgent() {
-      const root = panel("AI Agent", "读取仓库 · 分析上下文 · 生成实验方案"); root.append(node("p", appState.run?.status === "requires_human_input" ? "该 Agent 运行需要人工输入，已停止推进。" : "浏览器会按持久化状态逐步推进 Agent，每完成一步都会重新读取服务端状态。", "muted"));
+      const root = panel("AI Agent", "读取仓库 · 分析上下文 · 生成实验方案"); root.append(node("p", appState.run?.status === "awaiting_human" ? "Agent 需要你回答一个研究取舍，回答后才能继续。" : "浏览器会按持久化状态逐步推进 Agent，每完成一步都会重新读取服务端状态。", "muted"));
       if (appState.proposal) root.append(node("p", "正在查看已完成的 Agent 运行记录。", "muted"));
       if (appState.trace?.source_batch_summary_revision_id) {
         const source = node("div", "本轮 Agent 已绑定上一轮的确切 Summary 修订；结果中的纳入项、排除项和参数会进入模型上下文。", "context");
@@ -368,7 +392,14 @@
         root.append(source);
       }
       if (appState.trace) { const metrics = node("div", undefined, "metrics"); metrics.append(node("div", undefined, "metric"), node("div", undefined, "metric"), node("div", undefined, "metric")); [["模型提供方 / 模型", appState.trace.provider_name + " / " + appState.trace.model_name], ["模型调用次数", appState.trace.total_model_calls], ["Token 使用量", appState.trace.total_tokens]].forEach((pair, i) => { metrics.children[i].append(node("small", pair[0]), node("b", String(pair[1]))); }); root.append(metrics); const timeline = node("ol", undefined, "timeline"); appState.trace.steps.forEach((step) => { const item = node("li"); item.append(node("b", activityText(step)), node("span", "步骤 " + step.ordinal + " · " + stepOutcomeText(step.outcome))); timeline.append(item); }); root.append(timeline); }
-      if (!appState.advancing && appState.run && !isTerminal(appState.run)) root.append(button("继续 Agent", "primary", advanceAgent));
+      if (appState.run?.status === "awaiting_human") {
+        const question = appState.trace?.steps?.filter((step) => step.decision_kind === "request_human_input").at(-1)?.decision_json?.question;
+        const prompt = node("div", undefined, "context"); prompt.append(node("strong", "Agent 需要你的判断"), node("p", question || "请说明下一步的研究方向。"));
+        const label = node("label", "你的回答"); label.htmlFor = "human-answer"; prompt.append(label);
+        const answer = document.createElement("textarea"); answer.id = "human-answer"; answer.maxLength = 4000; answer.value = appState.humanAnswer; answer.addEventListener("input", () => { appState.humanAnswer = answer.value; }); prompt.append(answer);
+        prompt.append(node("p", "此运行的总时限仍在计时；超时后请从结果页创建新一轮。", "muted"));
+        prompt.append(button(appState.submittingHuman ? "正在提交…" : "提交回答并继续 Agent", "primary", submitHumanInput, appState.submittingHuman)); root.append(prompt);
+      } else if (!appState.advancing && appState.run && !isTerminal(appState.run)) root.append(button("继续 Agent", "primary", advanceAgent));
       if (appState.advancing) root.append(node("p", "正在推进持久化 Agent 运行…", "muted")); if (appState.run?.termination_reason && !appState.proposal) root.append(node("div", "Agent 已停止：" + appState.run.termination_reason, "error")); appendError(root); return root;
     }
     function renderProposal() {
@@ -461,6 +492,7 @@
     }
     function targetRule() { return (appState.proposal?.validation_rules || []).find((rule) => rule.kind === "metric_gte") || null; }
     function summaryMetric(latest, subject) { return (latest.included || []).flatMap((item) => Array.isArray(item.metrics) ? item.metrics : []).find((metric) => metric.metric_name === subject) || null; }
+    function bestIncludedTrial(latest, subject) { return (latest.included || []).map((item) => ({ ordinal: item.trial_ordinal, metric: (item.metrics || []).find((metric) => metric.metric_name === subject) })).filter((item) => Number.isFinite(Number(item.metric?.numeric_value))).reduce((best, item) => !best || Number(item.metric.numeric_value) > Number(best.metric.numeric_value) ? item : best, null); }
     function retryCount() { return Object.values(appState.trials).reduce((total, trial) => total + Math.max(trial.attempt_count - 1, 0), 0); }
     function includedTrial(latest, trial) { return (latest.included || []).some((item) => item.trial_id === trial.trial_id); }
     function trialTargetMetric(trial, subject) { const selection = appState.trialResults[trial.trial_id]?.selection; const results = selection ? appState.attemptResults[selection.attempt_id] : trial.attempt_ids.map((id) => appState.attemptResults[id]).filter(Boolean).at(-1); return results?.metrics.find((metric) => metric.metric_name === subject) || null; }
@@ -469,20 +501,23 @@
     function scientificOutcome(latest) {
       if (!latest) return "结果尚不可用";
       if (!latest.included?.length) return "无可纳入结果";
-      const rule = targetRule(); const metric = rule && summaryMetric(latest, rule.subject); const value = Number(metric?.numeric_value);
+      const rule = targetRule(); const value = Number(rule && latest.aggregates?.[rule.subject]?.mean);
       return !rule || !Number.isFinite(value) ? "结果尚不可用" : value >= Number(rule.threshold) ? "达到目标" : "未达到目标";
     }
     function renderResults() {
       const latest = appState.summary?.latest_summary; if (!latest) return renderExecution();
-      const root = panel("实验结果", "Summary · 持久化验证结果"); root.classList.add("outcome-panel"); const outcome = scientificOutcome(latest); const rule = targetRule(); const primary = rule && summaryMetric(latest, rule.subject); const primaryDetail = Object.values(appState.trials).map((trial) => trialTargetMetric(trial, primary?.metric_name)).find((metric) => metric?.numeric_value === primary?.numeric_value) || primary;
-      const hero = node("section", undefined, "outcome-hero"); const reading = node("div", undefined, "primary-reading"); reading.append(node("small", metricLabel(primaryDetail)), node("b", primary?.numeric_value || "—"), node("span", "持久化验证指标")); if (rule) reading.append(node("p", "目标 ≥ " + rule.threshold, "target-line")); hero.append(reading);
+      const root = panel("实验结果", "Summary · 持久化验证结果"); root.classList.add("outcome-panel"); const outcome = scientificOutcome(latest); const rule = targetRule(); const primary = rule && summaryMetric(latest, rule.subject); const mean = rule && latest.aggregates?.[rule.subject]?.mean; const best = rule && bestIncludedTrial(latest, rule.subject);
+      const hero = node("section", undefined, "outcome-hero"); const reading = node("div", undefined, "primary-reading"); reading.append(node("small", metricLabel(primary) + " · Summary 均值"), node("b", mean ?? "—"), node("span", "已纳入 Trial 的平均值")); if (rule) reading.append(node("p", "目标 ≥ " + rule.threshold, "target-line")); hero.append(reading);
       const meta = node("div", undefined, "outcome-meta"); [["运行状态", executionStatusText(appState.batch?.presentation_status)], ["科学结果", outcome]].forEach(([label, value]) => { const item = node("div"); item.append(node("small", label), node("b", value)); meta.append(item); }); hero.append(meta); root.append(hero);
-      const facts = node("div", undefined, "outcome-facts"); [[appState.batch?.trial_count || 0, "Trial"], [latest.included.length, "已验证并纳入 Summary"], [retryCount(), "重试"]].forEach(([value, label]) => { const item = node("span"); item.append(node("b", value), document.createTextNode(label)); facts.append(item); }); root.append(facts);
+      const facts = node("div", undefined, "outcome-facts"); [[appState.batch?.trial_count || 0, "Trial"], [latest.included.length, "已验证并纳入 Summary"], [best?.metric.numeric_value || "—", best ? "最高单次 · Trial " + best.ordinal : "最高单次"], [retryCount(), "重试"]].forEach(([value, label]) => { const item = node("span"); item.append(node("b", value), document.createTextNode(label)); facts.append(item); }); root.append(facts);
+      root.append(node("p", "Summary 纳入所有通过验证的 Trial，并计算均值；当前没有跨 Trial 的唯一最优模型选择。", "muted"));
       root.append(node("h2", "Trial 对比", "comparison-heading")); if (rule) root.append(node("p", "目标 ≥ " + rule.threshold, "comparison-target")); const comparison = node("div", undefined, "comparison-grid"); Object.values(appState.trials).sort((a, b) => a.trial_ordinal - b.trial_ordinal).forEach((trial) => { const metric = rule && trialTargetMetric(trial, rule.subject); const included = includedTrial(latest, trial); const card = node("article", undefined, "comparison-trial" + (included ? " included" : "")); card.append(node("strong", "Trial " + String(trial.trial_ordinal).padStart(2, "0")), node("b", metric?.numeric_value || "—"), node("span", verdictText(resultReport(trial), trial))); if (included) card.append(node("span", "已纳入 Summary", "status-good")); comparison.append(card); }); root.append(comparison);
       const evidence = node("section", undefined, "summary-evidence"); evidence.append(node("h2", "Summary 证据")); const fields = node("div", undefined, "fields proposal-grid"); fields.append(field("Summary 状态", batchStatusText(latest.presentation_status)), field("修订版本", latest.revision_number), field("汇总协议", latest.summary_protocol_version)); Object.entries(latest.aggregates || {}).forEach(([name, value]) => { const aggregate = node("div", undefined, "aggregate"); aggregate.append(node("strong", "聚合指标 · " + name)); const details = node("div", undefined, "fields"); Object.entries(typeof value === "object" && value ? value : { value }).forEach(([label, item]) => details.append(field(({ mean: "均值", count: "样本数" })[label] || label, valuesText(item)))); aggregate.append(details); fields.append(aggregate); }); evidence.append(fields); root.append(evidence);
       const grid = node("div", undefined, "trial-grid"); Object.values(appState.trials).sort((a, b) => a.trial_ordinal - b.trial_ordinal).forEach((trial) => grid.append(renderTrialCard(trial))); root.append(grid);
       root.append(node("p", "科学结论由已纳入 Summary 的持久化指标与方案阈值推导；Batch 成功本身不代表达到研究目标。", "muted"));
       root.append(node("p", "可将这版确切 Summary 的纳入结果、排除原因和参数条件交给 Agent，生成同一 Experiment 的下一版方案。新方案仍需确定性验证和人工批准。", "muted"));
+      const followUpLabel = node("label", "下一轮研究重点"); followUpLabel.htmlFor = "follow-up-goal"; root.append(followUpLabel);
+      const followUpGoal = document.createElement("textarea"); followUpGoal.id = "follow-up-goal"; followUpGoal.maxLength = 4000; followUpGoal.value = appState.followUpGoal; followUpGoal.addEventListener("input", () => { appState.followUpGoal = followUpGoal.value; }); root.append(followUpGoal);
       root.append(button(appState.startingFollowUp ? "正在创建下一轮…" : "让 Agent 基于结果提出下一轮方案", "primary", startFollowUp, appState.startingFollowUp)); return root;
     }
     function renderApp() { runStatus.textContent = runStatusText(); renderStages(); const view = appState.view; workspace.replaceChildren(view === "goal" ? renderGoal() : view === "agent" ? renderAgent() : view === "proposal" ? renderProposal() : view === "verify" ? renderVerify() : view === "execute" ? renderExecution() : view === "results" ? renderResults() : renderApprove()); }

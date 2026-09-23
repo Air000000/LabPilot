@@ -43,9 +43,12 @@ async def ops(
         for run in runs:
             links = [_link(f"/agent-runs/{run.agent_run_id}/trace", "Agent 步骤")]
             operator_params = {"run": str(run.agent_run_id)}
-            phase = {"failed": "Agent 失败", "completed": "Agent 已结束 / 未生成方案"}.get(
-                run.status, "Agent 运行中"
-            )
+            phase = {
+                "failed": "Agent 失败",
+                "completed": "Agent 已结束 / 未生成方案",
+                "awaiting_human": "等待人工回答",
+                "budget_exhausted": "预算已耗尽",
+            }.get(run.status, "Agent 运行中")
             tool_names = (
                 await session.scalars(
                     select(ToolCallRow.tool_name)
@@ -130,7 +133,9 @@ async def ops(
                             links.append(_link(f"/batches/{batch.batch_id}/summary", "结果汇总"))
                             for name, value in summary.aggregates_json.items():
                                 if isinstance(value, dict) and "mean" in value:
-                                    details.append(f"{escape(name)}: {escape(str(value['mean']))}")
+                                    details.append(
+                                        f"{escape(name)} 均值: {escape(str(value['mean']))}"
+                                    )
             if run.source_batch_summary_revision_id is not None:
                 source = await session.get(
                     BatchSummaryRevisionRow, run.source_batch_summary_revision_id
