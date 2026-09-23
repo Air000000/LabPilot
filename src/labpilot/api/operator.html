@@ -17,6 +17,7 @@
     .brand { font-size: 18px; font-weight: 760; letter-spacing: -.02em; }
     .brand span { color: #a9d7e6; font-weight: 400; }
     .run-status { color: #c9dce7; font-size: 13px; }
+    .topbar a { color: #a9d7e6; font-size: 14px; margin-left: 18px; }
     .shell { display: grid; gap: 26px; grid-template-columns: minmax(0, 1fr) 254px; margin: 0 auto; max-width: 1320px; padding: 32px 24px 56px; }
     .workspace { min-width: 0; }
     .panel, .stage { background: #fff; border: 1px solid #d5e0e7; border-radius: 14px; }
@@ -141,7 +142,7 @@
   </style>
 </head>
 <body>
-  <header class="topbar"><div class="brand">LabPilot <span>· AI 实验操作台</span></div><div class="run-status" id="run-status">准备定义受约束的研究目标</div></header>
+  <header class="topbar"><div class="brand">LabPilot <span>· AI 实验操作台</span></div><div><span class="run-status" id="run-status">准备定义受约束的研究目标</span><a href="/ops">运行记录</a></div></header>
   <main class="shell"><section class="workspace" id="workspace" aria-live="polite"></section><aside class="progress" aria-label="实验流程"><h2>实验流程</h2><div id="stages"></div></aside></main>
   <script>
     const OPERATOR_CONFIG = {

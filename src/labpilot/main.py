@@ -108,6 +108,7 @@ services = ApplicationServices(
     ),
     execution_queries=ExecutionQueryService(database.session),
     result_queries=ResultQueryService(database.session),
+    ops_sessions=database.session,
 )
 actor_provider = ServerConfiguredActorProvider(
     installation_identity=settings.installation_identity,

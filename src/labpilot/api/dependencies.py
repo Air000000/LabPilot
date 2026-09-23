@@ -8,6 +8,7 @@ from labpilot.api.actor import ActorProvider
 from labpilot.api.errors import ServiceUnavailableError
 from labpilot.common.commands import CommandContext
 from labpilot.context.repository_source import RepositorySnapshotSourceService
+from labpilot.db.uow import SessionContextFactory
 from labpilot.execution.batch_service import BatchApplicationService
 from labpilot.execution.query_service import ExecutionQueryService
 from labpilot.experiments.project_service import ProjectApplicationService
@@ -24,6 +25,7 @@ class ApplicationServices:
     batches: BatchApplicationService | None = None
     execution_queries: ExecutionQueryService | None = None
     result_queries: ResultQueryService | None = None
+    ops_sessions: SessionContextFactory | None = None
 
 
 def get_application_services(request: Request) -> ApplicationServices:
