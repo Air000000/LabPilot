@@ -1,279 +1,281 @@
 # LabPilot
 
-> **An AI-assisted experiment runtime that turns research goals, experiment versions, physical executions, and results into a traceable experiment lineage.**
+> **一个 AI 辅助实验运行时：把研究目标、实验版本、物理执行与结果组织成可追溯的实验谱系。**
 
 [![CI](https://github.com/Air000000/LabPilot/actions/workflows/ci.yml/badge.svg)](https://github.com/Air000000/LabPilot/actions/workflows/ci.yml)
 
-LabPilot starts from a practical research problem: as experiments accumulate, the researcher is often left with many proposal variants, parameter/seed branches, checkpoints, logs, and metrics, while the relationships between **why an experiment was proposed, which version was approved, what was actually executed, and which result was ultimately trusted** become increasingly difficult to reconstruct.
+LabPilot 从一个实际科研问题出发：随着实验不断积累，研究者往往会面对大量提案版本、参数/随机种子分支、检查点、日志和指标，而“**为什么提出这个实验、最终批准的是哪个版本、实际执行了什么、最终信任的是哪个结果**”之间的关系会越来越难以还原。
 
-The goal is to make that research trajectory explicit and durable. LabPilot persists proposal revisions, approvals, immutable experiment versions, execution identities, physical attempts, artifacts, metrics, validations, and formal result selections so that an experiment can be traced from its research goal to its final result.
+LabPilot 的目标，是把这条研究轨迹显式化并持久保存。系统会记录 ProposalRevision、审批、不可变的 ExperimentVersion、执行身份、物理 Attempt、Artifact、Metric、Validation 以及正式的 Result Selection，使一次实验可以从最初的研究目标一直追溯到最终结果。
 
-The Agent participates on top of that lineage: it can inspect bounded repository context, incorporate prior tool results and human feedback, and—after a Batch closes—reason from an exact persisted result summary to help revise the next experiment proposal. The runtime and recovery mechanisms exist to make that assistance safe and reproducible rather than to turn the model into an unrestricted source of execution truth.
+Agent 运行在这条实验谱系之上：它可以读取受限的仓库上下文，结合之前的工具结果和人工反馈；当一个 Batch 结束后，还可以基于精确持久化的结果摘要，辅助提出下一轮实验方案。Runtime 与恢复机制的作用，是让这种 AI 辅助过程保持安全、可复现，而不是让模型成为不受约束的执行事实来源。
 
-```text
-Research Goal
-  -> Proposal Revision
-  -> Verification
-  -> Human Approval
-  -> Immutable ExperimentVersion
+~~~text
+研究目标
+  -> ProposalRevision
+  -> 确定性 Verification
+  -> 人工审批
+  -> 不可变 ExperimentVersion
   -> Batch
-  -> Trial (parameter / seed branch)
-  -> Attempt (physical execution intent)
-  -> Real Training
+  -> Trial（参数 / 随机种子分支）
+  -> Attempt（一次物理执行意图）
+  -> 真实训练
   -> Artifact / Metric / Validation
   -> Result Selection
   -> Batch Summary
-  -> Exact ResultContext
+  -> 精确 ResultContext
   -> Follow-up AgentRun
-  -> Stop | next Proposal Revision in the same Experiment
-```
+  -> Stop | 同一 Experiment 中的下一条 ProposalRevision
+~~~
 
-## Why LabPilot
+## 为什么需要 LabPilot
 
-In an iterative research project, the difficult part is often not launching one more training command. The difficult part is preserving enough context to answer questions later:
+在迭代式科研项目里，困难往往不是“再启动一次训练命令”，而是事后仍然能够回答这些问题：
 
-- Why was this experiment run in the first place?
-- Which proposal revision and repository state did it come from?
-- Which code, data, environment expectations, parameters, and validation rules were actually approved?
-- Which parameter/seed branch produced this Trial?
-- Was a later Attempt a new scientific trial or only an infrastructure retry?
-- Which physical process produced a checkpoint or metric?
-- Which result passed the declared validation protocol and became the formal result?
-- What evidence should inform the next experiment revision?
+- 当初为什么要做这个实验？
+- 它来自哪一个 ProposalRevision 和哪一个仓库状态？
+- 实际批准的是哪份代码、数据、环境预期、参数配置和验证规则？
+- 当前 Trial 对应的是哪个参数/随机种子分支？
+- 后续 Attempt 是新的科学实验，还是一次基础设施重试？
+- 哪个物理进程真正产出了某个 checkpoint 或 metric？
+- 哪个结果通过了既定验证协议，并最终成为正式结果？
+- 哪些证据应该进入下一轮实验修订？
 
-Without an explicit lineage, those answers tend to be scattered across shell history, directories, checkpoints, logs, spreadsheets, and human memory. LabPilot's V1 models the path from **proposal goal -> approved version -> logical trial -> physical attempt -> validated result** as durable state.
+如果缺少显式的实验谱系，这些信息通常会散落在 shell 历史、目录、checkpoint、日志、表格以及人的记忆里。LabPilot V1 将 **提案目标 -> 已批准版本 -> 逻辑 Trial -> 物理 Attempt -> 已验证结果** 建模为持久化状态。
 
-This is the product motivation. The reliability mechanisms described below solve a second-order problem: once an AI Agent is allowed to participate in that workflow, its probabilistic decisions must not make the experiment record less trustworthy.
+这解决的是产品层面的核心问题。下面的可靠性机制解决的是第二层问题：一旦允许 AI Agent 参与这条科研工作流，概率性的模型决策就不能反过来降低实验记录本身的可信度。
 
-> **Current evidence boundary:** LabPilot does not claim a measured reduction in researcher time or a production-scale productivity improvement. The current V1 claim is narrower: it establishes a traceable, recoverable, and verifiable experiment lineage that can support later analysis and iteration.
+> **当前证据边界：** LabPilot 目前不宣称已经量化降低研究者时间成本，也不宣称已经验证生产规模下的效率提升。V1 当前更窄的主张是：建立一条可追溯、可恢复、可验证的实验谱系，为后续分析和迭代提供可靠基础。
 
-## Architecture
+## 架构
 
-```mermaid
+~~~mermaid
 flowchart LR
-    Goal[Research Goal] --> Ctx[Context Compiler]
+    Goal[研究目标] --> Ctx[Context Compiler]
     Repo[Repository Snapshot] --> Ctx
-    Tool[Read-only Repository Tools] --> Ctx
-    Human[Human Feedback] --> Ctx
+    Tool[只读 Repository Tools] --> Ctx
+    Human[人工反馈] --> Ctx
 
     Ctx --> Agent[Bounded Agent Runtime]
-    Agent --> Decision[Structured Decision]
+    Agent --> Decision[结构化决策]
     Decision --> ToolCall[Tool Call]
     Decision --> HumanInput[Request Human Input]
-    Decision --> Proposal[Proposal Revision]
+    Decision --> Proposal[ProposalRevision]
     Decision --> Stop[Stop]
 
-    Proposal --> Verify[Verification]
-    Verify --> Approval[Human Approval]
-    Approval --> Version[Immutable ExperimentVersion]
+    Proposal --> Verify[确定性 Verification]
+    Verify --> Approval[人工审批]
+    Approval --> Version[不可变 ExperimentVersion]
 
     Version --> Batch[Batch]
     Batch --> Trial[Trial]
     Trial --> Attempt[Attempt]
     Attempt --> Coordinator[Coordinator]
     Coordinator --> Runner[Supervised Runner]
-    Runner --> Training[Real Training Process]
+    Runner --> Training[真实训练进程]
 
     Attempt --> Artifact[Artifact]
     Artifact --> Metric[Metric]
-    Metric --> Validation[Deterministic Validation]
+    Metric --> Validation[确定性 Validation]
     Validation --> Selection[Result Selection]
     Selection --> Summary[Batch Summary]
-    Summary --> ResultCtx[Exact ResultContext]
+    Summary --> ResultCtx[精确 ResultContext]
     ResultCtx --> FollowAgent[Follow-up AgentRun]
     FollowAgent --> FollowDecision{Stop / Human Input / Proposal}
     FollowDecision --> FollowStop[Stop]
     FollowDecision --> FollowHuman[Request Human Input]
     FollowDecision --> Proposal
-```
+~~~
 
-## Core capabilities
+## 核心能力
 
-### 1. Research lineage and experiment governance
+### 1. 实验谱系与实验治理
 
-LabPilot treats experiment history as a first-class system concern rather than as a directory of outputs.
+LabPilot 将实验历史视为系统的一等公民，而不是一堆输出目录。
 
-A proposal revision persists the experiment `goal` together with the repository snapshot and execution/validation semantics. The proposal then moves through:
+ProposalRevision 会持久化实验 `goal`，并同时绑定仓库快照以及执行/验证语义。随后，提案依次经过：
 
-```text
-Proposal Revision
+~~~text
+ProposalRevision
   -> Verification
   -> Human Approval
   -> Immutable ExperimentVersion
-```
+~~~
 
-The approved `ExperimentVersion` freezes the semantics needed to later explain and reproduce the experiment, including repository identity, dataset reference, environment expectations, parameterization, declared metrics/artifacts, and validation protocol.
+批准后的 `ExperimentVersion` 会冻结后续解释和复现实验所需要的语义，包括仓库身份、数据集引用、环境预期、参数配置、声明的 Metric/Artifact，以及 Validation Protocol。
 
-Parameter matrices and random seeds are expanded into stable **Batch / Trial / Attempt** identities:
+参数矩阵与随机种子会被展开为稳定的 **Batch / Trial / Attempt** 身份：
 
-- **Batch** groups one execution expansion of an approved experiment version;
-- **Trial** represents one logical parameter/seed branch;
-- **Attempt** represents a physical execution attempt for that Trial.
+- **Batch**：一次基于已批准 ExperimentVersion 的执行展开；
+- **Trial**：一个逻辑上的参数/随机种子分支；
+- **Attempt**：该 Trial 的一次物理执行尝试。
 
-This separation keeps research intent, approved design, logical experiment branches, physical execution, and later results connected without collapsing them into one opaque "run" record.
+这种拆分让研究意图、已批准设计、逻辑实验分支、物理执行以及后续结果保持明确关联，而不会被压缩成一个含义模糊的 “run” 记录。
 
-### 2. Agent-assisted experiment iteration
+### 2. Agent 辅助的实验迭代
 
-The Agent is intended to help the researcher reason about and revise experiments, not to replace the authoritative experiment record.
+Agent 的目标是帮助研究者理解实验、修订实验，而不是取代权威的实验记录。
 
-LabPilot uses a **bounded Agent Loop**. The runtime compiles repository state, prior tool results, and human feedback into controlled context, then constrains each model step with:
+LabPilot 使用 **Bounded Agent Loop（受限 Agent 循环）**。Runtime 会把仓库状态、之前的工具结果和人工反馈编译为受控上下文，并通过以下机制约束每一次模型步骤：
 
-- a structured decision schema;
-- versioned Tool Contracts and JSON Schema validation;
-- bounded repository paths and read-only repository tools;
-- single-step / single-decision semantics;
-- step, model-call, token, and wall-clock budgets;
-- **persist-before-execute**: a validated decision is persisted before tool execution or proposal materialization.
+- 结构化的 Decision Schema；
+- 带版本的 Tool Contract 与 JSON Schema 校验；
+- 有边界的仓库路径和只读 Repository Tools；
+- 单步 / 单决策语义；
+- Step、Model Call、Token 和 Wall-clock Budget；
+- **persist-before-execute**：先持久化通过校验的 Decision，再执行工具调用或物化 Proposal。
 
-The current decision surface is intentionally small:
+当前 Agent 的决策面刻意保持很小：
 
-```text
+~~~text
 Tool Call | Request Human Input | Proposal | Stop
-```
+~~~
 
-This lets the Agent inspect evidence and help form the next proposal while keeping model authority explicit and every transition auditable.
+这样，Agent 可以读取证据并辅助形成下一份 Proposal，同时模型权限边界保持显式，每个状态迁移也都可以审计。
 
-After a Batch summary is persisted, LabPilot can start a **Follow-up AgentRun** pinned to that exact `BatchSummaryRevision`. The model receives a bounded deterministic `ResultContext` containing the source experiment/version identities, Trial conditions, selected valid evidence, exclusions, warnings, and aggregates. A follow-up Proposal is created as the next `ProposalRevision` in the **same Experiment**, but it still must pass the existing deterministic verification and explicit human-approval path before a new `ExperimentVersion` exists. The Agent does not automatically approve the proposal or create/start the next Batch.
+当 Batch Summary 已经持久化后，LabPilot 可以创建一个绑定到该精确 `BatchSummaryRevision` 的 **Follow-up AgentRun**。模型获得的是一个有边界、确定性的 `ResultContext`，其中包含源 Experiment/Version 身份、Trial 条件、被选中的有效证据、排除项、警告和聚合结果。
 
-### 3. Reliable long-running physical execution
+Follow-up Proposal 会成为**同一个 Experiment** 中的下一条 `ProposalRevision`，但它仍然必须经过已有的确定性 Verification 和显式人工审批，之后才能产生新的 `ExperimentVersion`。Agent 不会自动批准 Proposal，也不会自动创建或启动下一批 Batch。
 
-Once an approved experiment crosses into real training, LabPilot has to preserve lineage even through crashes and uncertain external outcomes.
+### 3. 可靠的长时间物理执行
 
-A long-running training task creates a control-plane problem: after a coordinator crash or network failure, the system may not know whether the physical launch actually happened. Blindly retrying would create a second process and corrupt the relationship between the recorded Attempt and reality.
+当已批准实验真正进入训练阶段后，即使发生崩溃或外部结果不确定，LabPilot 也必须保持实验谱系不被破坏。
 
-LabPilot therefore uses three core mechanisms:
+长时间训练本质上会产生一个控制面问题：Coordinator 崩溃或网络故障后，系统可能无法立即知道物理启动是否已经发生。如果此时直接重试，就可能启动第二个训练进程，从而破坏数据库 Attempt 与真实物理执行之间的一一对应关系。
 
-1. **Persistent Launch Intent** - persist the frozen launch specification and launch intent before crossing the external Runner boundary.
-2. **Stable Execution Identity** - the Runner receives a stable physical execution identity instead of a new identity on every recovery path.
-3. **Coordinator Reconciliation** - startup and periodic scans observe physical state and reconcile it with persisted control-plane state instead of blindly relaunching.
+因此，LabPilot 使用三个核心机制：
 
-Retry and cancellation are explicit state-machine operations rather than generic exception retries.
+1. **Persistent Launch Intent（持久化启动意图）** —— 在跨越外部 Runner 边界之前，先保存冻结后的 Launch Spec 与 Launch Intent。
+2. **Stable Execution Identity（稳定执行身份）** —— Runner 接收稳定的物理执行身份，而不是在每条恢复路径上重新生成一个身份。
+3. **Coordinator Reconciliation（协调器对账）** —— 启动扫描与周期扫描读取真实物理状态，并与持久化控制面状态进行对账，而不是盲目重新启动。
 
-In fault-injection acceptance testing, a Coordinator restart was reconciled back to the original training Attempt **without a second physical launch**. The execution path also covers cancellation of both already-running and not-yet-launched work.
+Retry 与 Cancellation 都是显式状态机操作，而不是普通异常重试。
 
-> LabPilot does **not** claim a global "exactly-once" execution guarantee. The narrower invariant is: persist intent before side effects, use stable identities, and reconcile uncertain outcomes instead of replaying them blindly.
+在故障注入验收中，Coordinator 重启后能够重新对账到原来的训练 Attempt，**没有产生第二次物理启动**。执行路径也覆盖了已经运行任务与尚未启动任务的取消场景。
 
-### 4. Result validation and experiment closure
+> LabPilot **不宣称**提供全局意义上的 “exactly-once” 执行保证。当前更准确的约束是：副作用发生前先持久化意图，使用稳定身份，并在结果不确定时通过对账恢复，而不是盲目重放。
 
-A directory full of checkpoints and metric files is not yet a usable experiment history. LabPilot closes the lineage with a deterministic result chain:
+### 4. 结果验证与实验闭环
 
-```text
+只有 checkpoint 和 metric 文件，还不能构成可用的实验历史。LabPilot 通过一条确定性结果链关闭实验谱系：
+
+~~~text
 Artifact
   -> Metric
   -> Validation
   -> Result Selection
   -> Batch Summary
-```
+~~~
 
-The Result Plane records artifacts and metric observations, evaluates deterministic validation rules such as artifact existence and metric finiteness, selects the formal result for a Trial, and produces versioned Batch summaries.
+Result Plane 会记录 Artifact 与 Metric Observation，执行确定性的验证规则，例如 Artifact 是否存在、Metric 是否有限，以及阈值规则；随后为 Trial 选择正式结果，并生成带版本的 Batch Summary。
 
-This deliberately separates:
+这里刻意区分两类能力：
 
-- **probabilistic Agent reasoning** for inspecting context and proposing the next experiment;
-- **deterministic validation** for deciding whether scientific outputs satisfy the declared protocol.
+- **概率性的 Agent 推理**：负责读取上下文、解释结果并提出下一轮实验；
+- **确定性的 Result Validation**：负责判断科学输出是否满足已声明的验证协议。
 
-Runtime Events and SSE-backed read paths provide traceability and replay across execution and result state. The result lineage can therefore be tied back to the Trial and approved `ExperimentVersion` that produced it rather than existing as an isolated metric.
+Runtime Event 与基于 SSE 的读取路径提供执行状态和结果状态的可追踪、可重放视图。因此，最终结果可以一直追溯回生成它的 Trial 以及对应的已批准 `ExperimentVersion`，而不是成为一个孤立指标。
 
-## Key design decisions
+## 关键设计决策
 
-| Decision | Rationale |
+| 设计决策 | 原因 |
 |---|---|
-| Persist proposal revisions and immutable ExperimentVersions | Preserve why an experiment changed and which exact design was actually authorized. |
-| Separate Batch / Trial / Attempt identities | Keep parameter/seed branches distinct from infrastructure retries and physical executions. |
-| Bounded Agent Runtime instead of unrestricted autonomy | The Agent should help revise experiments without becoming the source of truth for execution or result validity. |
-| Single-step / single-decision model loop | Keeps each model transition observable, budgeted, and recoverable. |
-| Persist decision before execution | Avoids losing the authoritative decision while a later side effect has already happened. |
-| Human approval before immutable ExperimentVersion | Separates model suggestions from the experiment that is actually authorized to run. |
-| Launch intent before Runner launch | Gives recovery logic a durable fact to reconcile after crashes or uncertain external outcomes. |
-| Stable execution identity | Lets recovery refer to the same physical execution instead of accidentally creating a new one. |
-| Deterministic Result Validation | The formal scientific result should be reproducible and auditable instead of depending on a free-form LLM judgment. |
-| Exact result-context pinning | A Follow-up AgentRun reasons from one exact persisted BatchSummaryRevision rather than mutable latest/raw result state. |
+| 持久化 ProposalRevision，并使用不可变 ExperimentVersion | 保留实验为什么变化，以及真正获准执行的是哪个精确版本。 |
+| 拆分 Batch / Trial / Attempt 身份 | 区分参数/随机种子分支、基础设施重试与真实物理执行。 |
+| 使用 Bounded Agent Runtime，而不是不受限自治 | Agent 可以帮助修订实验，但不能成为执行事实或结果有效性的最终来源。 |
+| 单步 / 单决策模型循环 | 让每一次模型状态迁移都可观察、可预算、可恢复。 |
+| Decision 先持久化、后执行 | 避免外部副作用已经发生，但权威决策记录却丢失。 |
+| 创建不可变 ExperimentVersion 前必须人工审批 | 将模型建议与真正获准执行的实验明确分开。 |
+| Runner 启动前持久化 Launch Intent | 在崩溃或外部结果不确定时，为恢复逻辑保留可对账的持久事实。 |
+| Stable Execution Identity | 恢复时仍指向同一次物理执行，避免误创建新的执行实例。 |
+| Deterministic Result Validation | 正式科学结果应当可复现、可审计，而不是依赖自由文本形式的 LLM 判断。 |
+| 精确 ResultContext 绑定 | Follow-up AgentRun 固定读取某一个精确持久化的 BatchSummaryRevision，而不是可变的 latest/raw result state。 |
 
-## Runtime components
+## 运行时组件
 
-- **FastAPI control plane** - experiment, proposal, execution, query, and event APIs.
-- **PostgreSQL** - authoritative experiment lineage, identities, command receipts, events, and result records.
-- **Bounded Agent Runtime** - repository-aware and result-aware proposal iteration under explicit tool, budget, provenance, and approval constraints.
-- **Coordinator** - preparation, admission, execution control, recovery, cancellation, and reconciliation.
-- **Runner** - isolated physical-process boundary for real training workloads.
-- **Repository observation layer** - bounded, read-only repository access used by the Agent Harness.
-- **Result Plane** - artifacts, metrics, deterministic validation, result selection, and Batch summaries.
-- **Runtime Events / SSE** - state trace and replay surfaces.
+- **FastAPI Control Plane** —— 提供 Experiment、Proposal、Execution、Query 和 Event API。
+- **PostgreSQL** —— 保存权威实验谱系、身份、Command Receipt、Runtime Event 和 Result 记录。
+- **Bounded Agent Runtime** —— 在显式 Tool、Budget、Provenance 与 Approval 约束下，执行仓库感知和结果感知的 Proposal 迭代。
+- **Coordinator** —— 负责 Preparation、Admission、Execution Control、Recovery、Cancellation 和 Reconciliation。
+- **Runner** —— 面向真实训练 workload 的隔离物理进程边界。
+- **Repository Observation Layer** —— 为 Agent Harness 提供有边界、只读的仓库访问。
+- **Result Plane** —— 负责 Artifact、Metric、确定性 Validation、Result Selection 和 Batch Summary。
+- **Runtime Events / SSE** —— 提供状态追踪与重放接口。
 
-## Quick start
+## 快速开始
 
-### Requirements
+### 环境要求
 
 - Python **3.12**
 - Docker / Docker Compose
-- PostgreSQL **16** (provided by Compose for local development)
-- `uv` for the repository development workflow
-- A Linux/systemd Runner host for the full real-training execution path
+- PostgreSQL **16**（本地开发由 Compose 提供）
+- 使用 `uv` 进行仓库开发与依赖管理
+- 如需跑完整真实训练链路，需要 Linux/systemd Runner Host
 
-### Start the local API control plane
+### 启动本地 API Control Plane
 
-```bash
+~~~bash
 docker compose up --build postgres migrate api
-```
+~~~
 
-Then verify readiness:
+随后检查就绪状态：
 
-```bash
+~~~bash
 curl http://127.0.0.1:8000/health/ready
-```
+~~~
 
-The full training path additionally uses the resident Coordinator and the dedicated Runner host. See:
+完整训练链路还需要常驻 Coordinator 与专用 Runner Host。相关入口：
 
 - [`compose.yaml`](compose.yaml)
 - [`scripts/install_labpilot_runner_host.sh`](scripts/install_labpilot_runner_host.sh)
 - [`deploy/systemd/labpilot-runner.service`](deploy/systemd/labpilot-runner.service)
 
-## Development and verification
+## 开发与验证
 
-The local-equivalent CI gate is:
+本地等价 CI Gate：
 
-```bash
+~~~bash
 ./scripts/check_ci.sh
-```
+~~~
 
-It verifies locked dependencies and historical dependency manifests, then runs:
+它会校验锁定依赖与历史依赖清单，然后执行：
 
-- Ruff;
-- strict mypy;
-- unit and architecture tests;
-- PostgreSQL integration tests;
-- dependency-guard shell tests.
+- Ruff；
+- strict mypy；
+- unit / architecture tests；
+- PostgreSQL integration tests；
+- dependency-guard shell tests。
 
-GitHub Actions runs the same gate and additionally verifies the production Docker image/runtime assumptions.
+GitHub Actions 执行同一套 Gate，并额外验证生产 Docker Image 与 Runtime 假设。
 
-## Scope and boundaries
+## 范围与边界
 
-LabPilot V1 prioritizes **traceable experiment lineage, correctness, recovery, reproducibility, no-duplicate physical launch in the accepted recovery path, and deterministic result closure** over feature breadth.
+LabPilot V1 优先保证 **可追溯实验谱系、正确性、恢复能力、可复现性、已验收恢复路径中的无重复物理启动，以及确定性结果闭环**，而不是追求功能数量。
 
-The current core is not intended to be:
+当前核心系统并不试图成为：
 
-- a generic multi-agent framework;
-- an unrestricted autonomous research agent;
-- a generic workflow engine;
-- a complete experiment-tracking UI or scientific notebook replacement;
-- an automatic self-running next-experiment loop that bypasses verification or human approval;
-- a claim of production-scale horizontal scheduling or global exactly-once semantics.
+- 通用 Multi-Agent Framework；
+- 不受限制的自主科研 Agent；
+- 通用 Workflow Engine；
+- 完整的实验追踪 UI 或科学 Notebook 替代品；
+- 绕过 Verification 与 Human Approval、自动无限运行下一轮实验的自治闭环；
+- 生产规模横向调度能力或全局 exactly-once 语义的证明。
 
-Those are separate product and scaling problems. V1 first establishes a trustworthy experiment lineage and the invariants required for an AI Agent to participate in that lineage without making it less reliable.
+这些属于独立的产品与扩展问题。V1 首先建立可信的实验谱系，以及让 AI Agent 参与这条谱系时仍然能够保持可靠性所需要的系统不变量。
 
-## Documentation
+## 文档
 
-Detailed architecture, accepted invariants, implementation plans, ADRs, and acceptance evidence remain under [`docs/`](docs/).
+详细架构、已验收不变量、实施计划、ADR 与 Acceptance Evidence 均保存在 [`docs/`](docs/) 下。
 
-Useful entry points include:
+建议从以下入口开始：
 
-- [`DOCUMENT-STATUS.md`](DOCUMENT-STATUS.md) - document authority and status map;
-- [`docs/labpilot/`](docs/labpilot/) - architecture and implementation documents;
-- [`docs/superpowers/specs/`](docs/superpowers/specs/) - focused design specifications and ADRs;
-- [`docs/superpowers/evidence/`](docs/superpowers/evidence/) - acceptance and failure-injection evidence.
+- [`DOCUMENT-STATUS.md`](DOCUMENT-STATUS.md) —— 文档权威关系与状态索引；
+- [`docs/labpilot/`](docs/labpilot/) —— 架构与实现文档；
+- [`docs/superpowers/specs/`](docs/superpowers/specs/) —— 聚焦设计规格与 ADR；
+- [`docs/superpowers/evidence/`](docs/superpowers/evidence/) —— 验收与故障注入证据。
 
-The top-level README is intentionally a product-and-architecture overview; historical frozen plans and integrity manifests remain in the documentation tree for traceability.
+顶层 README 有意保持为产品与架构总览；历史冻结计划和完整性清单仍保留在文档树中，以便追溯。
 
-## Technology
+## 技术栈
 
 **Python 3.12 · FastAPI · PostgreSQL · SQLAlchemy · Pydantic · Alembic · Docker Compose · systemd · Pytest · Ruff · mypy · SSE**
