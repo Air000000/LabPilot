@@ -76,13 +76,16 @@ async def test_ops_finds_recent_run_without_remembering_ids(
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/ops")
             operator = await client.get("/operator")
+            missing_summary = await client.get(f"/ops/summary-revisions/{uuid4()}")
         assert response.status_code == 200
         assert operator.status_code == 200
+        assert missing_summary.status_code == 404
         assert 'href="/ops"' in operator.text
         assert "CPU &lt;audit&gt; experiment" in response.text
         assert "阶段: Agent 已结束 / 未生成方案" in response.text
         assert "CPU <audit> experiment" not in response.text
         assert f"/agent-runs/{run_id}/trace" in response.text
+        assert f"/operator?run={run_id}" in response.text
         assert "/operator" in response.text
         async with database.session() as session:
             assert await session.scalar(select(func.count()).select_from(AgentRunRow)) == 1

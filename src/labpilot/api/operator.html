@@ -151,7 +151,7 @@
       budget: { max_steps: 6, max_model_calls: 4, max_wall_clock_seconds: 90, max_tokens: 24000 },
       advanceDelayMs: 450
     };
-    const appState = { run: null, trace: null, proposal: null, revision: null, verification: null, version: null, batch: null, batchCreateKey: null, batchStartKey: null, trials: {}, attempts: {}, attemptResults: {}, trialResults: {}, summary: null, resultState: {}, summaryState: null, eventSource: null, sseState: "idle", selectedTrialId: null, executionError: null, error: null, advancing: false, startingBatch: false, refreshingExecution: false, view: "goal" };
+    const appState = { run: null, trace: null, proposal: null, revision: null, verification: null, version: null, batch: null, batchCreateKey: null, batchStartKey: null, trials: {}, attempts: {}, attemptResults: {}, trialResults: {}, summary: null, resultState: {}, summaryState: null, startingFollowUp: false, eventSource: null, sseState: "idle", selectedTrialId: null, executionError: null, error: null, advancing: false, startingBatch: false, refreshingExecution: false, view: "goal" };
     const stages = [
       { label: "目标", view: "goal" }, { label: "Agent", view: "agent" },
       { label: "实验方案", view: "proposal" }, { label: "验证", view: "verify" },
@@ -222,6 +222,22 @@
         renderApp();
         advanceAgent();
       } catch (error) { setError(error); }
+    }
+    async function startFollowUp() {
+      const latest = appState.summary?.latest_summary;
+      if (!latest?.revision_id || !appState.batch || appState.startingFollowUp) return;
+      appState.startingFollowUp = true;
+      renderApp();
+      try {
+        const goal = "基于上一轮已验证的结果，提出同一研究目标的下一轮 CPU-only 参数实验。优先探索在保持原验证目标的同时减少训练资源；只调整参数，最多四个 Trial。";
+        const run = await api("/projects/" + appState.trace.project_id + "/agent-runs/follow-up", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source_batch_summary_revision_id: latest.revision_id, repository_snapshot_id: appState.trace.repository_snapshot_id, goal, budget: OPERATOR_CONFIG.budget }) });
+        closeEvents();
+        Object.assign(appState, { run, trace: null, proposal: null, revision: null, verification: null, version: null, batch: null, batchCreateKey: null, batchStartKey: null, startingFollowUp: false, error: null, view: "agent" });
+        resetExecutionState();
+        await refreshRun();
+        renderApp();
+        advanceAgent();
+      } catch (error) { appState.startingFollowUp = false; setError(error); }
     }
     function isTerminal(run) { return Boolean(run.produced_proposal_revision_id || run.termination_reason || ["completed", "failed", "blocked", "requires_human_input"].includes(run.status)); }
     async function advanceAgent() {
@@ -346,7 +362,13 @@
     function renderAgent() {
       const root = panel("AI Agent", "读取仓库 · 分析上下文 · 生成实验方案"); root.append(node("p", appState.run?.status === "requires_human_input" ? "该 Agent 运行需要人工输入，已停止推进。" : "浏览器会按持久化状态逐步推进 Agent，每完成一步都会重新读取服务端状态。", "muted"));
       if (appState.proposal) root.append(node("p", "正在查看已完成的 Agent 运行记录。", "muted"));
+      if (appState.trace?.source_batch_summary_revision_id) {
+        const source = node("div", "本轮 Agent 已绑定上一轮的确切 Summary 修订；结果中的纳入项、排除项和参数会进入模型上下文。", "context");
+        const link = node("a", "查看绑定的结果修订"); link.href = "/ops/summary-revisions/" + appState.trace.source_batch_summary_revision_id; source.append(link);
+        root.append(source);
+      }
       if (appState.trace) { const metrics = node("div", undefined, "metrics"); metrics.append(node("div", undefined, "metric"), node("div", undefined, "metric"), node("div", undefined, "metric")); [["模型提供方 / 模型", appState.trace.provider_name + " / " + appState.trace.model_name], ["模型调用次数", appState.trace.total_model_calls], ["Token 使用量", appState.trace.total_tokens]].forEach((pair, i) => { metrics.children[i].append(node("small", pair[0]), node("b", String(pair[1]))); }); root.append(metrics); const timeline = node("ol", undefined, "timeline"); appState.trace.steps.forEach((step) => { const item = node("li"); item.append(node("b", activityText(step)), node("span", "步骤 " + step.ordinal + " · " + stepOutcomeText(step.outcome))); timeline.append(item); }); root.append(timeline); }
+      if (!appState.advancing && appState.run && !isTerminal(appState.run)) root.append(button("继续 Agent", "primary", advanceAgent));
       if (appState.advancing) root.append(node("p", "正在推进持久化 Agent 运行…", "muted")); if (appState.run?.termination_reason && !appState.proposal) root.append(node("div", "Agent 已停止：" + appState.run.termination_reason, "error")); appendError(root); return root;
     }
     function renderProposal() {
@@ -459,10 +481,38 @@
       root.append(node("h2", "Trial 对比", "comparison-heading")); if (rule) root.append(node("p", "目标 ≥ " + rule.threshold, "comparison-target")); const comparison = node("div", undefined, "comparison-grid"); Object.values(appState.trials).sort((a, b) => a.trial_ordinal - b.trial_ordinal).forEach((trial) => { const metric = rule && trialTargetMetric(trial, rule.subject); const included = includedTrial(latest, trial); const card = node("article", undefined, "comparison-trial" + (included ? " included" : "")); card.append(node("strong", "Trial " + String(trial.trial_ordinal).padStart(2, "0")), node("b", metric?.numeric_value || "—"), node("span", verdictText(resultReport(trial), trial))); if (included) card.append(node("span", "已纳入 Summary", "status-good")); comparison.append(card); }); root.append(comparison);
       const evidence = node("section", undefined, "summary-evidence"); evidence.append(node("h2", "Summary 证据")); const fields = node("div", undefined, "fields proposal-grid"); fields.append(field("Summary 状态", batchStatusText(latest.presentation_status)), field("修订版本", latest.revision_number), field("汇总协议", latest.summary_protocol_version)); Object.entries(latest.aggregates || {}).forEach(([name, value]) => { const aggregate = node("div", undefined, "aggregate"); aggregate.append(node("strong", "聚合指标 · " + name)); const details = node("div", undefined, "fields"); Object.entries(typeof value === "object" && value ? value : { value }).forEach(([label, item]) => details.append(field(({ mean: "均值", count: "样本数" })[label] || label, valuesText(item)))); aggregate.append(details); fields.append(aggregate); }); evidence.append(fields); root.append(evidence);
       const grid = node("div", undefined, "trial-grid"); Object.values(appState.trials).sort((a, b) => a.trial_ordinal - b.trial_ordinal).forEach((trial) => grid.append(renderTrialCard(trial))); root.append(grid);
-      root.append(node("p", "科学结论由已纳入 Summary 的持久化指标与方案阈值推导；Batch 成功本身不代表达到研究目标。", "muted")); return root;
+      root.append(node("p", "科学结论由已纳入 Summary 的持久化指标与方案阈值推导；Batch 成功本身不代表达到研究目标。", "muted"));
+      root.append(node("p", "可将这版确切 Summary 的纳入结果、排除原因和参数条件交给 Agent，生成同一 Experiment 的下一版方案。新方案仍需确定性验证和人工批准。", "muted"));
+      root.append(button(appState.startingFollowUp ? "正在创建下一轮…" : "让 Agent 基于结果提出下一轮方案", "primary", startFollowUp, appState.startingFollowUp)); return root;
     }
     function renderApp() { runStatus.textContent = runStatusText(); renderStages(); const view = appState.view; workspace.replaceChildren(view === "goal" ? renderGoal() : view === "agent" ? renderAgent() : view === "proposal" ? renderProposal() : view === "verify" ? renderVerify() : view === "execute" ? renderExecution() : view === "results" ? renderResults() : renderApprove()); }
+    async function loadRecord() {
+      const params = new URLSearchParams(location.search);
+      if (!params.has("run")) return;
+      try {
+        appState.run = { agent_run_id: params.get("run") };
+        await refreshRun();
+        if (params.has("verification")) {
+          appState.verification = await api("/proposal-verifications/" + params.get("verification"));
+          if (appState.verification.proposal_revision_id !== appState.revision?.proposal_revision_id) throw new Error("验证记录与当前方案不一致。");
+          appState.view = "verify";
+        }
+        if (params.has("version")) {
+          appState.version = await api("/experiment-versions/" + params.get("version"));
+          if (appState.version.proposal_revision_id !== appState.revision?.proposal_revision_id) throw new Error("版本与当前方案不一致。");
+          appState.view = "approve";
+        }
+        if (params.has("batch")) {
+          appState.batch = await api("/batches/" + params.get("batch"));
+          await refreshExecution();
+          if (!appState.summary?.latest_summary) appState.view = "execute";
+        }
+        if (!appState.revision) appState.view = "agent";
+        renderApp();
+      } catch (error) { setError(error); }
+    }
     renderApp();
+    loadRecord();
   </script>
 </body>
 </html>
