@@ -148,7 +148,7 @@
     const OPERATOR_CONFIG = {
       projectId: "e217c7b5-23b5-46e0-b434-b98a915a9eff",
       repositorySnapshotId: "6c82678c-24c2-4bc3-948c-14d9f7a7634a",
-      budget: { max_steps: 6, max_model_calls: 4, max_wall_clock_seconds: 90, max_tokens: 24000 },
+      budget: { max_steps: 6, max_model_calls: 4, max_wall_clock_seconds: 90, max_tokens: 40000 },
       advanceDelayMs: 450
     };
     const appState = { run: null, trace: null, proposal: null, revision: null, verification: null, version: null, batch: null, batchCreateKey: null, batchStartKey: null, trials: {}, attempts: {}, attemptResults: {}, trialResults: {}, summary: null, resultState: {}, summaryState: null, followUpGoal: "基于上一轮已验证的结果，提出同一研究目标的下一轮 CPU-only 参数实验。先核对各 Trial 的参数、入选结果与排除原因，再判断能否在保持验证目标的同时减少训练成本。避免原样重复验证未通过的条件；证据不足可请求人工输入，目标已满足且无需继续时可停止。", startingFollowUp: false, eventSource: null, sseState: "idle", selectedTrialId: null, executionError: null, error: null, humanAnswer: "", submittingHuman: false, advancing: false, startingBatch: false, refreshingExecution: false, view: "goal" };
