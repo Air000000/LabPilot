@@ -197,6 +197,43 @@ def test_follow_up_context_is_bounded_owned_input_and_hashes_exact_result_facts(
     assert first.canonical_request_hash != summary_changed.canonical_request_hash
 
 
+def test_trial_evidence_joins_each_condition_to_its_validation_outcome() -> None:
+    snapshot = _descriptor()
+    first = _result_context(snapshot)
+    selected = first.trials[0].model_copy(
+        update={"resolved_parameters": {"learning_rate": 0.005, "epochs": 1000}}
+    )
+    rejected = ResultTrialCondition(
+        trial_id=uuid4(),
+        trial_ordinal=2,
+        resolved_parameters={"learning_rate": 0.005, "epochs": 100},
+        seed=7,
+    )
+    context = first.model_copy(
+        update={
+            "trials": (selected, rejected),
+            "excluded_results": (
+                {
+                    "trial_id": str(rejected.trial_id),
+                    "trial_ordinal": 2,
+                    "exclusion_code": "VALIDATION_INVALID",
+                    "validation_reason_codes": ["METRIC_BELOW_THRESHOLD"],
+                },
+            ),
+        }
+    )
+
+    request = _compile(ContextCompiler(), snapshot, result_context=context).request
+    evidence = json.loads(request.messages[1]["content"])["result_context"]["trial_evidence"]
+
+    assert evidence[0]["resolved_parameters"]["epochs"] == 1000
+    assert evidence[0]["outcome"] == "selected_valid"
+    assert evidence[0]["metrics"][0]["numeric_value"] == "0.941"
+    assert evidence[1]["resolved_parameters"]["epochs"] == 100
+    assert evidence[1]["outcome"] == "excluded"
+    assert evidence[1]["exclusion_code"] == "VALIDATION_INVALID"
+
+
 def test_follow_up_system_policy_preserves_result_authority_and_governance() -> None:
     compiler = ContextCompiler()
     snapshot = _descriptor()

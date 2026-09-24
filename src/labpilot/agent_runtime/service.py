@@ -4,6 +4,8 @@ import asyncio
 import logging
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
+from itertools import product
+from math import prod
 from typing import Protocol, cast
 from uuid import UUID, uuid4
 
@@ -23,6 +25,7 @@ from labpilot.agent_runtime.provider import (
 from labpilot.agent_runtime.repository import AgentRepository
 from labpilot.agent_runtime.result_context import (
     FollowUpRunStore,
+    ResultContext,
     ResultContextSource,
 )
 from labpilot.agent_runtime.types import (
@@ -548,6 +551,13 @@ class AgentApplicationService:
             result_context = await self._result_context_source.load(
                 run.source_batch_summary_revision_id
             )
+            if _repeats_only_invalid_trials(decision.proposal, result_context):
+                return await self._repository.update_run_state(
+                    run.agent_run_id,
+                    expected_row_version=run.row_version,
+                    status="failed",
+                    termination_reason="follow_up_repeats_invalid_trials",
+                )
             revision = await self._proposals.create_follow_up_agent_revision(
                 context=context,
                 project_id=run.project_id,
@@ -577,6 +587,28 @@ def _is_pending_proposal(step: AgentStepDetails, run: AgentRunDetails) -> bool:
         step.outcome == "succeeded"
         and step.decision_kind == "propose"
         and run.produced_proposal_revision_id is None
+    )
+
+
+def _repeats_only_invalid_trials(proposal: ProposalPayload, context: ResultContext) -> bool:
+    invalid_ids = {
+        item["trial_id"]
+        for item in context.excluded_results
+        if item.get("exclusion_code") == "VALIDATION_INVALID"
+    }
+    invalid = [trial for trial in context.trials if str(trial.trial_id) in invalid_ids]
+    names = tuple(proposal.parameter_matrix)
+    values = tuple(proposal.parameter_matrix.values())
+    if not invalid or len(proposal.seeds) * prod(map(len, values)) > len(invalid):
+        return False
+    return all(
+        any(
+            trial.seed == seed
+            and trial.resolved_parameters == dict(zip(names, combination, strict=True))
+            for trial in invalid
+        )
+        for seed in proposal.seeds
+        for combination in product(*values)
     )
 
 

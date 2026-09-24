@@ -151,7 +151,7 @@
       budget: { max_steps: 6, max_model_calls: 4, max_wall_clock_seconds: 90, max_tokens: 24000 },
       advanceDelayMs: 450
     };
-    const appState = { run: null, trace: null, proposal: null, revision: null, verification: null, version: null, batch: null, batchCreateKey: null, batchStartKey: null, trials: {}, attempts: {}, attemptResults: {}, trialResults: {}, summary: null, resultState: {}, summaryState: null, followUpGoal: "基于上一轮已验证的结果，提出同一研究目标的下一轮 CPU-only 参数实验。优先把 epochs 降到上一轮达标配置的最低 epochs 以下；保持已有 learning_rate 候选和 seed，最多四个 Trial，验证目标保持不变。", startingFollowUp: false, eventSource: null, sseState: "idle", selectedTrialId: null, executionError: null, error: null, humanAnswer: "", submittingHuman: false, advancing: false, startingBatch: false, refreshingExecution: false, view: "goal" };
+    const appState = { run: null, trace: null, proposal: null, revision: null, verification: null, version: null, batch: null, batchCreateKey: null, batchStartKey: null, trials: {}, attempts: {}, attemptResults: {}, trialResults: {}, summary: null, resultState: {}, summaryState: null, followUpGoal: "基于上一轮已验证的结果，提出同一研究目标的下一轮 CPU-only 参数实验。先核对各 Trial 的参数、入选结果与排除原因，再判断能否在保持验证目标的同时减少训练成本。避免原样重复验证未通过的条件；证据不足可请求人工输入，目标已满足且无需继续时可停止。", startingFollowUp: false, eventSource: null, sseState: "idle", selectedTrialId: null, executionError: null, error: null, humanAnswer: "", submittingHuman: false, advancing: false, startingBatch: false, refreshingExecution: false, view: "goal" };
     const stages = [
       { label: "目标", view: "goal" }, { label: "Agent", view: "agent" },
       { label: "实验方案", view: "proposal" }, { label: "验证", view: "verify" },
@@ -515,10 +515,10 @@
       const evidence = node("section", undefined, "summary-evidence"); evidence.append(node("h2", "Summary 证据")); const fields = node("div", undefined, "fields proposal-grid"); fields.append(field("Summary 状态", batchStatusText(latest.presentation_status)), field("修订版本", latest.revision_number), field("汇总协议", latest.summary_protocol_version)); Object.entries(latest.aggregates || {}).forEach(([name, value]) => { const aggregate = node("div", undefined, "aggregate"); aggregate.append(node("strong", "聚合指标 · " + name)); const details = node("div", undefined, "fields"); Object.entries(typeof value === "object" && value ? value : { value }).forEach(([label, item]) => details.append(field(({ mean: "均值", count: "样本数" })[label] || label, valuesText(item)))); aggregate.append(details); fields.append(aggregate); }); evidence.append(fields); root.append(evidence);
       const grid = node("div", undefined, "trial-grid"); Object.values(appState.trials).sort((a, b) => a.trial_ordinal - b.trial_ordinal).forEach((trial) => grid.append(renderTrialCard(trial))); root.append(grid);
       root.append(node("p", "科学结论由已纳入 Summary 的持久化指标与方案阈值推导；Batch 成功本身不代表达到研究目标。", "muted"));
-      root.append(node("p", "可将这版确切 Summary 的纳入结果、排除原因和参数条件交给 Agent，生成同一 Experiment 的下一版方案。新方案仍需确定性验证和人工批准。", "muted"));
+      root.append(node("p", "可将这版确切 Summary 的入选结果、排除原因和参数条件交给 Agent，由它决定停止、请求人工输入或提出同一 Experiment 的下一版方案。新方案仍需确定性验证和人工批准。", "muted"));
       const followUpLabel = node("label", "下一轮研究重点"); followUpLabel.htmlFor = "follow-up-goal"; root.append(followUpLabel);
       const followUpGoal = document.createElement("textarea"); followUpGoal.id = "follow-up-goal"; followUpGoal.maxLength = 4000; followUpGoal.value = appState.followUpGoal; followUpGoal.addEventListener("input", () => { appState.followUpGoal = followUpGoal.value; }); root.append(followUpGoal);
-      root.append(button(appState.startingFollowUp ? "正在创建下一轮…" : "让 Agent 基于结果提出下一轮方案", "primary", startFollowUp, appState.startingFollowUp)); return root;
+      root.append(button(appState.startingFollowUp ? "正在创建下一轮…" : "让 Agent 基于结果决定下一步", "primary", startFollowUp, appState.startingFollowUp)); return root;
     }
     function renderApp() { runStatus.textContent = runStatusText(); renderStages(); const view = appState.view; workspace.replaceChildren(view === "goal" ? renderGoal() : view === "agent" ? renderAgent() : view === "proposal" ? renderProposal() : view === "verify" ? renderVerify() : view === "execute" ? renderExecution() : view === "results" ? renderResults() : renderApprove()); }
     async function loadRecord() {

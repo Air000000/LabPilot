@@ -133,6 +133,16 @@ class ContextCompiler:
                     "Use exclusion reason codes to diagnose rejected Trials, but do not "
                     "promote invalid raw results into accepted scientific evidence."
                 ),
+                (
+                    "Read trial_evidence before proposing: it joins each Trial's exact parameters "
+                    "and seed to its selected-valid or excluded outcome. Only selected_valid "
+                    "Trials met the declared validation protocol. Do not infer successful "
+                    "parameters from source_proposal.goal or summary averages."
+                ),
+                (
+                    "Do not propose only the same conditions that were excluded as validation "
+                    "invalid in this Batch. Compare them with selected-valid conditions first."
+                ),
                 "If the declared research goal is already satisfied, stop is a valid decision.",
                 (
                     "If another experiment is warranted, propose must include the full "
@@ -174,13 +184,17 @@ class ContextCompiler:
             "prior_human_inputs": human_inputs,
         }
         if result_context is not None:
-            result_value = _canonical_value(
-                result_context.model_dump(
-                    mode="json",
-                    warnings="none",
-                    fallback=_serialization_fallback,
-                )
+            result_value = cast(
+                dict[str, CanonicalValue],
+                _canonical_value(
+                    result_context.model_dump(
+                        mode="json",
+                        warnings="none",
+                        fallback=_serialization_fallback,
+                    )
+                ),
             )
+            result_value["trial_evidence"] = _trial_evidence(result_context)
             if len(canonical_json_bytes(result_value)) > _MAX_RESULT_CONTEXT_BYTES:
                 raise ContextCompilationError("result_context_too_large")
             user_value["result_context"] = result_value
@@ -249,6 +263,33 @@ def _serialization_fallback(value: object) -> object:
     if isinstance(value, Mapping):
         return dict(value)
     raise TypeError(f"unsupported result context value: {type(value).__name__}")
+
+
+def _trial_evidence(context: ResultContext) -> list[CanonicalValue]:
+    included = {item["trial_id"]: item for item in context.included_results}
+    excluded = {item["trial_id"]: item for item in context.excluded_results}
+    evidence: list[CanonicalValue] = []
+    for trial in context.trials:
+        trial_id = str(trial.trial_id)
+        item: dict[str, CanonicalValue] = {
+            "trial_id": trial_id,
+            "trial_ordinal": trial.trial_ordinal,
+            "resolved_parameters": _canonical_value(trial.resolved_parameters),
+            "seed": trial.seed,
+        }
+        if trial_id in included:
+            item["outcome"] = "selected_valid"
+            item["metrics"] = _canonical_value(included[trial_id]["metrics"])
+        elif trial_id in excluded:
+            item["outcome"] = "excluded"
+            item["exclusion_code"] = _canonical_value(excluded[trial_id]["exclusion_code"])
+            item["validation_reason_codes"] = _canonical_value(
+                excluded[trial_id].get("validation_reason_codes", [])
+            )
+        else:
+            raise ContextCompilationError("result_context_trial_coverage_invalid")
+        evidence.append(item)
+    return evidence
 
 
 def _require_utf8(value: str, *, field: str, max_bytes: int, non_blank: bool) -> None:

@@ -12,7 +12,7 @@ import pytest
 
 from labpilot.agent_runtime.context_compiler import ContextCompiler
 from labpilot.agent_runtime.provider import ModelRequest, ModelResponse, ProviderError
-from labpilot.agent_runtime.result_context import ResultContext
+from labpilot.agent_runtime.result_context import ResultContext, ResultTrialCondition
 from labpilot.agent_runtime.service import AgentApplicationService, AgentRuntimeError
 from labpilot.agent_runtime.types import AgentBudget, AgentRunDetails, AgentStepDetails
 from labpilot.common.commands import CommandActor, CommandContext
@@ -1916,6 +1916,54 @@ async def test_follow_up_propose_materializes_same_experiment_and_replays() -> N
         (descriptor.project_id, result_context.experiment_id, replay_step.agent_step_id)
     ]
     assert source.calls == [summary_id, summary_id, summary_id]
+
+
+@pytest.mark.asyncio
+async def test_follow_up_rejects_repeating_only_invalid_trials() -> None:
+    descriptor = _descriptor()
+    repository = MemoryAgentRepository()
+    summary_id = uuid4()
+    trial = ResultTrialCondition(
+        trial_id=uuid4(),
+        trial_ordinal=1,
+        resolved_parameters={"optimizer": "adam"},
+        seed=1,
+    )
+    result_context = _result_context(descriptor, summary_id).model_copy(
+        update={
+            "trials": (trial,),
+            "excluded_results": (
+                {"trial_id": str(trial.trial_id), "exclusion_code": "VALIDATION_INVALID"},
+            ),
+        }
+    )
+    provider = ScriptedProvider([{"kind": "propose", "proposal": _proposal(descriptor)}])
+    source = MemoryResultContextSource(result_context)
+    service, _, proposals = _follow_up_service(
+        repository,
+        descriptor,
+        provider,
+        store=MemoryFollowUpRunStore(repository),
+        source=source,
+    )
+    run = await service.create_follow_up_run(
+        context=_context(),
+        project_id=descriptor.project_id,
+        source_batch_summary_revision_id=summary_id,
+        repository_snapshot_id=descriptor.repository_snapshot_id,
+        goal="follow up",
+        budget=_budget(),
+    )
+
+    failed = await service.advance_run(
+        context=_context(),
+        agent_run_id=run.agent_run_id,
+        expected_row_version=run.row_version,
+    )
+
+    assert failed.status == "failed"
+    assert failed.termination_reason == "follow_up_repeats_invalid_trials"
+    assert proposals.follow_up_calls == []
 
 
 @pytest.mark.asyncio
