@@ -170,6 +170,7 @@ async def test_snapshot_source_clean_tree_descriptor_directory_and_read() -> Non
 
     descriptor = await source.describe(SNAPSHOT_ID)
     listed = await source.list_tree(SNAPSHOT_ID, prefix=None, max_entries=10)
+    assert await source.list_tree(SNAPSHOT_ID, prefix=".", max_entries=10) == listed
     text = await source.read_text(SNAPSHOT_ID, "base.txt", start_line=1, end_line=1, max_bytes=20)
 
     assert descriptor.project_id == PROJECT_ID
@@ -296,12 +297,16 @@ async def test_source_operations_use_only_fake_git_and_cas_content(
     assert (await source.describe(SNAPSHOT_ID)).project_id == PROJECT_ID
     assert git.roots == []
     listed = await source.list_tree(SNAPSHOT_ID, prefix=None, max_entries=10)
+    assert await source.list_tree(SNAPSHOT_ID, prefix=".", max_entries=10) == listed
     fact = await source.path_fact(SNAPSHOT_ID, "base.txt")
     directory = await source.directory_exists(SNAPSHOT_ID, "dir")
     text = await source.read_text(SNAPSHOT_ID, "base.txt", start_line=1, end_line=1, max_bytes=20)
     hits = await source.search_text(
         SNAPSHOT_ID, "base", prefix=None, max_results=1, max_file_bytes=20
     )
+    assert await source.search_text(
+        SNAPSHOT_ID, "base", prefix=".", max_results=1, max_file_bytes=20
+    ) == hits
 
     assert [entry.relative_path for entry in listed] == [
         "base.txt",
@@ -373,6 +378,17 @@ async def test_snapshot_source_preserves_symlink_target_and_rejects_submodule_an
 async def test_snapshot_source_rejects_unsafe_paths_and_enforces_bounds() -> None:
     source, _ = _source()
 
+    for prefix in ("", "..", "../escape", "/absolute", "dir/..", "./dir", "dir/.", "dir\\file"):
+        with pytest.raises(RepositorySourceReadError, match="unsafe_path"):
+            await source.list_tree(SNAPSHOT_ID, prefix=prefix, max_entries=10)
+        with pytest.raises(RepositorySourceReadError, match="unsafe_path"):
+            await source.search_text(
+                SNAPSHOT_ID, "base", prefix=prefix, max_results=1, max_file_bytes=20
+            )
+    with pytest.raises(RepositorySourceReadError, match="unsafe_path"):
+        await source.path_fact(SNAPSHOT_ID, ".")
+    with pytest.raises(RepositorySourceReadError, match="unsafe_path"):
+        await source.read_text(SNAPSHOT_ID, ".", start_line=1, end_line=1, max_bytes=20)
     for path in ("/absolute", "../escape", "dir\\file"):
         with pytest.raises(RepositorySourceReadError, match="unsafe_path"):
             await source.path_fact(SNAPSHOT_ID, path)
@@ -402,6 +418,9 @@ async def test_snapshot_source_search_prefix_truncation_and_regular_mode_change(
     hits = await source.search_text(
         SNAPSHOT_ID, "base", prefix=None, max_results=1, max_file_bytes=20
     )
+    assert await source.search_text(
+        SNAPSHOT_ID, "base", prefix=".", max_results=1, max_file_bytes=20
+    ) == hits
 
     assert [entry.relative_path for entry in listed] == ["dir/child.txt"]
     assert [entry.relative_path for entry in limited] == ["base.txt"]

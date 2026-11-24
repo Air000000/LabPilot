@@ -1,0 +1,22 @@
+diff --git a/train.py b/train.py
+--- a/train.py
++++ b/train.py
+@@ -147,9 +147,16 @@
+             for index, feature in enumerate(features):
+                 gradient[index] += residual * feature
+             bias_gradient += residual
++        average_gradient = [value * inverse_count for value in gradient]
++        average_bias_gradient = bias_gradient * inverse_count
++        gradient_norm = math.sqrt(
++            sum(value * value for value in average_gradient)
++            + average_bias_gradient * average_bias_gradient
++        )
++        clip_scale = 1.0 / max(1.0, gradient_norm)
+         for index in range(len(weights)):
+-            weights[index] -= learning_rate * gradient[index] * inverse_count
+-        bias -= learning_rate * bias_gradient * inverse_count
++            weights[index] -= learning_rate * average_gradient[index] * clip_scale
++        bias -= learning_rate * average_bias_gradient * clip_scale
+ 
+     return tuple(weights), bias
+ 

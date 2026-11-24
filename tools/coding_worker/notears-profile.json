@@ -1,0 +1,49 @@
+{
+  "image": "sha256:5090ecb1da4a3c198b3371b6090ba385795fd2926ae74661b45203aa9c77eb18",
+  "editable_paths": [
+    "notears/linear.py",
+    "notears/visualization.py",
+    "bin/notears_linear",
+    "tests/*.py",
+    "README.md"
+  ],
+  "ignored_paths": [
+    ".pytest_cache/*",
+    "__pycache__/*",
+    "*/__pycache__/*"
+  ],
+  "validators": [
+    {
+      "image": "sha256:3d8a866f7fe472e9246d7f7194e0e59305b8457c7334a2825788f4f305f00824",
+      "argv": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "-p",
+        "no:cacheprovider",
+        "-c",
+        "/dev/null",
+        "/opt/labpilot-acceptance/test_notears_cpu_001.py",
+        "-k",
+        "not explicit_plot"
+      ]
+    },
+    {
+      "image": "sha256:d725299485494c26c4c07c76dce1cbfafc0e3aaba28026328064e5a27f2e24fd",
+      "argv": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "-p",
+        "no:cacheprovider",
+        "-c",
+        "/dev/null",
+        "/opt/labpilot-acceptance/test_notears_cpu_001.py",
+        "-k",
+        "explicit_plot"
+      ]
+    }
+  ]
+}

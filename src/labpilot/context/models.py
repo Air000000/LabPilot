@@ -290,3 +290,46 @@ class RepositorySnapshotFreshnessRow(Base):
     probe_version: Mapped[str] = mapped_column(String(100), nullable=False)
     checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     row_version: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
+class SourceAdoptionRow(Base):
+    """Human source selection, never an Experiment execution authorization."""
+
+    __tablename__ = "source_adoptions"
+    __table_args__ = (
+        ForeignKeyConstraint(["project_id"], ["projects.project_id"], ondelete="RESTRICT"),
+        ForeignKeyConstraint(
+            ["base_snapshot_id"],
+            ["repository_snapshots.repository_snapshot_id"],
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["target_snapshot_id"],
+            ["repository_snapshots.repository_snapshot_id"],
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("target_snapshot_id", name="uq_source_adoptions_target"),
+        CheckConstraint("base_snapshot_id <> target_snapshot_id", name="ck_source_adoptions_new"),
+        CheckConstraint(
+            "adoption_identity ~ '^[0-9a-f]{64}$'",
+            name="ck_source_adoptions_identity",
+        ),
+        CheckConstraint(
+            "package_ref ~ '^sha256:[0-9a-f]{64}$'",
+            name="ck_source_adoptions_package",
+        ),
+        CheckConstraint("length(actor_id) > 0", name="ck_source_adoptions_actor"),
+    )
+
+    source_adoption_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    project_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    base_snapshot_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    target_snapshot_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    package_ref: Mapped[str] = mapped_column(String(71), nullable=False)
+    adoption_identity: Mapped[str] = mapped_column(String(64), nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.clock_timestamp(),
+    )

@@ -15,6 +15,8 @@ from labpilot.agent_runtime.types import (
     AgentStepDetails,
     AgentStepKind,
     AgentStepOutcome,
+    check_correction_reservation,
+    finalized_feedback,
 )
 from labpilot.db.uow import SessionContextFactory, UnitOfWork
 
@@ -48,6 +50,7 @@ class AgentRepository(Protocol):
         run_status: AgentRunStatus,
         termination_reason: str | None,
         completed_at: datetime,
+        output_feedback: Mapping[str, object] | None = None,
     ) -> AgentRunDetails: ...
 
     async def link_tool_call(
@@ -118,6 +121,21 @@ class SqlAgentRepository:
     ) -> AgentRunDetails:
         async with UnitOfWork(self._session_context_factory) as uow:
             run = await _locked_run(uow, agent_run_id, expected_row_version)
+            if (
+                step.agent_run_id != agent_run_id
+                or step.ordinal != run.next_step_ordinal
+                or step.step_kind != "model_call"
+                or step.outcome != "reserved"
+            ):
+                raise AgentRuntimeError("output_correction_conflict")
+            selected = await uow.session.execute(
+                select(AgentStepRow)
+                .where(AgentStepRow.agent_run_id == agent_run_id)
+                .order_by(AgentStepRow.ordinal)
+            )
+            check_correction_reservation(
+                _run_details(run), step, tuple(_step_details(row) for row in selected.scalars())
+            )
             uow.session.add(_step_row(step))
             run.status = "running"
             run.started_at = run.started_at or step.started_at
@@ -142,6 +160,7 @@ class SqlAgentRepository:
         run_status: AgentRunStatus,
         termination_reason: str | None,
         completed_at: datetime,
+        output_feedback: Mapping[str, object] | None = None,
     ) -> AgentRunDetails:
         async with UnitOfWork(self._session_context_factory) as uow:
             run = await _locked_run(uow, agent_run_id, expected_row_version)
@@ -156,6 +175,9 @@ class SqlAgentRepository:
             step = selected.scalar_one_or_none()
             if step is None:
                 raise AgentRuntimeError("agent_step_not_found")
+            if step.outcome != "reserved" or step.step_kind != "model_call":
+                raise AgentRuntimeError("row_version_conflict")
+            step.output_feedback_json = finalized_feedback(_step_details(step), output_feedback)
             step.outcome = outcome
             step.completed_at = completed_at
             step.token_usage_json = dict(token_usage)
@@ -290,6 +312,11 @@ def _run_row(run: AgentRunDetails) -> AgentRunRow:
         next_step_ordinal=run.next_step_ordinal,
         produced_proposal_revision_id=run.produced_proposal_revision_id,
         source_batch_summary_revision_id=run.source_batch_summary_revision_id,
+        history_context_json=None if run.history_context is None else dict(run.history_context),
+        source_adoption_id=run.source_adoption_id,
+        source_patch_context=(
+            None if run.source_patch_context is None else dict(run.source_patch_context)
+        ),
         created_at=run.created_at,
         started_at=run.started_at,
         completed_at=run.completed_at,
@@ -319,6 +346,7 @@ def _step_row(step: AgentStepDetails) -> AgentStepRow:
         decision_kind=step.decision_kind,
         decision_json=(None if step.decision_json is None else dict(step.decision_json)),
         human_input_text=step.human_input_text,
+        output_feedback_json=None if step.output_feedback is None else dict(step.output_feedback),
     )
 
 
@@ -343,6 +371,9 @@ def _run_details(row: AgentRunRow) -> AgentRunDetails:
         produced_proposal_revision_id=row.produced_proposal_revision_id,
         created_at=row.created_at,
         source_batch_summary_revision_id=row.source_batch_summary_revision_id,
+        history_context=row.history_context_json,
+        source_adoption_id=row.source_adoption_id,
+        source_patch_context=row.source_patch_context,
         started_at=row.started_at,
         completed_at=row.completed_at,
         row_version=row.row_version,
@@ -371,4 +402,5 @@ def _step_details(row: AgentStepRow) -> AgentStepDetails:
         decision_kind=row.decision_kind,
         decision_json=(None if row.decision_json is None else dict(row.decision_json)),
         human_input_text=row.human_input_text,
+        output_feedback=row.output_feedback_json,
     )

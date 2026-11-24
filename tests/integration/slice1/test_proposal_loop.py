@@ -264,7 +264,7 @@ def agent_service(
         provider=provider,  # type: ignore[arg-type]
         model_name="acceptance-model",
         context_compiler=ContextCompiler(),
-        tool_service_factory=lambda snapshot_id: tool_service(system, snapshot_id),
+        tool_service_factory=lambda run: tool_service(system, run.repository_snapshot_id),
         proposal_service=proposals or system.proposals,  # type: ignore[arg-type]
         data_egress_policy=policy,  # type: ignore[arg-type]
     )

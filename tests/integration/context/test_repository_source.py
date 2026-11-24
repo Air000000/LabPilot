@@ -18,6 +18,8 @@ from labpilot.context.models import (
 from labpilot.context.repository_source import RepositorySnapshotSourceService
 from labpilot.context.repository_types import CaptureRepositorySnapshot
 from labpilot.db.uow import UnitOfWork
+from labpilot.tools_policy.repository_tools import repository_tool_definitions
+from labpilot.tools_policy.service import _validate_arguments
 
 
 async def _git(repository: Path, *arguments: str) -> None:
@@ -148,5 +150,43 @@ async def test_approval_readiness_reports_missing_snapshot_and_repository(
         assert (
             await source.check_approval_readiness(snapshot_id)
         ).status == "repository_unavailable"
+    finally:
+        await database.dispose()
+
+
+@pytest.mark.integration
+async def test_root_dot_tool_prefix_reads_only_the_bound_snapshot(
+    isolated_database_url: str, tmp_path: Path
+) -> None:
+    database, repository, _, snapshot_id, source = await _new_source(
+        isolated_database_url, tmp_path
+    )
+    try:
+        (repository / "tracked.txt").write_text("changed live content\n", encoding="utf-8")
+        (repository / "untracked.txt").write_text("outside snapshot\n", encoding="utf-8")
+        tools = {
+            definition.name: definition
+            for definition in repository_tool_definitions(source, snapshot_id)
+        }
+        for name, arguments in (
+            ("repository.list_tree", {"prefix": "."}),
+            ("repository.search_text", {"prefix": ".", "query": "base"}),
+        ):
+            definition = tools[name]
+            assert _validate_arguments(arguments, definition.input_schema) == arguments
+            root_result = await definition.executor(arguments)
+            default_result = await definition.executor({**arguments, "prefix": None})
+            assert root_result == default_result
+            if name == "repository.list_tree":
+                assert [entry["relative_path"] for entry in root_result["entries"]] == [
+                    "tracked.txt"
+                ]
+            else:
+                assert root_result["hits"] == [
+                    {"relative_path": "tracked.txt", "line_number": 1, "line_text": "base"}
+                ]
+        assert await tools["repository.search_text"].executor(
+            {"prefix": ".", "query": "changed live content"}
+        ) == {"hits": []}
     finally:
         await database.dispose()

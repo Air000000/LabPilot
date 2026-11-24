@@ -274,6 +274,27 @@ class GitAdapter:
             observation_profile_version=OBSERVATION_PROFILE_VERSION,
         )
 
+    async def commit_parents(
+        self, repository_root: _RepositoryRoot, commit: str
+    ) -> tuple[str, ...]:
+        """Read actual commit headers, including parents hidden by a shallow boundary."""
+        if isinstance(repository_root, Path):
+            root = await asyncio.to_thread(_anchor_repository_root, repository_root)
+            try:
+                return await self.commit_parents(root, commit)
+            finally:
+                os.close(root.descriptor)
+        await self._validate_repository_layout(repository_root)
+        payload = (
+            await self._run_git(
+                repository_root,
+                ("cat-file", "commit", _validate_object_oid(commit)),
+                max_stdout_bytes=64 * 1024,
+            )
+        ).stdout
+        headers = payload.split(b"\n\n", 1)[0].splitlines()
+        return tuple(_parse_oid(line[7:]) for line in headers if line.startswith(b"parent "))
+
     async def ls_tree(
         self,
         repository_root: _RepositoryRoot,

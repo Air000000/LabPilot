@@ -5,6 +5,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
+from labpilot.agent_runtime.source_binding import SourceBinding
 from labpilot.agent_runtime.types import AgentRunDetails
 from labpilot.experiments.proposal_types import ProposalPayload
 
@@ -43,3 +44,7 @@ class FollowUpRunStore(Protocol):
 
 class ResultContextSource(Protocol):
     async def load(self, source_batch_summary_revision_id: UUID) -> ResultContext: ...
+
+    async def load_source_binding(
+        self, run: AgentRunDetails, *, for_model: bool
+    ) -> SourceBinding: ...

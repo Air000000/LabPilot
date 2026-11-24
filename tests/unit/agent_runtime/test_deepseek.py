@@ -41,6 +41,7 @@ async def test_posts_deepseek_json_non_thinking_contract_and_extracts_usage() ->
             json={
                 "choices": [
                     {
+                        "finish_reason": "stop",
                         "message": {
                             "content": json.dumps(
                                 {"kind": "stop", "reason_code": "goal_satisfied"}

@@ -70,11 +70,14 @@ class _ProposalSystem:
 async def _proposal_system(
     isolated_database_url: str,
     tmp_path: Path,
+    *, train_source: bytes | None = None,
 ) -> AsyncIterator[_ProposalSystem]:
     repository = tmp_path / "repository"
     repository.mkdir()
     await _git(repository, "init", "-q", "-b", "main")
-    (repository / "train.py").write_text("print('train')\n", encoding="utf-8")
+    (repository / "train.py").write_bytes(
+        train_source if train_source is not None else b"print('train')\n"
+    )
     (repository / "eval.py").write_text("print('eval')\n", encoding="utf-8")
     (repository / "README.md").write_text("proposal fixture\n", encoding="utf-8")
     await _git(repository, "add", "train.py", "eval.py", "README.md")

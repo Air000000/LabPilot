@@ -139,6 +139,9 @@
     [hidden] { display: none; }
     @media (max-width: 850px) { .shell { grid-template-columns: 1fr; } .progress { position: static; } .metrics, .proposal-grid, .trial-grid, .trial .fields { grid-template-columns: 1fr; } }
     @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto; transition: none !important; } }
+    .trial-facts { width: 100%; border-collapse: collapse; text-align: left; }
+    .trial-facts th, .trial-facts td { padding: 8px 10px; border-bottom: 1px solid #d5e3e8; vertical-align: top; }
+    .trial-facts caption { text-align: left; padding: 8px 10px; font-weight: 600; }
   </style>
 </head>
 <body>
@@ -382,19 +385,48 @@
       const textarea = document.createElement("textarea"); textarea.id = "research-goal"; textarea.placeholder = "例如：设计一个 CPU-only 参数扫描实验，验证模型准确率。"; root.append(textarea);
       const context = node("div", undefined, "context"); context.append(field("代码仓库", "labpilot-demo-repo"), field("执行策略", "受约束的 Agent 规划 · 必须经过人工批准")); root.append(context); appendError(root); root.append(button("启动 Agent", "primary", startAgent)); return root;
     }
-    function activityText(step) { if (step.decision_kind === "tool_call") return "工具调用：" + (step.decision_json?.tool_name || "repository tool"); if (step.decision_kind === "propose") return "生成实验方案"; if (step.decision_kind === "request_human_input") return "请求人工判断"; if (step.step_kind === "human_input") return "人工回答"; return "模型分析"; }
+    function activityText(step) { if (step.output_feedback?.category === "summary_omitted") return "展示摘要已省略"; if (step.output_feedback?.correction_of_step_id) return step.outcome === "reserved" ? "纠错调用已预留" : "纠错步骤已记录（参见运行状态）"; if (step.decision_kind === "tool_call") return "工具调用：" + (step.decision_json?.tool_name || "repository tool"); if (step.decision_kind === "propose") return "生成实验方案"; if (step.decision_kind === "request_human_input") return "请求人工判断"; if (step.step_kind === "human_input") return "人工回答"; return "模型分析"; }
+    function renderTrialFacts(trace) {
+      const box = node("div", undefined, "context");
+      box.append(node("h3", "绑定证据中的实验事实"));
+      const history = trace.history_context, facts = history?.trial_facts;
+      if (!facts) { box.append(node("p", "此运行未冻结事实计数视图；保留原始记录，请查看绑定的 Summary 修订。", "muted")); return box; }
+      box.append(node("p", "计数按 Trial ID；入选结果各自满足其声明的验证协议。不同 seed 数不代表独立重复或有效样本量。", "muted"));
+      box.append(node("p", history.coverage_limited ? "历史覆盖受限：以下只统计已纳入的历史 Batch。" : "以下统计本次冻结的历史范围，不代表整个 Experiment。", "muted"));
+      const table = node("table", undefined, "trial-facts");
+      table.append(node("caption", "冻结范围计数与精确 Summary 来源"));
+      const head = node("thead"), headings = node("tr");
+      ["范围", "Trial 总数", "入选 valid", "排除", "不同 seed 数", "来源修订"].forEach((text) => { const th = node("th", text); th.scope = "col"; headings.append(th); });
+      head.append(headings); table.append(head);
+      const body = node("tbody");
+      const addRow = (label, counts, sources) => {
+        const row = node("tr"), title = node("th", label); title.scope = "row"; row.append(title);
+        [counts.total_trials, counts.selected_valid, counts.excluded, counts.distinct_seeds].forEach((value) => row.append(node("td", String(value))));
+        const refs = node("td");
+        sources.forEach((source, i) => { if (i) refs.append(document.createTextNode(" · ")); const link = node("a", "Batch " + shortId(source.batch_id)); link.href = "/ops/summary-revisions/" + source.summary_revision_id; link.title = "Summary " + source.summary_revision_id; refs.append(link); });
+        if (!sources.length) refs.append(node("span", "无纳入历史"));
+        row.append(refs); body.append(row);
+      };
+      addRow("当前 Batch", facts.source.counts, [facts.source]);
+      addRow("纳入历史合计", facts.included_history, facts.historical_batches);
+      addRow("当前 + 纳入历史", facts.source_and_included_history, [facts.source, ...facts.historical_batches]);
+      facts.historical_batches.forEach((batch) => addRow("历史 Batch " + shortId(batch.batch_id), batch.counts, [batch]));
+      table.append(body); const scroll = node("div"); scroll.style.overflowX = "auto"; scroll.append(table); box.append(scroll);
+      box.append(node("p", "冻结证据不代表 Agent 已读取；实际读取情况见下方步骤。", "muted"));
+      return box;
+    }
     function renderAgent() {
       const root = panel("AI Agent", "读取仓库 · 分析上下文 · 生成实验方案"); root.append(node("p", appState.run?.status === "awaiting_human" ? "Agent 需要你回答一个研究取舍，回答后才能继续。" : "浏览器会按持久化状态逐步推进 Agent，每完成一步都会重新读取服务端状态。", "muted"));
       if (appState.proposal) root.append(node("p", "正在查看已完成的 Agent 运行记录。", "muted"));
       if (appState.trace?.source_batch_summary_revision_id) {
         const source = node("div", "本轮 Agent 已绑定上一轮的确切 Summary 修订；结果中的纳入项、排除项和参数会进入模型上下文。", "context");
         const link = node("a", "查看绑定的结果修订"); link.href = "/ops/summary-revisions/" + appState.trace.source_batch_summary_revision_id; source.append(link);
-        root.append(source);
+        root.append(source, renderTrialFacts(appState.trace));
       }
-      if (appState.trace) { const metrics = node("div", undefined, "metrics"); metrics.append(node("div", undefined, "metric"), node("div", undefined, "metric"), node("div", undefined, "metric")); [["模型提供方 / 模型", appState.trace.provider_name + " / " + appState.trace.model_name], ["模型调用次数", appState.trace.total_model_calls], ["Token 使用量", appState.trace.total_tokens]].forEach((pair, i) => { metrics.children[i].append(node("small", pair[0]), node("b", String(pair[1]))); }); root.append(metrics); const timeline = node("ol", undefined, "timeline"); appState.trace.steps.forEach((step) => { const item = node("li"); item.append(node("b", activityText(step)), node("span", "步骤 " + step.ordinal + " · " + stepOutcomeText(step.outcome))); timeline.append(item); }); root.append(timeline); }
+      if (appState.trace) { const metrics = node("div", undefined, "metrics"); metrics.append(node("div", undefined, "metric"), node("div", undefined, "metric"), node("div", undefined, "metric")); [["模型提供方 / 模型", appState.trace.provider_name + " / " + appState.trace.model_name], ["模型调用计数", appState.trace.total_model_calls], ["已记录 Token", appState.trace.total_tokens]].forEach((pair, i) => { metrics.children[i].append(node("small", pair[0]), node("b", String(pair[1]))); }); root.append(metrics); const timeline = node("ol", undefined, "timeline"); appState.trace.steps.forEach((step) => { const item = node("li"); item.append(node("b", activityText(step)), node("span", "步骤 " + step.ordinal + " · " + stepOutcomeText(step.outcome))); if (step.decision_json?.summary) { const advice = node("details"); advice.append(node("summary", "Agent 建议"), node("p", step.decision_json.summary)); item.append(advice); } timeline.append(item); }); root.append(timeline); }
       if (appState.run?.status === "awaiting_human") {
         const question = appState.trace?.steps?.filter((step) => step.decision_kind === "request_human_input").at(-1)?.decision_json?.question;
-        const prompt = node("div", undefined, "context"); prompt.append(node("strong", "Agent 需要你的判断"), node("p", question || "请说明下一步的研究方向。"));
+        const prompt = node("div", undefined, "context"); prompt.append(node("strong", "Agent 问题 · 需要你的判断"), node("p", question || "请说明下一步的研究方向。"));
         const label = node("label", "你的回答"); label.htmlFor = "human-answer"; prompt.append(label);
         const answer = document.createElement("textarea"); answer.id = "human-answer"; answer.maxLength = 4000; answer.value = appState.humanAnswer; answer.addEventListener("input", () => { appState.humanAnswer = answer.value; }); prompt.append(answer);
         prompt.append(node("p", "此运行的总时限仍在计时；超时后请从结果页创建新一轮。", "muted"));

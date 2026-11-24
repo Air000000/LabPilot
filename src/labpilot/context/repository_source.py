@@ -163,6 +163,12 @@ class RepositorySnapshotSourceService:
             is_clean=snapshot.is_clean,
         )
 
+    async def commit_parents(self, repository_snapshot_id: UUID) -> tuple[str, ...]:
+        snapshot, registration = await self._snapshot_and_registration(repository_snapshot_id)
+        return await self._git_adapter.commit_parents(
+            Path(registration.canonical_root_path), snapshot.head_commit
+        )
+
     async def list_tree(
         self,
         repository_snapshot_id: UUID,
@@ -282,13 +288,20 @@ class RepositorySnapshotSourceService:
         repository_snapshot_id: UUID,
         expected_repository_snapshot_identity: str,
         destination: Path,
+        max_entries: int | None = None,
+        max_file_bytes: int | None = None,
+        max_total_bytes: int | None = None,
     ) -> RepositoryMaterialization:
         context = await self._snapshot_context(repository_snapshot_id)
-        if (
-            context.snapshot.repository_snapshot_identity
-            != expected_repository_snapshot_identity
-        ):
+        if context.snapshot.repository_snapshot_identity != expected_repository_snapshot_identity:
             raise RepositorySourceReadError("REPOSITORY_SNAPSHOT_BINDING_MISMATCH")
+
+        limits = (max_entries, max_file_bytes, max_total_bytes)
+        if any(value is not None and (type(value) is not int or value < 1) for value in limits):
+            raise RepositorySourceReadError("materialization_limits")
+        if max_entries is not None and len(context.entries) > max_entries:
+            raise RepositorySourceReadError("materialization_entries_limit")
+        total_bytes = 0
 
         verify_only = destination.exists()
         if verify_only and (destination.is_symlink() or not destination.is_dir()):
@@ -310,7 +323,12 @@ class RepositorySnapshotSourceService:
                 raise RepositorySourceReadError("SOURCE_MODE_UNSUPPORTED")
 
             relative_path = _validate_path(entry.relative_path)
-            data = await self._entry_bytes(context, entry, max_bytes=(1 << 63) - 1)
+            data = await self._entry_bytes(
+                context, entry, max_bytes=max_file_bytes or (1 << 63) - 1
+            )
+            total_bytes += len(data)
+            if max_total_bytes is not None and total_bytes > max_total_bytes:
+                raise RepositorySourceReadError("materialization_total_limit")
             if is_lfs_pointer_blob(data):
                 raise RepositorySourceReadError("SOURCE_LFS_UNSUPPORTED")
             target = destination.joinpath(*PurePosixPath(relative_path).parts)
@@ -545,7 +563,7 @@ def _validate_path(value: str) -> str:
 
 
 def _validate_prefix(value: str | None) -> str | None:
-    return None if value is None else _validate_path(value)
+    return None if value is None or value == "." else _validate_path(value)
 
 
 def _validate_read_limits(start_line: int, end_line: int, max_bytes: int) -> None:
@@ -563,10 +581,14 @@ def _validate_read_limits(start_line: int, end_line: int, max_bytes: int) -> Non
 
 def _parent_paths(relative_path: str) -> set[str]:
     parent = PurePosixPath(relative_path).parent
-    return set() if parent == PurePosixPath(".") else {
-        PurePosixPath(*parent.parts[:index]).as_posix()
-        for index in range(1, len(parent.parts) + 1)
-    }
+    return (
+        set()
+        if parent == PurePosixPath(".")
+        else {
+            PurePosixPath(*parent.parts[:index]).as_posix()
+            for index in range(1, len(parent.parts) + 1)
+        }
+    )
 
 
 def _safe_symlink_target(relative_path: str, data: bytes) -> str:

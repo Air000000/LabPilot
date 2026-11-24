@@ -50,7 +50,7 @@ async def test_migration_0010_adds_exact_attempt_physical_columns(
             "physical_boot_id",
         }
     }
-    assert revision == "0013_result_aware_agent_runs"
+    assert revision == "0018_agent_source_patch_drafts"
     assert physical == {
         "frozen_launch_spec_json": ("jsonb", None, "YES"),
         "execution_spec_hash": ("character", 64, "YES"),
@@ -102,16 +102,11 @@ async def test_migration_0010_installs_physical_consistency_constraints(
         "ck_attempts_physical_terminal_causality",
         "ck_attempts_physical_terminal_kind",
     }
-    assert "frozen_launch_spec_json IS NULL" in constraints[
-        "ck_attempts_physical_identity_pair"
-    ]
-    assert "identity_conflict" in constraints[
-        "ck_attempts_physical_identity_conflict_nonterminal"
-    ]
-    assert "observed_environment_recorded_at IS NULL" in constraints[
-        "ck_attempts_physical_observed_environment_pair"
-    ]
-    assert "process_terminal_unclassified" in constraints[
-        "ck_attempts_physical_terminal_causality"
-    ]
+    assert "frozen_launch_spec_json IS NULL" in constraints["ck_attempts_physical_identity_pair"]
+    assert "identity_conflict" in constraints["ck_attempts_physical_identity_conflict_nonterminal"]
+    assert (
+        "observed_environment_recorded_at IS NULL"
+        in constraints["ck_attempts_physical_observed_environment_pair"]
+    )
+    assert "process_terminal_unclassified" in constraints["ck_attempts_physical_terminal_causality"]
     assert "status" in constraints["ck_attempts_physical_terminal_kind"]

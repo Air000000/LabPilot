@@ -31,7 +31,7 @@ def test_tool_tables_match_the_frozen_0008_contract(isolated_database_url: str) 
     try:
         with engine.connect() as connection:
             assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-                "0013_result_aware_agent_runs"
+                "0018_agent_source_patch_drafts"
             )
             tool_call_columns = set(
                 connection.execute(

@@ -29,7 +29,7 @@ async def test_upgrade_head_succeeds_on_an_isolated_empty_database(
     try:
         with engine.connect() as connection:
             version = connection.scalar(text("SELECT version_num FROM alembic_version"))
-        assert version == "0013_result_aware_agent_runs"
+        assert version == "0018_agent_source_patch_drafts"
     finally:
         engine.dispose()
 
@@ -46,7 +46,118 @@ async def test_upgrade_head_succeeds_on_an_isolated_empty_database(
     assert Path("migrations/versions/0011_result_plane.py").exists()
     assert Path("migrations/versions/0012_version_identity_nonunique.py").exists()
     assert Path("migrations/versions/0013_result_aware_agent_runs.py").exists()
+    assert Path("migrations/versions/0014_agent_history_context.py").exists()
+    assert Path("migrations/versions/0015_agent_output_feedback.py").exists()
 
+
+@pytest.mark.integration
+@pytest.mark.destructive
+async def test_history_upgrade_preserves_legacy_and_null_downgrade(
+    isolated_database_url: str,
+) -> None:
+    config = _alembic_config(isolated_database_url)
+    command.upgrade(config, "0013_result_aware_agent_runs")
+    engine = create_engine(isolated_database_url.replace("+asyncpg", "+psycopg"))
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text("""
+                INSERT INTO projects(project_id, project_identity, name, status, artifact_root_ref)
+                VALUES ('11111111-1111-4111-8111-111111111111', :identity,
+                    'fixture', 'active', 'fixture')
+            """),
+                {"identity": "a" * 64},
+            )
+            connection.execute(
+                text("""
+                INSERT INTO agent_runs(agent_run_id, project_id, repository_snapshot_id, goal,
+                    status, egress_policy, provider_name, model_name, max_steps, max_model_calls,
+                    max_wall_clock_seconds, max_tokens, created_at)
+                VALUES ('22222222-2222-4222-8222-222222222222',
+                    '11111111-1111-4111-8111-111111111111',
+                    '33333333-3333-4333-8333-333333333333', 'legacy', 'ready', 'local_only',
+                    'scripted', 'fixture', 1, 1, 60, 100, now())
+            """)
+            )
+            connection.execute(
+                text("""
+                INSERT INTO agent_steps(agent_step_id, agent_run_id, ordinal, step_kind,
+                    started_at, outcome, decision_kind, decision_json)
+                VALUES ('44444444-4444-4444-8444-444444444444',
+                    '22222222-2222-4222-8222-222222222222', 1, 'model_call', now(),
+                    'succeeded', 'stop', '{"kind":"stop","reason_code":"done"}'::jsonb)
+            """)
+            )
+        command.upgrade(config, "head")
+        with engine.begin() as connection:
+            assert connection.scalar(text("SELECT output_feedback_json IS NULL FROM agent_steps"))
+            with pytest.raises(IntegrityError), connection.begin_nested():
+                connection.execute(
+                    text("UPDATE agent_steps SET output_feedback_json = '[]'::jsonb")
+                )
+            assert (
+                connection.scalar(text("SELECT history_context_json IS NULL FROM agent_runs"))
+                is True
+            )
+            with pytest.raises(IntegrityError), connection.begin_nested():
+                connection.execute(text("UPDATE agent_runs SET history_context_json = '{}'::jsonb"))
+        command.downgrade(config, "0013_result_aware_agent_runs")
+        command.upgrade(config, "head")
+        with engine.connect() as connection:
+            assert connection.scalar(text("SELECT goal FROM agent_runs")) == "legacy"
+            assert (
+                connection.scalar(text("SELECT history_context_json IS NULL FROM agent_runs"))
+                is True
+            )
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.integration
+@pytest.mark.destructive
+async def test_history_downgrade_refuses_captured_evidence(
+    isolated_database_url: str, tmp_path: Path
+) -> None:
+    from tests.integration.agent_runtime.test_follow_up_run_binding import _refresh
+    from tests.integration.agent_runtime.test_result_history_binding import _capture
+    from tests.integration.test_batch_summary_service import _process
+    from tests.integration.test_result_processing_service import _seed_result_attempt
+
+    async with _seed_result_attempt(isolated_database_url, tmp_path) as (
+        system,
+        batch,
+        _,
+        attempt,
+        _,
+    ):
+        await _process(system.database, attempt)
+        await _refresh(system, batch)
+        await _capture(system, batch)
+        with pytest.raises(RuntimeError, match="refusing destructive downgrade"):
+            command.downgrade(
+                _alembic_config(isolated_database_url), "0013_result_aware_agent_runs"
+            )
+        engine = create_engine(isolated_database_url.replace("+asyncpg", "+psycopg"))
+        try:
+            with engine.begin() as connection:
+                assert (
+                    connection.scalar(text("SELECT version_num FROM alembic_version"))
+                    == "0018_agent_source_patch_drafts"
+                )
+                assert (
+                    connection.scalar(
+                        text(
+                            "SELECT count(*) FROM agent_runs WHERE history_context_json IS NOT NULL"
+                        )
+                    )
+                    == 1
+                )
+                with pytest.raises(IntegrityError), connection.begin_nested():
+                    connection.execute(
+                        text("UPDATE agent_runs SET history_context_json = 'null'::jsonb")
+                    )
+        finally:
+            engine.dispose()
 
 
 @pytest.mark.integration
@@ -60,17 +171,21 @@ async def test_result_aware_agent_run_provenance_schema(
     engine = create_engine(sync_url)
     try:
         with engine.connect() as connection:
-            column = connection.execute(
-                text(
-                    """
+            column = (
+                connection.execute(
+                    text(
+                        """
                     SELECT data_type, is_nullable
                     FROM information_schema.columns
                     WHERE table_schema = 'public'
                       AND table_name = 'agent_runs'
                       AND column_name = 'source_batch_summary_revision_id'
                     """
+                    )
                 )
-            ).mappings().one()
+                .mappings()
+                .one()
+            )
             columns = set(
                 connection.scalars(
                     text(
@@ -269,7 +384,7 @@ async def test_task3_migration_upgrade_downgrade_upgrade_round_trip(
         with engine.connect() as connection:
             assert (
                 connection.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0013_result_aware_agent_runs"
+                == "0018_agent_source_patch_drafts"
             )
             assert connection.scalar(text("SELECT to_regclass('public.projects')")) == "projects"
 
@@ -285,7 +400,7 @@ async def test_task3_migration_upgrade_downgrade_upgrade_round_trip(
         with engine.connect() as connection:
             assert (
                 connection.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0013_result_aware_agent_runs"
+                == "0018_agent_source_patch_drafts"
             )
             assert connection.scalar(text("SELECT to_regclass('public.projects')")) == "projects"
     finally:
@@ -305,7 +420,7 @@ async def test_task4_migration_upgrade_downgrade_upgrade_round_trip(
         with engine.connect() as connection:
             assert (
                 connection.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0013_result_aware_agent_runs"
+                == "0018_agent_source_patch_drafts"
             )
             assert (
                 connection.scalar(text("SELECT to_regclass('public.agent_steps')")) == "agent_steps"
@@ -324,7 +439,7 @@ async def test_task4_migration_upgrade_downgrade_upgrade_round_trip(
         with engine.connect() as connection:
             assert (
                 connection.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0013_result_aware_agent_runs"
+                == "0018_agent_source_patch_drafts"
             )
             assert (
                 connection.scalar(text("SELECT to_regclass('public.agent_steps')")) == "agent_steps"
@@ -653,7 +768,7 @@ async def test_result_plane_migration_upgrade_downgrade_upgrade_round_trip(
         with engine.connect() as connection:
             assert (
                 connection.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0013_result_aware_agent_runs"
+                == "0018_agent_source_patch_drafts"
             )
             assert {
                 connection.scalar(text("SELECT to_regclass(:name)"), {"name": f"public.{table}"})
@@ -667,9 +782,7 @@ async def test_result_plane_migration_upgrade_downgrade_upgrade_round_trip(
                 == "0010_attempt_physical_execution"
             )
             assert all(
-                connection.scalar(
-                    text("SELECT to_regclass(:name)"), {"name": f"public.{table}"}
-                )
+                connection.scalar(text("SELECT to_regclass(:name)"), {"name": f"public.{table}"})
                 is None
                 for table in tables
             )
@@ -678,11 +791,45 @@ async def test_result_plane_migration_upgrade_downgrade_upgrade_round_trip(
         with engine.connect() as connection:
             assert (
                 connection.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0013_result_aware_agent_runs"
+                == "0018_agent_source_patch_drafts"
             )
             assert {
                 connection.scalar(text("SELECT to_regclass(:name)"), {"name": f"public.{table}"})
                 for table in tables
             } == tables
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.integration
+@pytest.mark.destructive
+async def test_output_feedback_null_upgrade_downgrade_roundtrip(isolated_database_url):
+    config = _alembic_config(isolated_database_url)
+    command.upgrade(config, "0014_agent_history_context")
+    command.upgrade(config, "head")
+    engine = create_engine(isolated_database_url.replace("+asyncpg", "+psycopg"))
+    try:
+        with engine.connect() as connection:
+            assert (
+                connection.scalar(text("SELECT version_num FROM alembic_version"))
+                == "0018_agent_source_patch_drafts"
+            )
+        command.downgrade(config, "0014_agent_history_context")
+        with engine.connect() as connection:
+            assert (
+                connection.scalar(text("SELECT version_num FROM alembic_version"))
+                == "0014_agent_history_context"
+            )
+            assert (
+                connection.scalar(
+                    text(
+                        "SELECT count(*) FROM information_schema.columns "
+                        "WHERE table_name='agent_steps' "
+                        "AND column_name='output_feedback_json'"
+                    )
+                )
+                == 0
+            )
+        command.upgrade(config, "head")
     finally:
         engine.dispose()

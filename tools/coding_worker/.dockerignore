@@ -1,0 +1,6 @@
+*
+!Dockerfile
+!cpu-requirements.lock
+!plot-requirements.lock
+!acceptance/
+!acceptance/**

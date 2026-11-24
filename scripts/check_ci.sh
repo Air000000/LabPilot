@@ -23,10 +23,10 @@ echo "== Mypy =="
 uv run mypy src scripts
 
 echo "== Unit and architecture tests =="
-uv run pytest tests/unit tests/architecture -v
+uv run python -m pytest tests/unit tests/architecture -v
 
 echo "== Complete integration tests =="
-uv run pytest tests/integration -v -m integration
+uv run python -m pytest tests/integration -v -m integration
 
 echo "== Dependency guard shell tests =="
 ./tests/scripts/test_verify_architecture_dependencies.sh

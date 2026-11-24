@@ -40,6 +40,7 @@ async def create_agent_run(
         repository_snapshot_id=body.repository_snapshot_id,
         goal=body.goal,
         budget=budget,
+        source_patch=body.source_patch,
     )
     return AgentRunResponse.from_details(details)
 
@@ -63,9 +64,11 @@ async def create_follow_up_agent_run(
         context=context,
         project_id=project_id,
         source_batch_summary_revision_id=body.source_batch_summary_revision_id,
+        source_adoption_id=body.source_adoption_id,
         repository_snapshot_id=body.repository_snapshot_id,
         goal=body.goal,
         budget=budget,
+        source_patch=body.source_patch,
     )
     return AgentRunResponse.from_details(details)
 

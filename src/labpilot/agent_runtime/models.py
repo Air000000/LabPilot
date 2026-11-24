@@ -43,6 +43,21 @@ class AgentRunRow(Base):
             name="fk_agent_runs_source_summary_revision",
             ondelete="RESTRICT",
         ),
+        ForeignKeyConstraint(
+            ["source_adoption_id"],
+            ["source_adoptions.source_adoption_id"],
+            name="fk_agent_runs_source_adoption",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "source_adoption_id IS NULL OR source_batch_summary_revision_id IS NOT NULL",
+            name="ck_agent_runs_adoption_requires_summary",
+        ),
+        CheckConstraint(
+            "source_patch_context IS NULL OR (jsonb_typeof(source_patch_context) = 'object' "
+            "AND source_adoption_id IS NULL AND produced_proposal_revision_id IS NULL)",
+            name="ck_agent_runs_source_patch_object",
+        ),
         PrimaryKeyConstraint("agent_run_id", name="pk_agent_runs"),
         CheckConstraint(
             "status IN ('ready','running','awaiting_human','completed',"
@@ -54,6 +69,20 @@ class AgentRunRow(Base):
             name="ck_agent_runs_egress_policy",
         ),
         CheckConstraint("row_version > 0", name="ck_agent_runs_row_version_positive"),
+        CheckConstraint(
+            "history_context_json IS NULL OR (source_batch_summary_revision_id IS NOT NULL "
+            "AND jsonb_typeof(history_context_json) = 'object')",
+            name="ck_agent_runs_history_requires_source",
+        ),
+    )
+
+    source_patch_context: Mapped[dict[str, object] | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
+
+    source_adoption_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        nullable=True,
     )
 
     agent_run_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
@@ -83,6 +112,9 @@ class AgentRunRow(Base):
         PGUUID(as_uuid=True), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    history_context_json: Mapped[dict[str, object] | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     row_version: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("1"))
@@ -114,6 +146,10 @@ class AgentStepRow(Base):
             "outcome IN ('reserved','succeeded','failed')",
             name="ck_agent_steps_outcome",
         ),
+        CheckConstraint(
+            "output_feedback_json IS NULL OR jsonb_typeof(output_feedback_json) = 'object'",
+            name="ck_agent_steps_output_feedback_object",
+        ),
     )
 
     agent_step_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
@@ -133,4 +169,7 @@ class AgentStepRow(Base):
     token_usage_json: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
     decision_kind: Mapped[str | None] = mapped_column(String(30), nullable=True)
     decision_json: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
+    output_feedback_json: Mapped[dict[str, object] | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
     human_input_text: Mapped[str | None] = mapped_column(Text, nullable=True)
