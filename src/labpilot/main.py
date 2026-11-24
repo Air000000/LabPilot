@@ -1,20 +1,23 @@
+from functools import partial
 from pathlib import Path
 from typing import cast
-from uuid import UUID
 
 from labpilot.agent_runtime.context_compiler import ContextCompiler
 from labpilot.agent_runtime.deepseek import DeepSeekChatProvider
 from labpilot.agent_runtime.opencode_go import OpenCodeGoChatProvider
 from labpilot.agent_runtime.provider import ModelProvider, UnconfiguredModelProvider
 from labpilot.agent_runtime.repository import SqlAgentRepository
+from labpilot.agent_runtime.result_history import HistoryContext, history_tool_definition
 from labpilot.agent_runtime.service import (
     AgentApplicationService,
     AgentProposalService,
 )
+from labpilot.agent_runtime.types import AgentRunDetails
 from labpilot.api.actor import ServerConfiguredActorProvider
 from labpilot.api.app import create_app
 from labpilot.api.dependencies import ApplicationServices
 from labpilot.api.result_aware_agent_adapter import SqlResultAwareAgentAdapter
+from labpilot.api.source_patch_adapter import load_source_patch
 from labpilot.context.content_store import ContentAddressedStore
 from labpilot.context.git_adapter import GitAdapter
 from labpilot.context.proposal_repository_adapter import ProposalRepositoryFactAdapter
@@ -52,9 +55,14 @@ proposals = ProposalApplicationService(
 tool_repository = SqlToolRepository(database.session)
 
 
-def tool_service_for_snapshot(repository_snapshot_id: UUID) -> ToolApplicationService:
+def tool_service_for_run(run: AgentRunDetails) -> ToolApplicationService:
+    definitions = repository_tool_definitions(repository_source, run.repository_snapshot_id)
+    if run.history_context is not None:
+        definitions += (
+            history_tool_definition(HistoryContext.model_validate(run.history_context)),
+        )
     return ToolApplicationService(
-        repository_tool_definitions(repository_source, repository_snapshot_id),
+        definitions,
         tool_repository,
     )
 
@@ -84,6 +92,9 @@ agent_repository = SqlAgentRepository(database.session)
 result_aware_agent = SqlResultAwareAgentAdapter(
     database.session,
     agent_repository=agent_repository,
+    candidate_store=ContentAddressedStore(
+        settings.repository_content_store_root / "source-candidates" / "blobs"
+    ),
 )
 agent_runs = AgentApplicationService(
     repository=agent_repository,
@@ -91,11 +102,12 @@ agent_runs = AgentApplicationService(
     provider=provider,
     model_name=model_name,
     context_compiler=ContextCompiler(),
-    tool_service_factory=tool_service_for_snapshot,
+    tool_service_factory=tool_service_for_run,
     proposal_service=cast(AgentProposalService, proposals),
     data_egress_policy=settings.data_egress_policy,
     follow_up_run_store=result_aware_agent,
     result_context_source=result_aware_agent,
+    source_patch_loader=partial(load_source_patch, database.session, repository_source),
 )
 services = ApplicationServices(
     projects=ProjectApplicationService(database.session),

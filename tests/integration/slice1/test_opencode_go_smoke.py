@@ -100,7 +100,7 @@ async def test_real_opencode_go_proposal_loop(
             provider=provider,
             model_name=model,
             context_compiler=ContextCompiler(),
-            tool_service_factory=lambda snapshot_id: tool_service(system, snapshot_id),
+            tool_service_factory=lambda run: tool_service(system, run.repository_snapshot_id),
             proposal_service=system.proposals,
             data_egress_policy="remote_provider_allowed",
         )

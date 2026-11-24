@@ -1,13 +1,17 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, StrictBool
 
+from labpilot.agent_runtime.result_history import HistoryContext
+from labpilot.agent_runtime.source_binding import SourceBinding
 from labpilot.agent_runtime.types import (
     AgentBudget,
     AgentRunDetails,
     AgentRunTraceDetails,
     AgentStepDetails,
+    OutputFeedback,
+    read_feedback,
 )
 
 
@@ -26,6 +30,7 @@ class AgentBudgetRequest(BaseModel):
 class CreateAgentRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    source_patch: StrictBool = False
     repository_snapshot_id: UUID
     goal: str
     budget: AgentBudgetRequest
@@ -33,6 +38,9 @@ class CreateAgentRunRequest(BaseModel):
 
 class CreateFollowUpAgentRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+    source_adoption_id: UUID | None = None
+    source_patch: StrictBool = False
 
     source_batch_summary_revision_id: UUID
     repository_snapshot_id: UUID
@@ -60,6 +68,8 @@ class AgentRunResponse(BaseModel):
     termination_reason: str | None
     produced_proposal_revision_id: UUID | None
     source_batch_summary_revision_id: UUID | None
+    source_adoption_id: UUID | None = None
+    source_patch_context: dict[str, JsonValue] | None = None
     created_at: datetime
     row_version: int
 
@@ -73,6 +83,8 @@ class AgentRunResponse(BaseModel):
             termination_reason=details.termination_reason,
             produced_proposal_revision_id=details.produced_proposal_revision_id,
             source_batch_summary_revision_id=details.source_batch_summary_revision_id,
+            source_adoption_id=details.source_adoption_id,
+            source_patch_context=_patch_context(details),
             created_at=details.created_at,
             row_version=details.row_version,
         )
@@ -94,6 +106,7 @@ class AgentStepResponse(BaseModel):
     decision_json: dict[str, JsonValue] | None
     token_usage: dict[str, JsonValue] | None
     human_input_text: str | None
+    output_feedback: OutputFeedback | None = None
 
     @classmethod
     def from_details(cls, details: AgentStepDetails) -> "AgentStepResponse":
@@ -108,11 +121,10 @@ class AgentStepResponse(BaseModel):
             started_at=details.started_at,
             completed_at=details.completed_at,
             decision_kind=details.decision_kind,
-            decision_json=(
-                None if details.decision_json is None else dict(details.decision_json)
-            ),
+            decision_json=(None if details.decision_json is None else dict(details.decision_json)),
             token_usage=None if details.token_usage is None else dict(details.token_usage),
             human_input_text=details.human_input_text,
+            output_feedback=read_feedback(details.output_feedback),
         )
 
 
@@ -123,6 +135,8 @@ class AgentRunTraceResponse(BaseModel):
     project_id: UUID
     repository_snapshot_id: UUID
     source_batch_summary_revision_id: UUID | None
+    source_adoption_id: UUID | None = None
+    source_patch_context: dict[str, JsonValue] | None = None
     goal: str
     status: str
     termination_reason: str | None
@@ -135,6 +149,8 @@ class AgentRunTraceResponse(BaseModel):
     completed_at: datetime | None
     row_version: int
     steps: list[AgentStepResponse]
+    history_context: HistoryContext | None = None
+    source_binding: SourceBinding | None = None
 
     @classmethod
     def from_details(cls, details: AgentRunTraceDetails) -> "AgentRunTraceResponse":
@@ -144,6 +160,9 @@ class AgentRunTraceResponse(BaseModel):
             project_id=run.project_id,
             repository_snapshot_id=run.repository_snapshot_id,
             source_batch_summary_revision_id=run.source_batch_summary_revision_id,
+            source_adoption_id=run.source_adoption_id,
+            source_patch_context=_patch_context(run),
+            source_binding=details.source_binding,
             goal=run.goal,
             status=run.status,
             termination_reason=run.termination_reason,
@@ -156,4 +175,23 @@ class AgentRunTraceResponse(BaseModel):
             completed_at=run.completed_at,
             row_version=run.row_version,
             steps=[AgentStepResponse.from_details(step) for step in details.steps],
+            history_context=(
+                None
+                if run.history_context is None
+                else HistoryContext.model_validate(run.history_context)
+            ),
         )
+
+
+def _patch_context(run: AgentRunDetails) -> dict[str, JsonValue] | None:
+    if run.source_patch_context is None:
+        return None
+    from labpilot.agent_runtime.source_patch import SourcePatchContext
+
+    try:
+        return SourcePatchContext.model_validate(dict(run.source_patch_context)).model_dump(
+            mode="json"
+        )
+    except (ValueError, TypeError):
+        # Preserve a readable failed Run without exposing invalid metadata or hiding its mode.
+        return {"status": "invalid"}

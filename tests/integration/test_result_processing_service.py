@@ -61,8 +61,11 @@ async def _seed_result_attempt(
     output: bytes | None = b'{"schema_version":"v1","metrics":{"score":0.82}}',
     score_threshold: Decimal = Decimal("0.80"),
     best_effort_dataset: bool = False,
+    train_source: bytes | None = None,
 ) -> AsyncIterator[tuple[object, UUID, UUID, UUID, Path]]:
-    async with _proposal_system(isolated_database_url, tmp_path) as system:
+    async with _proposal_system(
+        isolated_database_url, tmp_path, train_source=train_source
+    ) as system:
         dataset = DatasetReference(
             reference_type="uri",
             path_or_uri="s3://datasets/example",

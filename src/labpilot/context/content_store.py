@@ -46,9 +46,11 @@ class ContentAddressedStore:
         await asyncio.to_thread(self._put_bytes, value, digest)
         return f"sha256:{digest}"
 
-    async def read_bytes(self, ref: str) -> bytes:
+    async def read_bytes(self, ref: str, *, max_bytes: int | None = None) -> bytes:
+        if max_bytes is not None and (type(max_bytes) is not int or max_bytes < 1):
+            raise ValueError("max_bytes must be positive")
         digest = _ref_digest(ref)
-        return await asyncio.to_thread(self._read_verified, digest)
+        return await asyncio.to_thread(self._read_verified, digest, max_bytes=max_bytes)
 
     async def verify(self, ref: str, expected_hash: str) -> None:
         digest = _ref_digest(ref)
@@ -60,10 +62,13 @@ class ContentAddressedStore:
     def _blob_path(self, digest: str) -> Path:
         return self._root / "sha256" / digest[:2] / digest[2:]
 
-    def _read_verified(self, digest: str) -> bytes:
+    def _read_verified(self, digest: str, *, max_bytes: int | None = None) -> bytes:
         path = self._blob_path(digest)
         try:
-            value = path.read_bytes()
+            with path.open("rb") as stream:
+                value = stream.read() if max_bytes is None else stream.read(max_bytes + 1)
+            if max_bytes is not None and len(value) > max_bytes:
+                raise ContentStoreCorruption("blob_size_limit")
         except FileNotFoundError as exc:
             raise ContentBlobMissing("blob_missing") from exc
         if sha256(value).hexdigest() != digest:

@@ -1,0 +1,4 @@
+-r cpu-requirements.in
+matplotlib>=3.9,<4
+networkx>=3,<4
+seaborn>=0.13,<1

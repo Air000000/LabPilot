@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
@@ -9,11 +10,18 @@ from types import MappingProxyType
 from uuid import UUID, uuid4
 
 import pytest
+from pydantic import ValidationError
+from pydantic_core import PydanticCustomError
 
 from labpilot.agent_runtime.context_compiler import ContextCompiler
 from labpilot.agent_runtime.provider import ModelRequest, ModelResponse, ProviderError
 from labpilot.agent_runtime.result_context import ResultContext, ResultTrialCondition
-from labpilot.agent_runtime.service import AgentApplicationService, AgentRuntimeError
+from labpilot.agent_runtime.service import (
+    AgentApplicationService,
+    AgentRuntimeError,
+    _repeats_only_invalid_trials,
+    _safe_validation_errors,
+)
 from labpilot.agent_runtime.types import AgentBudget, AgentRunDetails, AgentStepDetails
 from labpilot.common.commands import CommandActor, CommandContext
 from labpilot.context.repository_source import RepositorySourceDescriptor
@@ -65,6 +73,9 @@ class MemoryAgentRepository:
         if run.row_version != expected_row_version:
             self._end()
             raise AgentRuntimeError("row_version_conflict")
+        from labpilot.agent_runtime.types import check_correction_reservation
+
+        check_correction_reservation(run, step, tuple(self.steps[agent_run_id]))
         assert step.outcome == "reserved"
         self.steps[agent_run_id].append(step)
         run = replace(
@@ -92,6 +103,7 @@ class MemoryAgentRepository:
         run_status: str,
         termination_reason: str | None,
         completed_at: datetime,
+        output_feedback: Mapping[str, object] | None = None,
     ) -> AgentRunDetails:
         self._begin()
         run = self.runs[agent_run_id]
@@ -104,8 +116,15 @@ class MemoryAgentRepository:
             if item.agent_step_id == agent_step_id
         )
         step = self.steps[agent_run_id][index]
+        from labpilot.agent_runtime.types import finalized_feedback
+
+        if step.outcome != "reserved":
+            self._end()
+            raise AgentRuntimeError("row_version_conflict")
+        feedback = finalized_feedback(step, output_feedback)
         self.steps[agent_run_id][index] = replace(
             step,
+            output_feedback=feedback,
             outcome=outcome,
             completed_at=completed_at,
             token_usage=dict(token_usage),
@@ -268,6 +287,7 @@ class CrashAfterSuccessfulFinalizeRepository(MemoryAgentRepository):
         run_status: str,
         termination_reason: str | None,
         completed_at: datetime,
+        output_feedback: Mapping[str, object] | None = None,
     ) -> AgentRunDetails:
         result = await super().finalize_model_step(
             agent_run_id,
@@ -281,6 +301,7 @@ class CrashAfterSuccessfulFinalizeRepository(MemoryAgentRepository):
             run_status=run_status,
             termination_reason=termination_reason,
             completed_at=completed_at,
+            output_feedback=output_feedback,
         )
         if outcome == "succeeded" and self._crash_on_next_success:
             self._crash_on_next_success = False
@@ -434,7 +455,8 @@ class RecordingToolFactory:
         self.calls: list[UUID] = []
         self.services: list[MemoryToolService] = []
 
-    def __call__(self, repository_snapshot_id: UUID) -> MemoryToolService:
+    def __call__(self, run: AgentRunDetails) -> MemoryToolService:
+        repository_snapshot_id = run.repository_snapshot_id
         self.calls.append(repository_snapshot_id)
         service = MemoryToolService(self.repository, repository_snapshot_id)
         self.services.append(service)
@@ -490,7 +512,6 @@ class MemoryProposalService:
         )
         self.follow_up_calls.append((project_id, experiment_id, origin_agent_step_id))
         return self.revisions.setdefault(origin_agent_step_id, Revision(uuid4()))
-
 
 
 def _context() -> CommandContext:
@@ -566,7 +587,8 @@ def _service(
     tools = MemoryToolService(repository)
     proposals = MemoryProposalService(repository)
 
-    def tool_service_factory(repository_snapshot_id: UUID) -> MemoryToolService:
+    def tool_service_factory(run: AgentRunDetails) -> MemoryToolService:
+        repository_snapshot_id = run.repository_snapshot_id
         assert repository_snapshot_id == descriptor.repository_snapshot_id
         return tools
 
@@ -1581,6 +1603,125 @@ async def test_provider_failure_and_invalid_decision_fail_without_actions() -> N
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("payload", "location", "error_type"),
+    [
+        ({"kind": "tool_call", "arguments": {}}, ["tool_call", "tool_name"], "missing"),
+        (
+            {"kind": "stop", "reason_code": "done", "reasoning": "sentinel-private"},
+            ["stop", "reasoning"],
+            "extra_forbidden",
+        ),
+        (
+            {"kind": "stop", "reason_code": "done", "sentinel-private-key": "sentinel-private"},
+            ["stop", "*"],
+            "extra_forbidden",
+        ),
+        (
+            {"kind": "stop", "reason_code": "done", "summary": "sentinel-private" * 100},
+            ["stop", "summary"],
+            "text_too_large",
+        ),
+        ({"kind": "sentinel-private"}, [], "union_tag_invalid"),
+    ],
+)
+async def test_invalid_decision_logs_safe_fields_without_retry(
+    caplog, payload, location, error_type
+) -> None:
+    caplog.set_level(logging.WARNING)
+    descriptor = _descriptor()
+    repository = MemoryAgentRepository()
+    provider = ScriptedProvider([(payload, {"total_tokens": 7})])
+    service, tools, proposals = _service(repository, descriptor, provider)
+    run = await service.create_run(
+        context=_context(),
+        project_id=descriptor.project_id,
+        repository_snapshot_id=descriptor.repository_snapshot_id,
+        goal="sentinel-private-goal",
+        budget=_budget(),
+    )
+    failed = await service.advance_run(
+        context=_context(), agent_run_id=run.agent_run_id, expected_row_version=run.row_version
+    )
+    assert failed.status == "failed"
+    assert failed.termination_reason == "invalid_agent_decision"
+    (step,) = repository.steps[run.agent_run_id]
+    assert step.outcome == "failed"
+    assert step.decision_json is None
+    assert step.decision_kind is None
+    assert step.token_usage == {"total_tokens": 7}
+    assert tools.executions == 0
+    assert proposals.calls == []
+    with pytest.raises(AgentRuntimeError):
+        await service.advance_run(
+            context=_context(),
+            agent_run_id=run.agent_run_id,
+            expected_row_version=failed.row_version,
+        )
+    assert len(provider.calls) == 1
+    (record,) = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "agent_decision_validation_failed"
+    ]
+    assert record.levelno == logging.WARNING
+    assert record.agent_run_id == str(run.agent_run_id)
+    assert record.agent_step_id == str(step.agent_step_id)
+    assert record.request_id == "agent-request-1"
+    assert record.validation_error_count == 1
+    assert record.validation_errors == [{"loc": location, "type": error_type}]
+    rendered = logging.Formatter("%(levelname)s:%(name)s:%(message)s").format(record)
+    assert str(run.agent_run_id) in rendered
+    assert str(step.agent_step_id) in rendered
+    assert error_type in rendered
+    assert "sentinel-private" not in rendered + json.dumps(record.__dict__, default=str)
+    assert record.exc_info is None
+
+
+def test_validation_diagnostics_bound_and_redact_nested_locations_and_custom_errors() -> None:
+    error = ValidationError.from_exception_data(
+        "sentinel-private-title",
+        [
+            {
+                "type": "value_error",
+                "loc": ("propose", "proposal", "parameter_matrix", "sentinel-private-key", 999)
+                + ("summary",) * 10,
+                "input": "sentinel-private-input",
+                "ctx": {"error": ValueError("sentinel-private-context")},
+            },
+            {
+                "type": PydanticCustomError("sentinel-private-type", "sentinel-private-message"),
+                "loc": ("propose", "proposal", "dataset_reference", "stable_identity"),
+                "input": "sentinel-private-input",
+            },
+        ]
+        + [{"type": "missing", "loc": ("sentinel-private-key",), "input": "secret"}] * 10,
+    )
+    diagnostics = _safe_validation_errors(error)
+    assert error.error_count() == 12
+    assert len(diagnostics) == 8
+    assert diagnostics[0] == {
+        "loc": [
+            "propose",
+            "proposal",
+            "parameter_matrix",
+            "*",
+            "[]",
+            "summary",
+            "summary",
+            "summary",
+        ],
+        "type": "value_error",
+    }
+    assert diagnostics[1] == {
+        "loc": ["propose", "proposal", "dataset_reference", "stable_identity"],
+        "type": "other",
+    }
+    assert "sentinel-private" not in json.dumps(diagnostics)
+    assert "secret" not in json.dumps(diagnostics)
+
+
+@pytest.mark.asyncio
 async def test_structured_logs_have_correlations_and_no_raw_content(caplog) -> None:
     caplog.set_level(logging.INFO)
     sentinel = "sentinel-agent-secret"
@@ -1913,7 +2054,7 @@ async def test_follow_up_propose_materializes_same_experiment_and_replays() -> N
     assert proposals.calls == []
     assert proposals.follow_up_calls == [
         (descriptor.project_id, result_context.experiment_id, step_id),
-        (descriptor.project_id, result_context.experiment_id, replay_step.agent_step_id)
+        (descriptor.project_id, result_context.experiment_id, replay_step.agent_step_id),
     ]
     assert source.calls == [summary_id, summary_id, summary_id]
 
@@ -1998,3 +2139,44 @@ async def test_follow_up_propose_rejects_snapshot_mismatch_without_initial_fallb
     assert failed.termination_reason == "follow_up_proposal_snapshot_mismatch"
     assert proposals.calls == []
     assert proposals.follow_up_calls == []
+
+
+@pytest.mark.parametrize(
+    ("epochs", "seed", "exclusion_code", "rejected"),
+    [
+        ([50], 7, "VALIDATION_INVALID", True),
+        ([50, 50], 7, "VALIDATION_INVALID", True),
+        ([50, 200], 7, "VALIDATION_INVALID", False),
+        ([50], 8, "VALIDATION_INVALID", False),
+        ([50], 7, "EXECUTION_EXHAUSTED", False),
+    ],
+)
+def test_invalid_repeat_guard_allows_new_conditions(
+    epochs: list[int], seed: int, exclusion_code: str, rejected: bool
+) -> None:
+    descriptor = _descriptor()
+    trials = tuple(
+        ResultTrialCondition(
+            trial_id=uuid4(),
+            trial_ordinal=ordinal,
+            resolved_parameters={"epochs": 50, "learning_rate": lr},
+            seed=7,
+        )
+        for ordinal, lr in enumerate([0.0005, 0.005], 1)
+    )
+    context = _result_context(descriptor, uuid4()).model_copy(
+        update={
+            "trials": trials,
+            "excluded_results": tuple(
+                {"trial_id": str(t.trial_id), "exclusion_code": exclusion_code} for t in trials
+            ),
+        }
+    )
+    proposal = _payload_from_json(
+        {
+            **_proposal(descriptor),
+            "parameter_matrix": {"epochs": epochs, "learning_rate": [0.0005, 0.005]},
+            "seeds": [seed],
+        }
+    )
+    assert _repeats_only_invalid_trials(proposal, context) is rejected

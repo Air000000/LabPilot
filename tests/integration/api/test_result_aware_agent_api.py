@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+from functools import partial
 from pathlib import Path
 from uuid import UUID
 
@@ -13,11 +14,13 @@ from tests.integration.test_result_processing_service import _seed_result_attemp
 from labpilot.agent_runtime.context_compiler import ContextCompiler
 from labpilot.agent_runtime.provider import ModelRequest, ModelResponse
 from labpilot.agent_runtime.repository import SqlAgentRepository
+from labpilot.agent_runtime.result_history import HistoryContext, history_tool_definition
 from labpilot.agent_runtime.service import AgentApplicationService
 from labpilot.api.actor import ServerConfiguredActorProvider
 from labpilot.api.app import create_app
 from labpilot.api.dependencies import ApplicationServices
 from labpilot.api.result_aware_agent_adapter import SqlResultAwareAgentAdapter
+from labpilot.api.source_patch_adapter import load_source_patch
 from labpilot.context.content_store import ContentAddressedStore
 from labpilot.context.git_adapter import GitAdapter
 from labpilot.context.repository_source import RepositorySnapshotSourceService
@@ -60,7 +63,7 @@ class ScriptedProvider:
         return ModelResponse(payload=self.script.pop(0), usage={"total_tokens": 1})
 
 
-def _app(system: object, provider: ScriptedProvider):
+def _app(system: object, provider: ScriptedProvider, *, candidate_store=None):
     database = system.database  # type: ignore[attr-defined]
     source = RepositorySnapshotSourceService(
         database.session,
@@ -69,12 +72,17 @@ def _app(system: object, provider: ScriptedProvider):
     )
     agent_repository = SqlAgentRepository(database.session)
     result_aware_agent = SqlResultAwareAgentAdapter(
-        database.session, agent_repository=agent_repository
+        database.session, agent_repository=agent_repository, candidate_store=candidate_store
     )
 
-    def tool_service_factory(repository_snapshot_id: UUID) -> ToolApplicationService:
+    def tool_service_factory(run) -> ToolApplicationService:
+        definitions = repository_tool_definitions(source, run.repository_snapshot_id)
+        if run.history_context is not None:
+            definitions += (
+                history_tool_definition(HistoryContext.model_validate(run.history_context)),
+            )
         return ToolApplicationService(
-            repository_tool_definitions(source, repository_snapshot_id),
+            definitions,
             SqlToolRepository(database.session),
         )
 
@@ -89,6 +97,7 @@ def _app(system: object, provider: ScriptedProvider):
         data_egress_policy="local_only",
         follow_up_run_store=result_aware_agent,
         result_context_source=result_aware_agent,
+        source_patch_loader=partial(load_source_patch, database.session, source),
     )
     return create_app(
         services=ApplicationServices(

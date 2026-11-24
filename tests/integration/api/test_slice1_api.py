@@ -103,7 +103,8 @@ def _payload(snapshot_id: UUID, identity: str, **changes: object) -> dict[str, o
 def _app(system: object, source: RepositorySnapshotSourceService, provider: ScriptedProvider):
     database = system.database  # type: ignore[attr-defined]
 
-    def tool_service_factory(repository_snapshot_id: UUID) -> ToolApplicationService:
+    def tool_service_factory(run) -> ToolApplicationService:
+        repository_snapshot_id = run.repository_snapshot_id
         return ToolApplicationService(
             repository_tool_definitions(source, repository_snapshot_id),
             SqlToolRepository(database.session),

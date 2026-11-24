@@ -226,12 +226,19 @@ def test_trial_evidence_joins_each_condition_to_its_validation_outcome() -> None
     request = _compile(ContextCompiler(), snapshot, result_context=context).request
     evidence = json.loads(request.messages[1]["content"])["result_context"]["trial_evidence"]
 
+    assert evidence[0]["trial_id"] == str(selected.trial_id)
+    assert evidence[0]["trial_ordinal"] == 1
+    assert evidence[0]["seed"] == 7
     assert evidence[0]["resolved_parameters"]["epochs"] == 1000
     assert evidence[0]["outcome"] == "selected_valid"
     assert evidence[0]["metrics"][0]["numeric_value"] == "0.941"
     assert evidence[1]["resolved_parameters"]["epochs"] == 100
     assert evidence[1]["outcome"] == "excluded"
     assert evidence[1]["exclusion_code"] == "VALIDATION_INVALID"
+    assert evidence[1]["trial_id"] == str(rejected.trial_id)
+    assert evidence[1]["trial_ordinal"] == 2
+    assert evidence[1]["seed"] == 7
+    assert evidence[1]["validation_reason_codes"] == ["METRIC_BELOW_THRESHOLD"]
 
 
 def test_follow_up_system_policy_preserves_result_authority_and_governance() -> None:
@@ -248,6 +255,10 @@ def test_follow_up_system_policy_preserves_result_authority_and_governance() -> 
     assert "stop" in policy
     assert "full ProposalPayload" in policy
     assert "start" in policy and "approve" in policy
+    assert "summary" in policy and "question" in policy
+    assert "source_batch_id" in policy
+    assert "Trial IDs" in policy
+    assert "scope" in policy
 
 
 def test_result_context_has_individual_128_kib_bound_before_model_request() -> None:

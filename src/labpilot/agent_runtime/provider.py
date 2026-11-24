@@ -21,6 +21,7 @@ class ModelRequest:
 class ModelResponse:
     payload: Mapping[str, object]
     usage: Mapping[str, object]
+    response_completed: bool = False
 
 
 class ModelProvider(Protocol):
@@ -31,10 +32,18 @@ class ModelProvider(Protocol):
 
 
 class ProviderError(RuntimeError):
-    __slots__ = ("reason_code",)
+    __slots__ = ("reason_code", "response_completed", "usage")
 
-    def __init__(self, reason_code: str) -> None:
+    def __init__(
+        self,
+        reason_code: str,
+        *,
+        usage: Mapping[str, object] | None = None,
+        response_completed: bool = False,
+    ) -> None:
         self.reason_code = reason_code
+        self.usage = {} if usage is None else usage
+        self.response_completed = response_completed
         super().__init__(reason_code)
 
 
