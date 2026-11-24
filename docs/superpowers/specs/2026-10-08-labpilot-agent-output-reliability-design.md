@@ -4,12 +4,12 @@
 
 - 日期：2026-10-08（Asia/Shanghai）
 - 状态：**INTEGRATED LOCALLY / OFFLINE GATE PASS / INTERVIEW 0015 DEPLOYMENT PASS / BOUNDED LIVE MIXED**
-- 后续本地集成和部署：[独立验收记录](../evidence/research-runtime-preview.md)。
+- 后续本地集成和部署的原始验收记录保留于开发档案。
 - 代码基线：`95153934b0312739d98b8978bc4809a49d11173e`（clean local main）
 - 工作分支：`maintenance/agent-output-reliability`
 - 范围：模型输出契约、已知响应处理、展示字段隔离、一次有界纠错和回归验收。
-- 后续实施：用户回复“继续继续”；实际提交和验收见[维护收口](../evidence/research-runtime-preview.md)。
-- 后续四类固定live：[2 PASS / 2 PARTIAL](../evidence/research-runtime-preview.md)，12 calls / 121,944 tokens，未触发纠错。
+- 后续实施已获批准，实际提交和维护收口保留于开发档案。
+- 后续四个固定真实用例为 2 PASS / 2 PARTIAL，共 12 次调用、121,944 Token，未触发纠错。见[公开输出可靠性观察摘要](../evidence/research-runtime-preview.md#agent-output-reliability)。
 - 以下正文保留设计阶段标准与历史检查，实际执行状态以收口记录为准。
 
 用户“好的，开始”承接的是制定窄设计和验收清单。本文件是可评审方案，
@@ -17,18 +17,18 @@
 [V1 Scope v0.3](../../labpilot/01-v1-scope-and-acceptance-v0.3.md)、
 [Architecture 10](../../labpilot/architecture/10-v1-core-architecture-rebaseline-v0.3.md)
 及已接受的 P1 / P1-C 边界；不重写原 acceptance。
-2026-10-08 对初稿 `0d95f31` 的[深度复审记录](../evidence/research-runtime-preview.md)
+2026-10-08 对初稿 `0d95f31` 的深度复审记录保留于开发档案，
 保存具体发现、依据和修订；本文为修订后方案。未请求或使用其他 agent，复审仍为作者复审。
 
 ## 1. 事实、诊断边界与目标
 
-最新[真实案例](../evidence/research-runtime-preview.md)
+设计时核对的真实案例（原始记录保留于开发档案）
 在第 4 次调用失败，累计 41,289 tokens，安全日志为 `propose.summary / value_error`。
 没有耗尽预算，也没有生成 Proposal；准确原因是超长还是非法 UTF-8，未知。
 运行时要求 summary ≤1000 UTF-8 字节，但生成的 schema 和编译策略未披露这个限制。
 这是已确认的契约缺口，不是“Agent 不会设计实验”或“只要缩短 summary 就一定成功”的证据。
 
-当前代码还存在三个独立缺口：
+设计核对时的代码还存在三个独立缺口：
 
 | 代码 | 已核对的行为 | 本轮改进 |
 |---|---|---|

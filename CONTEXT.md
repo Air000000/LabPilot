@@ -1,6 +1,6 @@
 # LabPilot Experiment Iteration Context
 
-This glossary records the project-specific language used by the post-Core Result-Aware iteration work. It is descriptive vocabulary, not a replacement for the V1 Scope, Architecture 10, or an approved implementation plan.
+This glossary defines the language used for experiment iteration and governed source changes. The V1 Scope, Architecture 10, and applicable approved plans define the normative contracts.
 
 ## Language
 
@@ -10,6 +10,10 @@ _Avoid_: treating every follow-up run as a new Experiment
 
 **ExperimentVersion**:
 An immutable, human-approved experimental design inside an Experiment. A later version does not mutate or revoke earlier versions.
+
+**Trial**:
+A recorded research condition within an experiment design. Matching parameters and seed do not establish equivalence across source, dataset, or execution environment, and an Attempt retry does not add a Trial.
+_Avoid_: physical attempt, statistically independent sample
 
 **BatchSummaryRevision**:
 A persisted, versioned deterministic summary of one Batch after execution, validation, and result selection have settled sufficiently for summary generation. There is no separate publish state in the current domain; a persisted revision is already presentable, while "latest" means the highest persisted revision number for that Batch.
@@ -68,10 +72,34 @@ _Avoid_: silently updated Snapshot, approved source
 A recorded technical observation about one CandidateSource under a specified check procedure, distinguishing checks actually performed from checks not performed. It does not establish result eligibility, scientific improvement or human approval.
 _Avoid_: ValidationReport, scientifically valid result
 
+**Static candidate**:
+A CandidateSource derived under a static source-change contract. Its static check report covers the declared static checks.
+_Avoid_: dynamically verified candidate, adopted Snapshot
+
+**Frozen coding task**:
+The independent worker's task contract binding the baseline, objective, allowed candidate changes, budgets, and acceptance checks. It is a worker contract outside the Core domain model.
+_Avoid_: Core CodingTask entity, Experiment Proposal
+
+**ProjectSourceRequest**:
+The recorded source-change request for a worker candidate, tied to a project, a baseline Snapshot, and the frozen task and change evidence.
+_Avoid_: adopted source, Experiment Approval
+
+**ProjectCheckReport**:
+The Core report recording static checks and the accepted local operator receipt for the worker's dynamic checks. Scientific validation and human approval remain separate.
+_Avoid_: Docker rerun by Core, scientific ValidationReport
+
+**ProjectCandidatePackage**:
+The Core package that binds the request, candidate manifest, diff, and check report. An independently checked coding candidate retains that evidence while it awaits a human adoption decision.
+_Avoid_: static-only candidate, adopted Snapshot
+
+**Operator attestation**:
+The trusted local operator's evidence of independent checks for an exact task and candidate. Content hashes support integrity checks, with no cryptographic signer or remote execution attestation.
+_Avoid_: third-party signature, unforgeable test evidence
+
 ## Source-adoption vocabulary
 
 **SourceAdoption**:
-A human-recorded selection of a CandidateSource whose contents match a new RepositorySnapshot, retaining its baseline and candidate identities. It is distinct from Experiment Approval and does not establish runtime safety or scientific validity.
+A human record selecting a candidate whose contents match a new RepositorySnapshot, with the baseline and candidate identities preserved. Experiment Approval separately authorizes the experimental design.
 _Avoid_: approved ExperimentVersion, safe code, automated source generation
 
 

@@ -2,9 +2,7 @@
 
 > 历史设计记录。当前实现及验收边界见[公开能力与验收证据](../evidence/research-runtime-preview.md)。
 
-**后续状态：窄实施已于2026-10-15集成本地main，interview 0016部署验收通过，未推送。**
-见[本地主线与部署验收](../evidence/research-runtime-preview.md)。
-见[工程收口](../evidence/research-runtime-preview.md)。
+**2026-10-15 实施记录。** 窄实施已集成本地 main，interview 0016 部署验收通过，该次集成未推送。原本地集成、部署验收和工程收口保留于开发档案。见[公开人工采纳摘要](../evidence/research-runtime-preview.md#source-adoption-and-cross-source-follow-up)。
 以下保留初稿的规划范围、权限时点与NOT RUN验收计划；实际结果以收口记录为准。
 
 - 2026-10-13（Asia/Shanghai）；PROPOSED / AUTHOR SELF-REVIEW / IMPLEMENTATION NOT STARTED。
@@ -158,7 +156,7 @@ sandbox/容器/特权helper、Memory/MCP/Plugin/Compaction/Projection或distribu
 host验收在专用接受repo/隔离DB配置中完成；不增加当前interview allowed roots，不动现有demo数据。
 需要DB的新迁移仅随未来实现范围批准后执行；不运行真实训练，不用假指标冒充科学或live acceptance。
 
-## 10. 作者自审结论与当前状态
+## 10. 设计阶段的作者自审结论
 
 单primary已通过实际register代码核对；同Experiment不同Snapshot的人工revision已有接口；
 Approval精确source check及command原子receipt均已核对；没有由这些事实推断新模块测试已通过。

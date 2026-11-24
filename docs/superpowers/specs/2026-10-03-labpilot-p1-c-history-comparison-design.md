@@ -12,8 +12,7 @@ isolated `feature/p1-c-history-comparison` worktree; no merge,
 push, interview database migration, paid provider call or host training authorized.
 The approval is the user's explicit “批准”; the prior author consistency review
 is not represented as an independent review.
-Acceptance: [P1-C local closeout](../evidence/research-runtime-preview.md).
-Subsequent user-authorized corrections: [standards self-review](../evidence/research-runtime-preview.md).
+The original P1-C local closeout and subsequent standards self-review remain in the development archive. See the [public history-comparison acceptance summary](../evidence/research-runtime-preview.md#history-comparison-and-trial-facts) for the published scope and observed follow-ups.
 
 ## 1. Problem and outcome
 
@@ -255,6 +254,6 @@ MCP/plugins, distributed scheduling, Runner changes and Slice 2 production
 hardening. No P2 implementation is authorized.
 
 Approval sequence: review this concrete design → human design approval → approve
-the [detailed implementation plan](../evidence/research-runtime-preview.md)
-→ separate implementation branch. Accepted P1 and maintenance records remain
+the detailed implementation plan (retained in the development archive)
+→ separate implementation branch. This sequence records the design-time approval path. Accepted P1 and maintenance records remain
 historical and unchanged.

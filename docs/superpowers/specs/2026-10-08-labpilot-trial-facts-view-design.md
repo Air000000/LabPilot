@@ -4,7 +4,7 @@
 
 - 日期：2026-10-08（Asia/Shanghai）
 - 初始状态（2026-10-08）：**PROPOSED / 作者自审完成 / IMPLEMENTATION NOT STARTED**。
-- 后续状态（2026-10-10）：用户明确批准，窄实施及离线收口完成；见[实际证据](../evidence/research-runtime-preview.md)。尚未集成、部署或新live复验。
+- 2026-10-10 记录：窄实施及离线收口当时已完成，集成、部署及新的真实复验当时尚未完成。原收口保留于开发档案。后续 2026-10-12 复验见[公开 Trial 事实摘要](../evidence/research-runtime-preview.md#history-comparison-and-trial-facts)。
 - 基线：clean main `93281b06773e3673bd42475624f4d336fe347f7d`，interview head 0015。
 - 分支：`planning/trial-facts-view`。主仓库和已部署运行逻辑保持。
 - 用户“好的，继续”承接四案后的窄方案规划；不授予新的付费样本、审批或训练。
@@ -14,7 +14,7 @@
 
 ## 1. 事实与目标
 
-[四案真实观察](../evidence/research-runtime-preview.md)
+[公开四案观察摘要](../evidence/research-runtime-preview.md#agent-output-reliability)对应的历史记录中，
 12次调用、121,944 tokens：开放探索和STOP通过；显式参数通过但漏读train.py；人工输入
 路径正确但历史Trial计数13应为12，并错误声称“无重复测量”。四案均合法结构化输出，
 未触发展示降级或纠错。这证明结构校验不等于事实校验，不能归因于预算不足。
@@ -176,7 +176,7 @@ SQL只使用隔离测试库；host部署独立授权后停止写入/确认无在
 warning为既有负向模型序列化提示。零Provider、Run/Proposal/Verification/训练增量，
 无DB migration、服务重启、main merge或push。probe在
 `local-workspace/labpilot-trial-facts-planning-20261008/probe.py`，非产品模块。
-作者自审见[review](../evidence/research-runtime-preview.md)，未使用其他agent，
+作者自审原始记录保留于开发档案，未使用其他agent，
 不冒充独立APPROVE。已有full CI仍绑定68bc994；本轮文档/公式没有重跑全量gate。
 
 明确延后：通用claims/LLM引用schema、自然语言真假检测、必达读取workflow、统计显著性、
