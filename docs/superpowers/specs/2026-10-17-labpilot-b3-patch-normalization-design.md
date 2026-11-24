@@ -2,9 +2,7 @@
 
 > 历史设计记录。当前实现及验收边界见[公开能力与验收证据](../evidence/research-runtime-preview.md)。
 
-**后续状态：窄实施已于2026-10-17集成本地main，主仓库完整gate与CLI验收通过，未推送。**
-见[主线集成验收](../evidence/research-runtime-preview.md)。
-见[实际收口](../evidence/research-runtime-preview.md)。以下保留复审时点。
+**2026-10-17 实施记录。** 窄实施已集成本地 main，主仓库完整 gate 与 CLI 验收通过，该次集成未推送。原主线集成验收及实施收口保留于开发档案。见[公开补丁派生与交接摘要](../evidence/research-runtime-preview.md#static-candidates-and-patch-drafts)。以下保留复审时点。
 
 2026-10-17（Asia/Shanghai）。PROPOSED / AUTHOR SELF-REVIEW / IMPLEMENTATION NOT STARTED。
 基线main a463386dc31a6b8f03fd8b4072b0a7df22c1f19e；规划分支planning/b3-patch-normalization。
@@ -12,7 +10,7 @@
 
 ## 结论与第一性原理
 
-[首次live](../evidence/research-runtime-preview.md)已证明一份patch的hunk计数错误。
+首次固定真实观察中的 patch 存在 hunk 计数错误。原始记录保留于开发档案，见[公开草稿失败摘要](../evidence/research-runtime-preview.md#static-candidates-and-patch-drafts)。
 它没有证明模型理解错了目标，也没有证明所有模型/任务的失败率；原始可应用性仍FAIL。
 代码修改内容需要模型判断；冗余行数、canonical diff和内容身份适合由确定性工具计算。
 当前拒绝机制保护了正式链路，但要求模型同时正确生成修改和Git序列化细节，存在可避免的格式负担。
@@ -99,7 +97,7 @@ no-op、mode、binary、绝对/遍历路径、超限、额外文件、损坏hunk
 派生SHA256d2bfb4bcb2541770acdca02b0a281db0f8ffd827c194f6dec268d1a29c23f351。
 这是**反事实离线探针**，不是新的live、正式prepare或成功CandidatePackage，原NOT ACCEPTED保持。
 
-私有证据`/home/air/.local/state/labpilot-evidence/p2-b3-patch-policy-review-20261017/`（0700/0600）：
+下列私有证据保留在开发档案的 `p2-b3-patch-policy-review-20261017/` 中，原权限为 0700/0600：
 probe.json、counterfactual-canonical.patch、protected.json。
 所有DB原行、正式候选文件及三服务身份保持，demo clean；Provider/Request/Package/训练增量均0。
 原型未进入产品；完整CI/新CLI/host/live验收NOT RUN，原B3工程与0018部署基线不改写。

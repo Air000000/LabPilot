@@ -12,18 +12,18 @@ LabPilot 是面向科研实验与算法研发的 Agent Runtime / Harness，解�
 
 | 治理范围 | 机制 |
 | --- | --- |
-| 决策 | ContextCompiler 编译绑定快照、工具契约和实验事实。Runtime 校验结构化决策、预算和数据出境策略，先记录调用身份，再调用模型。调用结果不确定时保守终止。 |
-| 源码 | 核心 Agent 可在显式模式下留下未检查补丁草稿。独立编码 Executor 在冻结任务内实际编辑，另用独立镜像验收候选。操作者审阅、提交、捕获并采纳新 Snapshot。 |
+| 决策 | ContextCompiler 按绑定的源码快照、工具契约和实验事实构建有界模型上下文。Runtime 校验结构化决策、预算和数据出境策略，先记录调用身份，再调用模型。调用结果不确定时保守终止。 |
+| 源码 | 核心 Agent 可在显式模式下生成并持久化未经验证的补丁草稿。独立编码 worker 按预定义任务合同修改隔离工作区源码，并由单独的容器验收候选。操作者审阅、提交、捕获并采纳新 Snapshot。 |
 | 执行 | Verifier 确定性校验提案，人工批准后生成 ExperimentVersion。Batch 按参数和 seed 展开 Trial。Attempt 物化确切源码，由 Coordinator 和 Linux Runner 使用稳定执行身份对账。 |
 | 结果 | Artifact、MetricObservation、ValidationReport、TrialResultSelection 和 BatchSummaryRevision 分层保存。后续 AgentRun 绑定精确摘要，可使用冻结历史和 Trial 事实。 |
 
 ## 架构与权限
 
-科研实验链为 **研究目标 → ProposalRevision → Verification → 人工批准 → ExperimentVersion → Batch / Trial / Attempt → 产物、验证、选择、摘要 → 后续 AgentRun**。PostgreSQL 保存权威领域状态。进程正常退出和结果符合声明协议分别记录。确定性结果验证以声明协议为准，科研假设仍须独立评估。基础设施重试增加 Attempt，Trial 的科研条件保持原身份。
+科研实验链为 **研究目标 → ProposalRevision → Verification → 人工批准 → ExperimentVersion → 创建 Batch / 展开 Trial → 显式 StartBatch → Attempt → 产物、验证、选择、摘要 → 后续 AgentRun**。PostgreSQL 保存权威领域状态。进程正常退出和结果符合声明协议分别记录。确定性结果验证以声明协议为准，科研假设仍须独立评估。基础设施重试增加 Attempt，Trial 的科研条件保持原身份。
 
-普通科研 Agent 的基础工具是绑定快照的四个只读仓库工具。符合条件的新 Follow-up 可额外读取冻结的同实验历史。普通 Run 无代码写入、shell、审批或物理执行权限。模型调用前会预留持久化步骤。已落盘的提案可重入物化。一次有界纠错仅适用于响应已完成、返回的用量可计账的指定格式错误。远程模型可能接收仓库内容，使用前须明确授权出境。
+普通科研 Agent 的基础工具是绑定快照的四个只读仓库工具。符合条件的新 Follow-up 可额外读取冻结的同实验历史。普通 Run 无代码写入、shell、审批或物理执行权限。模型调用前会预留持久化步骤。已持久化的模型提案决策支持重入式生成 ProposalRevision。一次有界纠错仅适用于已完成响应中指定的格式错误，且其 Token 用量须可用于预算记账。远程模型可能接收仓库内容，使用前须明确授权出境。
 
-独立编码 CLI 复用 [mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent)，在非 root、无网络的 Docker 工作区执行编辑和开发测试。任务固定基准、可编辑范围、预算与验收合同。宿主 worker 的远程模型调用也需要独立授权。独立容器用可信冻结测试验收候选。验收通过后仍须人工确认才可采纳。核心 Agent 的草稿要经过单独交接和检查。已采纳 Snapshot 可用于人工提案或显式跨源码 Follow-up，新实验仍须确定性校验及人工批准。跨源码机制有离线验收，两次固定真实提案未通过。
+独立编码 CLI 复用 [mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent)，在非 root、无网络的 Docker 工作区执行编辑和开发测试。任务冻结基准、候选变更范围、预算与验收合同。工作区可写，`editable_paths` 在最终候选的差异检查、重放和准入时执行范围约束。宿主 worker 的远程模型调用需要单独授权出境。独立容器运行可信冻结测试，Core 核对本地操作者提供的验收回执及候选内容。验收通过后仍须人工采纳。核心 Agent 草稿须单独交接和检查。已采纳 Snapshot 可用于人工提案或显式跨源码 Follow-up，新实验仍须确定性校验、人工批准和显式启动。跨源码机制已通过离线验收，两次指定的真实提案均未通过验收。
 
 ## 关键工程机制
 
@@ -32,7 +32,7 @@ LabPilot 是面向科研实验与算法研发的 Agent Runtime / Harness，解�
 - **Stable Execution Identity**　协调器重启后用稳定身份及可用的 Runner 观测核对原物理尝试，避免仅因失去响应就重新启动。
 - **Immutable ExperimentVersion**　人工批准冻结确切提案及其源码、数据与执行语义，后续更改需要重新校验和批准。
 - **Independent Candidate Verification**　候选在独立环境中重放，使用可信冻结测试和范围检查。编码 Agent 自行生成的测试用于开发反馈。
-- **Trial / Attempt Separation**　同一参数和 seed 定义一个科研条件，基础设施重试增加物理尝试。
+- **Trial / Attempt Separation**　Trial 在所属实验设计下记录参数和 seed，基础设施重试增加同一 Trial 的物理尝试。跨源码、数据或环境时，相同参数和 seed 不足以证明条件等价。
 - **Exact Revision Binding**　执行依赖批准的源码快照。后续 AgentRun 固定读取绑定的摘要修订，后来生成的摘要不会改写其依据。
 
 ## 已验收案例
@@ -90,11 +90,11 @@ curl --noproxy 127.0.0.1 -fsS "http://$preview_addr/health/ready"
 
 ## 能力边界
 
-- 当前为单 Coordinator、单机 Linux Runner。系统没有全局 exactly-once 或分布式调度保证。已实测的 Coordinator 恢复是身份与状态对账。训练 checkpoint 恢复及完整生产故障矩阵未获验收。
+- 当前为单 Coordinator、单机 Linux Runner。系统没有全局 exactly-once 或分布式调度保证。已实测的 Coordinator 恢复是身份与状态对账。训练 checkpoint 恢复及完整生产故障矩阵尚未完成验收。
 - Operator 面向单操作者和固定演示。独立编码、源码采纳和正式 NOTEARS 接入使用各自的 CLI、API 或主机配置入口。
 - 固定案例验证了工程链路。通用自主科研、普遍的因果发现能力、超参优劣、长期真实用户使用、提案质量与科研效率均无可推广的量化结论。
 
-[文档状态](DOCUMENT-STATUS.md) · [领域词汇](CONTEXT.md) · [领域架构](docs/labpilot/architecture)
+[文档导航](DOCUMENT-STATUS.md) · [领域词汇](CONTEXT.md) · [正式公开基线及 CI](docs/superpowers/evidence/research-runtime-preview.md#public-release-acceptance)
 
 ## 许可
 

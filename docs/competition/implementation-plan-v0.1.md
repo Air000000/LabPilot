@@ -1,6 +1,6 @@
 # Competition MVP Implementation Plan v0.1
 
-Status: Approved / Executing
+Status at the September 2026 competition milestone: Approved / Executing. This plan records the work authorized at that time.
 Branch: `feat/competition-mvp`
 Core baseline: `c71c25968e84ad9061ac2a7bd28bbfa4743f8183`
 Target submission: 2026-09-19
@@ -11,7 +11,7 @@ Target submission: 2026-09-19
 |---|---|---|
 | Task 0 - Windows/WSL2 runtime | PASS | Ubuntu 24.04 on WSL2; systemd PID 1; Linux-native repository path; Python 3.12.13; uv 0.11.32; Docker Desktop engine and Compose reachable; competition preflight returned `PRECHECK=PASS`. |
 | Task 1 - deterministic CPU workload | PASS | Four real local Trials reproduced `0.650 / 0.895 / 0.895 / 0.941`; threshold `accuracy >= 0.92` yields three expected invalid configurations and one valid configuration; repeated identical high-performing runs were byte-identical during characterization. |
-| Task 2A - standalone demo repository | PASS | WSL-local clean Git repository at `/home/air/labpilot-demo-repo`; frozen commit `3aa00d08ee390ae44060931b9decc9fc6faad9e2`; dataset SHA-256 `1a5ea8912a402d121f54210dabb020adef9bb573471918b8aba2aca444b56e31`. |
+| Task 2A - standalone demo repository | PASS | clean standalone Git repository on the WSL demo host; frozen commit `3aa00d08ee390ae44060931b9decc9fc6faad9e2`; dataset SHA-256 `1a5ea8912a402d121f54210dabb020adef9bb573471918b8aba2aca444b56e31`. |
 | Task 2B - LabPilot RepositorySnapshot | PASS | Existing Project/Repository services bootstrapped the prepared repository into LabPilot; Project `0dfc6c15-799c-4df7-bd58-e506708af7d7`; RepositorySnapshot `e70fb619-a94f-4e14-8984-656912bd0945`; snapshot identity `e9952357876232a5cb223e53284b4702b8e7457bb2892754b1e95ee999dcecfc`; clean source at commit `3aa00d08ee390ae44060931b9decc9fc6faad9e2`. |
 | Task 3 - real-model Agent proposal | PASS | DeepSeek `deepseek-v4-flash` run `4067eaf4-d980-44de-816f-31bf0a40080b` used `repository.list_tree` then `repository.read_text` on `README.md`, produced ProposalRevision `c5ae7d83-cb9e-4e3a-94b7-f3d6e914b33e`, and deterministic ProposalVerification `404cec0c-61fd-4570-abbe-891a93a7d86c` passed without manual proposal editing. The proposal matched the frozen four-Trial sweep contract, strict dataset identity, artifact/metric references, validation rules, and execution placeholders. Evidence-first policy CI passed at `92da1b753db75c03e14eac0cd5cfc337ece14196`. |
 

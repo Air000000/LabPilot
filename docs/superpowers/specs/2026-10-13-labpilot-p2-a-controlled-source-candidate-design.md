@@ -2,9 +2,9 @@
 
 > 历史设计记录。当前实现及验收边界见[公开能力与验收证据](../evidence/research-runtime-preview.md)。
 
-> 当前进展：用户在复审后批准静态实施；405a4c1已完成本地工程验收，见[独立验收记录](../evidence/research-runtime-preview.md)。
-> 后续[合入前作者复审](../evidence/research-runtime-preview.md)补齐请求绑定与有界静态compile；仅构建code object，不执行。
-> 下方PROPOSED/NOT RUN为r1设计复审时点记录，由Git保留历史；不授权动态执行。该行指设计复审时点；后续已[集成本地 main](../evidence/research-runtime-preview.md)，未推送或重启服务。
+> 后续实施记录：复审后批准了静态实施，`405a4c1` 已通过当时的本地工程验收。原验收记录留在开发档案，见[公开静态候选摘要](../evidence/research-runtime-preview.md#static-candidates-and-patch-drafts)。
+> 合入前作者复审补齐了请求绑定与有界静态 compile，仅构建 code object。原复审保留于开发档案。
+> 下方 PROPOSED / NOT RUN 指 r1 设计复审时点。后续实施当时已集成本地 main，该次集成未推送或重启服务。2026-11-24 的公开状态见[正式发布验收](../evidence/research-runtime-preview.md#public-release-acceptance)。
 
 - 日期：2026-10-13（Asia/Shanghai）。**PROPOSED / AUTHOR SELF-REVIEW / IMPLEMENTATION NOT STARTED**。
 - r0初稿提交 `af22824e095a40823c3a6aa6e43c07ea7910fdba`；本次用户明确要求结合成熟方案自审并改进，授权设计修订，不授权实现、候选执行或付费调用。
@@ -212,7 +212,7 @@ daemon未知、强制终止后无残留、report真实性和幂等观察；静�
 在一次性合成a.txt/b.txt上验证Git默认原子失败：一个hunk不适用，check/apply都拒绝，
 两文件不变，Git版本2.43.0；不是对真实仓库应用补丁。
 哈希反例证明改报告并重算自身hash仍可自洽，而与原先固定的ref不符；不执行或伪造真实业务报告。
-收据 `/tmp/labpilot-p2a-design-review-20261013/probes.json`，辅助脚本位于E:/Programs。
+收据 `probes.json` 和辅助脚本保留于开发档案。
 
 复审修正的是范围/可信边界/可实现性，不把Scope变小包装成动态隔离已经通过。
 默认设计可进入单独范围批准与实施计划；动态执行仍有未解决的生命周期与判定问题。

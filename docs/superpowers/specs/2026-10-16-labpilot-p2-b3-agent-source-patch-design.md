@@ -2,9 +2,7 @@
 
 > 历史设计记录。当前实现及验收边界见[公开能力与验收证据](../evidence/research-runtime-preview.md)。
 
-**后续状态：窄实现已于2026-10-17集成本地main，interview 0018部署验收通过，未推送。**
-见[主线与部署验收](../evidence/research-runtime-preview.md)。
-见[实际收口](../evidence/research-runtime-preview.md)。
+**2026-10-17 实施记录。** 窄实现已集成本地 main，interview 0018 部署验收通过，该次集成未推送。原主线与部署验收及实施收口保留于开发档案。见[公开补丁草稿摘要](../evidence/research-runtime-preview.md#static-candidates-and-patch-drafts)。
 下方PROPOSED/IMPLEMENTATION NOT STARTED及NOT RUN保留原规划时点，不代替后续实际证据。
 
 

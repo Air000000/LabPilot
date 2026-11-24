@@ -2,9 +2,7 @@
 
 > 历史设计记录。当前实现及验收边界见[公开能力与验收证据](../evidence/research-runtime-preview.md)。
 
-**后续状态：窄实施已于2026-10-16集成本地main，interview 0017部署验收通过，未推送。**
-见[主线与部署验收](../evidence/research-runtime-preview.md)。
-见[工程收口](../evidence/research-runtime-preview.md)。
+**2026-10-16 实施记录。** 窄实施已集成本地 main，interview 0017 部署验收通过，该次集成未推送。原主线与部署验收和工程收口保留于开发档案。见[公开跨源码 Follow-up 摘要](../evidence/research-runtime-preview.md#source-adoption-and-cross-source-follow-up)，其中保留后续真实提案未通过的结果。
 以下PROPOSED/NOT RUN及权限描述保留规划时点，实际验收以收口为准。
 
 2026-10-15（Asia/Shanghai）。PROPOSED / AUTHOR SELF-REVIEW / IMPLEMENTATION NOT STARTED。
@@ -170,7 +168,7 @@ Slice2 production hardening仍deferred；不声称global exactly-once或自主�
 
 已核对main71d8810及clean状态，B1字段/采纳身份、Follow-up入口/物化、History绑定和工具源码。
 现有纯函数探针结果（不是新增模块验收）位于
-`/home/air/.local/state/labpilot-evidence/p2-b2-planning-20261015/probes.json`，
+开发档案中的 `p2-b2-planning-20261015/probes.json`，
 helper为`local-workspace/p2a-static/b2-probe.py`；首次写入因父目录权限失败，
 只新建本次air拥有的私有子目录后记录成功，没有更改旧证据/服务权限或产品代码。
 
